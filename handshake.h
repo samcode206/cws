@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#define GET_RQ "GET"
+#define SEC_WS_KEY_HDR "Sec-WebSocket-Key"
+
 #define SWITCHING_PROTOCOLS                                                    \
   "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: "     \
   "Upgrade\r\nSec-WebSocket-Accept: "
