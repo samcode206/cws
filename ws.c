@@ -115,16 +115,9 @@ int main(void) {
 }
 
 server_t *server_init(int server_fd) {
-  // create a vm mapping, and mlock the hot portion of the server (back it up by
-  // RAM and keep it there) the connection specific buffers will page fault on a
-  // per needed bases (slow path buffers)
   server_t *server = mmap(NULL, sizeof *server, PROT_READ | PROT_WRITE,
                           MAP_ANON | MAP_PRIVATE, -1, 0);
   assert(server != MAP_FAILED);
-  if (mlock2(server, offsetof(server_t, conn_bufs), 0) != 0) {
-    fprintf(stdout, "[warning]: mlock failed %s\n", strerror(errno));
-    errno = 0;
-  };
 
   printf("listening on port:%d\n", DEFAULT_PORT);
 
