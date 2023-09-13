@@ -9,18 +9,9 @@
 #include <openssl/sha.h>
 
 
-#define PROTOCOL "HTTP/1.1"
-#define GET_RQ "GET"
-#define UPGRADE_HDR "Upgrade"
-#define CONNECTION_HDR "Connection"
-#define HOST_HDR "Host"
-#define SEC_WS_KEY_HDR "Sec-WebSocket-Key"
-#define SEC_WS_VERSION_HDR "Sec-WebSocket-Version"
 
 #define SWITCHING_PROTOCOLS "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
-#define SWITCHING_PROTOCOLS_HDRS_LEN sizeof(SWITCHING_PROTOCOLS) - 1
-
-#define SEC_WS_ACCEPT_HDR "Sec-WebSocket-Accept"
+#define SWITCHING_PROTOCOLS_HDRS_LEN sizeof(SWITCHING_PROTOCOLS) - 1 // -1 to ignore the nul
 
 #define WS_VERSION 13
 
