@@ -28,6 +28,9 @@
 #define ERR_HDR_MALFORMED -2
 #define ERR_HDR_TOO_LARGE -3
 
+#define SPACE 0x20
+#define CRLF "\r\n"
+#define CRLF2 "\r\n\r\n"
 
 static int get_header(const char *headers, const char *key, char *val, size_t n) {
   const char *header_start = strstr(headers, key);
@@ -38,11 +41,12 @@ static int get_header(const char *headers, const char *key, char *val, size_t n)
     }
 
     ++header_start;
-    while (*header_start == ' ') {
+    // skip spaces
+    while (*header_start == SPACE) {
       ++header_start;
     }
 
-    const char *header_end = strstr(header_start, "\r\n");
+    const char *header_end = strstr(header_start, CRLF);
     if (header_end) {
       if ((header_end - header_start) + 1 > n) {
         return ERR_HDR_TOO_LARGE;
@@ -63,8 +67,8 @@ static ssize_t ws_build_upgrade_headers(const char *accept_key, size_t keylen,  
   memcpy(resp_headers, SWITCHING_PROTOCOLS, SWITCHING_PROTOCOLS_HDRS_LEN);
   keylen-=1;
   memcpy(resp_headers + SWITCHING_PROTOCOLS_HDRS_LEN, accept_key, keylen);
-  memcpy(resp_headers + SWITCHING_PROTOCOLS_HDRS_LEN + keylen, "\r\n\r\n", sizeof("\r\n\r\n"));
-  return SWITCHING_PROTOCOLS_HDRS_LEN + keylen + sizeof("\r\n\r\n");
+  memcpy(resp_headers + SWITCHING_PROTOCOLS_HDRS_LEN + keylen, CRLF2, sizeof(CRLF2));
+  return SWITCHING_PROTOCOLS_HDRS_LEN + keylen + sizeof(CRLF2);
 }
 
 

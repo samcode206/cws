@@ -20,12 +20,10 @@
 #define BUF_SIZE (1 << 13) /* 8kb */
 
 typedef struct {
-  struct epoll_event events[MAX_EVENTS]; /* event list */
-  struct epoll_event ev;                 /* ctl mod event */
+  struct epoll_event events[MAX_EVENTS];
+  struct epoll_event ev;
   int epoll_fd;
-  unsigned char sbuf[BUF_SIZE];                  /* hot buffer */
-  unsigned char conn_bufs[MAX_EVENTS][BUF_SIZE]; /* connection specific
-                                                        buffers (slow path) */
+  unsigned char conn_bufs[MAX_EVENTS][BUF_SIZE];
 } server_t;
 
 server_t *server_init(int server_fd);
@@ -202,14 +200,14 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
   }
 
   char accept_key[64];
-  int len = ws_derive_accept_hdr(res_hdrs, accept_key, ret-1);
+  int len = ws_derive_accept_hdr(res_hdrs, accept_key, ret - 1);
 
   return ws_build_upgrade_headers(accept_key, len, res_hdrs);
 }
 
 int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
   int fd = ev_ctx_get_fd(ctx);
-  ssize_t n = recv(fd, s->sbuf, BUF_SIZE, 0);
+  ssize_t n = recv(fd, s->conn_bufs[fd], BUF_SIZE - 1, 0);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
       return 0;
@@ -219,20 +217,22 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
     return -1;
   }
 
-  if (!strncmp((char *)s->sbuf, GET_RQ, sizeof GET_RQ - 1)) {
+  s->conn_bufs[fd][n] = '\0';
+
+  if (!strncmp((char *)s->conn_bufs[fd], GET_RQ, sizeof GET_RQ - 1)) {
     printf("Req --------------------------------\n");
 
-    printf("%s", s->sbuf);
+    printf("%s", s->conn_bufs[fd]);
 
     char res_hdrs[1024] = {0};
-    ssize_t ret = handle_upgrade(s->sbuf, res_hdrs, sizeof res_hdrs);
+    ssize_t ret = handle_upgrade((char *)s->conn_bufs[fd], res_hdrs, sizeof res_hdrs);
 
-    send(fd, res_hdrs, ret-1, 0);
+    send(fd, res_hdrs, ret - 1, 0);
     printf("Res --------------------------------\n");
     printf("%s\n", res_hdrs);
 
   } else {
-    printf("other: %s\n", s->sbuf);
+    printf("other: %s\n", s->conn_bufs[fd]);
   }
 
   return 0;
