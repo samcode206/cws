@@ -227,33 +227,42 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
     printf("%s\n", res_hdrs);
 
   } else {
-    printf("other: %s\n", s->conn_bufs[fd]);
     uint8_t fin = frame_get_fin(s->conn_bufs[fd]);
     uint8_t opcode = frame_get_opcode(s->conn_bufs[fd]);
-    uint32_t len = frame_payload_get_len(s->conn_bufs[fd]);
-    uint32_t mask = frame_get_mask(s->conn_bufs[fd]);
+
+    size_t len = frame_payload_get_len(s->conn_bufs[fd]);
+    if ((len == PAYLOAD_LEN_16) & (n > 3)) {
+      len = frame_payload_get_len126(s->conn_bufs[fd]);
+    } else if ((len == PAYLOAD_LEN_64) & (n > 9)) {
+      len = frame_payload_get_len127(s->conn_bufs[fd]);
+    }
+
+    int masked = frame_is_masked(s->conn_bufs[fd]);
 
     // if mask bit isn't set close the connection
     // TODO(sah): maybe send a 1002 then close?
-    if (!mask) {
+    if (!masked) {
       printf("received unmasked client data\n");
       return -1;
     }
 
     printf("fin: %d\n", fin);
     printf("opcode: %d\n", opcode);
-    printf("len: %d\n", len);
-    printf("mask: %d\n", mask);
+    printf("len: %zu\n", len);
+    printf("masked: %d\n", masked);
 
     if (len < 125) {
-      char *msg = malloc(sizeof(char) * len);
-      
-      frame_payload_unmask(s->conn_bufs[fd]+6, msg, s->conn_bufs[fd]+2, len);
-      
+      unsigned char *msg = malloc(sizeof(unsigned char) * len);
+      frame_payload_unmask(s->conn_bufs[fd] + 6, msg, s->conn_bufs[fd] + 2,
+                           len);
+
       printf("msg: %s\n", msg);
 
       free(msg);
     }
+
+    printf("decoded frame: exiting\n");
+    exit(0); // TODO: REMOVE
   }
 
   return 0;
