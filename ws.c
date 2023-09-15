@@ -239,6 +239,12 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
 
     int masked = frame_is_masked(s->conn_bufs[fd]);
 
+    if (opcode == OP_PING){
+      printf("received PING\n");
+      return 0;
+    }
+
+
     // if mask bit isn't set close the connection
     // TODO(sah): maybe send a 1002 then close?
     if (!masked) {
