@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 
+#include "frame.h"
 #include "handshake.h"
 #include <assert.h>
 #include <errno.h>
@@ -13,8 +14,6 @@
 #include <sys/mman.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
-#include "frame.h"
-
 
 #define DEFAULT_PORT 9919
 #define LISTEN_BACKLOG (1 << 12) /* 4k */
@@ -220,7 +219,8 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
     printf("%s", s->conn_bufs[fd]);
 
     char res_hdrs[1024] = {0};
-    ssize_t ret = handle_upgrade((char *)s->conn_bufs[fd], res_hdrs, sizeof res_hdrs);
+    ssize_t ret =
+        handle_upgrade((char *)s->conn_bufs[fd], res_hdrs, sizeof res_hdrs);
 
     send(fd, res_hdrs, ret - 1, 0);
     printf("Res --------------------------------\n");
@@ -230,8 +230,30 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
     printf("other: %s\n", s->conn_bufs[fd]);
     uint8_t fin = frame_get_fin(s->conn_bufs[fd]);
     uint8_t opcode = frame_get_opcode(s->conn_bufs[fd]);
+    uint32_t len = frame_payload_get_len(s->conn_bufs[fd]);
+    uint32_t mask = frame_get_mask(s->conn_bufs[fd]);
+
+    // if mask bit isn't set close the connection
+    // TODO(sah): maybe send a 1002 then close?
+    if (!mask) {
+      printf("received unmasked client data\n");
+      return -1;
+    }
+
     printf("fin: %d\n", fin);
     printf("opcode: %d\n", opcode);
+    printf("len: %d\n", len);
+    printf("mask: %d\n", mask);
+
+    if (len < 125) {
+      char *msg = malloc(sizeof(char) * len);
+      
+      frame_payload_unmask(s->conn_bufs[fd]+6, msg, s->conn_bufs[fd]+2, len);
+      
+      printf("msg: %s\n", msg);
+
+      free(msg);
+    }
   }
 
   return 0;
