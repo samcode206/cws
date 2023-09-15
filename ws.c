@@ -13,6 +13,8 @@
 #include <sys/mman.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
+#include "frame.h"
+
 
 #define DEFAULT_PORT 9919
 #define LISTEN_BACKLOG (1 << 12) /* 4k */
@@ -226,6 +228,10 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
 
   } else {
     printf("other: %s\n", s->conn_bufs[fd]);
+    uint8_t fin = frame_get_fin(s->conn_bufs[fd]);
+    uint8_t opcode = frame_get_opcode(s->conn_bufs[fd]);
+    printf("fin: %d\n", fin);
+    printf("opcode: %d\n", opcode);
   }
 
   return 0;

@@ -2,6 +2,7 @@ const WebSocket = require("ws");
 
 const ws = new WebSocket("ws://127.0.0.1:9919/", {
   perMessageDeflate: false,
+  
 });
 
 ws.onopen = (ev) => {
@@ -26,7 +27,7 @@ ws.on("unexpected-response", (req, res) => {
 
 process.stdin.on("data", (data) => {
   if (ws.OPEN) {
-    ws.send(data, (err) => {
+    ws.send(data.toString('ascii'), (err) => {
       if (err) {
         console.error(err);
       }
