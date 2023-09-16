@@ -20,7 +20,7 @@
 #define MAX_EVENTS 1024
 #define BUF_SIZE (1 << 13) /* 8kb */
 
-struct conn {
+struct ws_conn {
   int fd;
   int writeable;
   size_t buf_in_len;
@@ -41,7 +41,7 @@ server_t *server_init(int server_fd);
 void server_shutdown(server_t *s, int sfd);
 int socket_bind_listen(uint16_t port, uint16_t addr, int backlog);
 
-int handle_conn(server_t *s, struct conn *conn, int nops);
+int handle_conn(server_t *s, struct ws_conn *conn, int nops);
 
 void on_msg(int fd, int binary, size_t len, unsigned char *msg, uint8_t *mask);
 
@@ -50,7 +50,7 @@ void on_msg(int fd, int binary, size_t len, unsigned char *msg, uint8_t *mask) {
   printf("msg: %s\n", msg);
 }
 
-int ws_send_msg(struct conn *conn, const void *msg, size_t n) {
+int ws_send_msg(struct ws_conn *conn, const void *msg, size_t n) {
   size_t offset = frame_get_mask_offset(n);
   if (offset + n <= (BUF_SIZE - conn->buf_out_tail - conn->buf_out_head)) {
     if (conn->writeable) {
@@ -75,7 +75,7 @@ int ws_send_msg(struct conn *conn, const void *msg, size_t n) {
   }
 }
 
-int conn_drain_out_buf(struct conn *conn) {
+int conn_drain_out_buf(struct ws_conn *conn) {
   // returns 1, more data is writeable and on_drain should be called
   // returns 0, we sent some data but there's more, on_drain won't be called
   // returns -1, an error occurred and connection should be closed and resources
@@ -84,7 +84,7 @@ int conn_drain_out_buf(struct conn *conn) {
   conn->writeable = 1;
 }
 
-void conn_destroy(server_t *server, struct conn *conn) {
+void conn_destroy(server_t *server, struct ws_conn *conn) {
   assert(epoll_ctl(server->epoll_fd, EPOLL_CTL_DEL, conn->fd, &server->ev) ==
          0);
   assert(close(conn->fd) == 0);
@@ -124,7 +124,7 @@ int main(void) {
           }
 
           server->ev.events = EPOLLIN | EPOLLRDHUP;
-          struct conn *conn = calloc(1, sizeof(struct conn));
+          struct ws_conn *conn = calloc(1, sizeof(struct ws_conn));
           assert(conn != NULL);
           conn->fd = client_fd;
           conn->writeable = 1;
@@ -247,7 +247,7 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
   return ws_build_upgrade_headers(accept_key, len, res_hdrs);
 }
 
-int handle_conn(server_t *s, struct conn *conn, int nops) {
+int handle_conn(server_t *s, struct ws_conn *conn, int nops) {
 
   ssize_t n = recv(conn->fd, conn->buf_in + conn->buf_in_len,
                    BUF_SIZE - 1 - conn->buf_in_len, 0);
