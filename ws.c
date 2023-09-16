@@ -73,12 +73,6 @@ int main(void) {
             break;
           }
 
-          if (client_fd > MAX_EVENTS - 5) {
-            printf("can't index fd: %d\n", client_fd);
-            close(client_fd);
-            continue;
-          }
-
           server->ev.events = EPOLLIN | EPOLLRDHUP;
           struct conn *conn = calloc(1, sizeof(struct conn));
           assert(conn != NULL);
