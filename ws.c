@@ -221,9 +221,7 @@ int handle_conn(server_t *s, struct conn *conn, int nops) {
 
   if (!strncmp((char *)conn->buf_in, GET_RQ, sizeof GET_RQ - 1)) {
     printf("Req --------------------------------\n");
-
     printf("%s", conn->buf_in);
-
     char res_hdrs[1024] = {0};
     ssize_t ret =
         handle_upgrade((char *)conn->buf_in, res_hdrs, sizeof res_hdrs);
@@ -246,8 +244,29 @@ int handle_conn(server_t *s, struct conn *conn, int nops) {
       }
 
       uint8_t opcode = frame_get_opcode(conn->buf_in);
+      size_t len = frame_payload_get_len(conn->buf_in);
+      printf("fin: %d\n", fin);
+      printf("opcode: %d\n", opcode);
+      printf("len: %zu\n", len);
+      if ((len == PAYLOAD_LEN_16) & (conn->buf_in_len > 3)) {
+        len = frame_payload_get_len126(conn->buf_in);
+      } else if ((len == PAYLOAD_LEN_64) & (conn->buf_in_len > 9)) {
+        len = frame_payload_get_len127(conn->buf_in);
+      }
 
       if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
+        size_t mask_offset = frame_get_mask_offset(conn->buf_in, len);
+        size_t frame_len = len + mask_offset + 4;
+        if (conn->buf_in_len >= frame_len) {
+          on_msg(conn->fd, opcode == OP_BIN, len,
+                 conn->buf_in + mask_offset + 4, conn->buf_in + mask_offset);
+          conn->buf_in_len -= frame_len;
+          if (conn->buf_in_len) {
+            memmove(conn, conn + frame_len,
+                    conn->buf_in_len); // move the remainder to the front
+          }
+          printf("processed msg, remaining: %zu\n", conn->buf_in_len);
+        }
         // msg
       } else if ((opcode == OP_PING) | (opcode == OP_PONG)) {
         // handle ping pong stuff
@@ -257,25 +276,6 @@ int handle_conn(server_t *s, struct conn *conn, int nops) {
       } else if (opcode == OP_CONT) {
         return -1; // unsupported
       }
-
-      size_t len = frame_payload_get_len(conn->buf_in);
-      if ((len == PAYLOAD_LEN_16) & (conn->buf_in_len > 3)) {
-        len = frame_payload_get_len126(conn->buf_in);
-      } else if ((len == PAYLOAD_LEN_64) & (conn->buf_in_len > 9)) {
-        len = frame_payload_get_len127(conn->buf_in);
-      }
-
-      size_t mask_offset = frame_get_mask_offset(conn->buf_in, len);
-      on_msg(conn->fd, opcode == OP_BIN, len, conn->buf_in + mask_offset + 4, conn->buf_in + mask_offset);
-      printf("fin: %d\n", fin);
-      printf("opcode: %d\n", opcode);
-      printf("len: %zu\n", len);
-      printf("masked: %d\n", masked);
-
-
-
-      printf("decoded frame: exiting\n");
-      exit(0); // TODO: REMOVE
     }
   }
 
