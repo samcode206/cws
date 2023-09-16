@@ -20,26 +20,26 @@
 #define MAX_EVENTS 1024
 #define BUF_SIZE (1 << 13) /* 8kb */
 
+struct conn {
+  int fd;
+  size_t buf_in_len;
+  size_t buf_out_len;
+  uint8_t buf_in[BUF_SIZE];
+  uint8_t buf_out[BUF_SIZE];
+};
+
 typedef struct {
   struct epoll_event events[MAX_EVENTS];
   struct epoll_event ev;
   int epoll_fd;
-  unsigned char conn_bufs[MAX_EVENTS][BUF_SIZE];
 } server_t;
 
 server_t *server_init(int server_fd);
 void server_shutdown(server_t *s, int sfd);
 int socket_bind_listen(uint16_t port, uint16_t addr, int backlog);
 
-typedef uint64_t event_ctx_t;
 
-static inline int ev_ctx_get_fd(event_ctx_t ctx);
-static inline event_ctx_t ev_ctx_set_fd(event_ctx_t ctx, int fd);
-static inline uint32_t ev_ctx_get_buf_offset(event_ctx_t ctx);
-static inline event_ctx_t ev_ctx_set_buf_offset(event_ctx_t ctx,
-                                                uint32_t offset);
-
-int handle_conn(server_t *s, event_ctx_t ctx, int nops);
+int handle_conn(server_t *s, struct conn *conn, int nops);
 
 int main(void) {
   printf("pid: %d\n", getpid());
@@ -61,7 +61,7 @@ int main(void) {
 
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if (ev_ctx_get_fd(server->events[i].data.u64) == server_fd) {
+      if (server->events[i].data.ptr == server) {
         for (;;) {
           int client_fd =
               accept4(server_fd, (struct sockaddr *)&client_sockaddr,
@@ -80,29 +80,34 @@ int main(void) {
           }
 
           server->ev.events = EPOLLIN | EPOLLRDHUP;
-          server->ev.data.u64 = ev_ctx_set_fd(0, client_fd);
-
+          struct conn *conn = calloc(1, sizeof(struct conn));
+          assert(conn != NULL);
+          conn->fd = client_fd;
+          server->ev.data.ptr = conn;
           assert(epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, client_fd,
                            &server->ev) == 0);
         }
 
       } else {
         if (server->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
-          int fd = ev_ctx_get_fd(server->events[i].data.u64);
-          assert(epoll_ctl(server->epoll_fd, EPOLL_CTL_DEL, fd, &server->ev) ==
-                 0);
-          assert(close(fd) == 0);
+          struct conn *conn = (struct conn *)server->events[i].data.ptr;
+          assert(epoll_ctl(server->epoll_fd, EPOLL_CTL_DEL, conn->fd,
+                           &server->ev) == 0);
+          assert(close(conn->fd) == 0);
+          free(conn);
+          server->events[i].data.ptr = NULL;
         } else {
           if (server->events[i].events & EPOLLOUT) {
 
           } else if (server->events[i].events & EPOLLIN) {
-            int ret = handle_conn(server, server->events[i].data.u64, 8);
+            int ret = handle_conn(server, server->events[i].data.ptr, 8);
             if (ret == -1) {
-              int fd = ev_ctx_get_fd(server->events[i].data.u64);
-              // ev.data.fd = fd;
-              assert(epoll_ctl(server->epoll_fd, EPOLL_CTL_DEL, fd,
+              struct conn *conn = (struct conn *)server->events[i].data.ptr;
+              assert(epoll_ctl(server->epoll_fd, EPOLL_CTL_DEL, conn->fd,
                                &server->ev) == 0);
-              assert(close(fd) == 0);
+              assert(close(conn->fd) == 0);
+              free(conn);
+              server->events[i].data.ptr = NULL;
             }
           }
         }
@@ -131,7 +136,7 @@ server_t *server_init(int server_fd) {
   server->epoll_fd = epoll_fd;
 
   server->ev.events = EPOLLIN;
-  server->ev.data.u64 = ev_ctx_set_fd(0, server_fd);
+  server->ev.data.ptr = server;
 
   if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &server->ev) < 0) {
     perror("epoll_ctl");
@@ -199,9 +204,9 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
   return ws_build_upgrade_headers(accept_key, len, res_hdrs);
 }
 
-int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
-  int fd = ev_ctx_get_fd(ctx);
-  ssize_t n = recv(fd, s->conn_bufs[fd], BUF_SIZE - 1, 0);
+int handle_conn(server_t *s, struct conn *conn, int nops) {
+
+  ssize_t n = recv(conn->fd, conn->buf_in + conn->buf_in_len, BUF_SIZE - 1 - conn->buf_in_len, 0);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
       return 0;
@@ -211,39 +216,38 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
     return -1;
   }
 
-  s->conn_bufs[fd][n] = '\0';
+  conn->buf_in[n] = '\0';
 
-  if (!strncmp((char *)s->conn_bufs[fd], GET_RQ, sizeof GET_RQ - 1)) {
+  if (!strncmp((char *)conn->buf_in, GET_RQ, sizeof GET_RQ - 1)) {
     printf("Req --------------------------------\n");
 
-    printf("%s", s->conn_bufs[fd]);
+    printf("%s", conn->buf_in);
 
     char res_hdrs[1024] = {0};
     ssize_t ret =
-        handle_upgrade((char *)s->conn_bufs[fd], res_hdrs, sizeof res_hdrs);
+        handle_upgrade((char *)conn->buf_in, res_hdrs, sizeof res_hdrs);
 
-    send(fd, res_hdrs, ret - 1, 0);
+    send(conn->fd, res_hdrs, ret - 1, 0);
     printf("Res --------------------------------\n");
     printf("%s\n", res_hdrs);
 
   } else {
-    uint8_t fin = frame_get_fin(s->conn_bufs[fd]);
-    uint8_t opcode = frame_get_opcode(s->conn_bufs[fd]);
+    uint8_t fin = frame_get_fin(conn->buf_in);
+    uint8_t opcode = frame_get_opcode(conn->buf_in);
 
-    size_t len = frame_payload_get_len(s->conn_bufs[fd]);
+    size_t len = frame_payload_get_len(conn->buf_in);
     if ((len == PAYLOAD_LEN_16) & (n > 3)) {
-      len = frame_payload_get_len126(s->conn_bufs[fd]);
+      len = frame_payload_get_len126(conn->buf_in);
     } else if ((len == PAYLOAD_LEN_64) & (n > 9)) {
-      len = frame_payload_get_len127(s->conn_bufs[fd]);
+      len = frame_payload_get_len127(conn->buf_in);
     }
 
-    int masked = frame_is_masked(s->conn_bufs[fd]);
+    int masked = frame_is_masked(conn->buf_in);
 
-    if (opcode == OP_PING){
+    if (opcode == OP_PING) {
       printf("received PING\n");
       return 0;
     }
-
 
     // if mask bit isn't set close the connection
     // TODO(sah): maybe send a 1002 then close?
@@ -259,7 +263,7 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
 
     if (len < 125) {
       unsigned char *msg = malloc(sizeof(unsigned char) * len);
-      frame_payload_unmask(s->conn_bufs[fd] + 6, msg, s->conn_bufs[fd] + 2,
+      frame_payload_unmask(conn->buf_in + 6, msg, conn->buf_in + 2,
                            len);
 
       printf("msg: %s\n", msg);
@@ -272,23 +276,6 @@ int handle_conn(server_t *s, event_ctx_t ctx, int nops) {
   }
 
   return 0;
-}
-
-static inline int ev_ctx_get_fd(event_ctx_t ctx) {
-  return ctx & ((1ULL << 32) - 1);
-}
-
-static inline event_ctx_t ev_ctx_set_fd(event_ctx_t ctx, int fd) {
-  return (ctx & ~((1ULL << 32) - 1)) | (event_ctx_t)fd;
-}
-
-static inline uint32_t ev_ctx_get_buf_offset(event_ctx_t ctx) {
-  return (ctx >> 32) & ((1ULL << 32) - 1);
-}
-
-static inline event_ctx_t ev_ctx_set_buf_offset(event_ctx_t ctx,
-                                                uint32_t offset) {
-  return (ctx & ~(((1ULL << 32) - 1) << 32)) | ((event_ctx_t)offset << 32);
 }
 
 // -----------------------------------------------------------------------------------
