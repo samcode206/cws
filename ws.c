@@ -248,10 +248,18 @@ int handle_conn(server_t *s, struct conn *conn, int nops) {
       printf("fin: %d\n", fin);
       printf("opcode: %d\n", opcode);
       printf("len: %zu\n", len);
-      if ((len == PAYLOAD_LEN_16) & (conn->buf_in_len > 3)) {
-        len = frame_payload_get_len126(conn->buf_in);
-      } else if ((len == PAYLOAD_LEN_64) & (conn->buf_in_len > 9)) {
-        len = frame_payload_get_len127(conn->buf_in);
+      if (len == PAYLOAD_LEN_16) {
+        if (conn->buf_in_len > 3) {
+          len = frame_payload_get_len126(conn->buf_in);
+        } else {
+          return 0;
+        }
+      } else if (len == PAYLOAD_LEN_64) {
+        if (conn->buf_in_len > 9) {
+          len = frame_payload_get_len127(conn->buf_in);
+        } else {
+          return 0;
+        }
       }
 
       if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
