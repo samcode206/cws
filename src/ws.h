@@ -163,11 +163,13 @@ typedef void (*ws_open_cb_t)(
 typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin); /* called when a websocket msg is available */
 
 typedef void (*ws_close_cb_t)(
-    ws_conn_t *ws_conn, int reason); /* called when a connection is closed  */
+    ws_conn_t *ws_conn, int reason); /* called when a close frame is received */
+
+typedef void (*ws_destroy_cb_t)(ws_conn_t *ws_conn);  /* called after the connection is closed, use for user data clean up */
 
 typedef void (*ws_drain_cb_t)(
     ws_conn_t *ws_conn); /* called after send buffer is drained (after some back
-                            pressure buildup )*/
+                            pressure buildup) */
 
 struct ws_server_params {
   in_addr_t addr;
@@ -177,6 +179,7 @@ struct ws_server_params {
   ws_msg_cb_t on_ws_msg;
   ws_drain_cb_t on_ws_drain;
   ws_close_cb_t on_ws_close;
+  ws_destroy_cb_t on_ws_destroyed;
 };
 
 #define WS_ESYS -1        // system error call should check errno

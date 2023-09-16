@@ -42,6 +42,7 @@ typedef struct server {
   ws_msg_cb_t on_ws_msg;
   ws_drain_cb_t on_ws_drain;
   ws_close_cb_t on_ws_close;
+  ws_destroy_cb_t on_ws_destroy;
   io_ctl_t io_ctl; // io controller
 } ws_server_t;
 
@@ -62,7 +63,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   }
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
-      !params->on_ws_drain) {
+      !params->on_ws_drain || !params->on_ws_destroyed) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -136,7 +137,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_msg = params->on_ws_msg;
   s->on_ws_drain = params->on_ws_drain;
   s->on_ws_close = params->on_ws_close;
-
+  s->on_ws_destroy = params->on_ws_destroyed;
   // server resources all ready
   return s;
 }
@@ -334,7 +335,10 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
 }
 
 void conn_destroy(ws_server_t *s, struct ws_conn_t *conn) {
-  fprintf(stderr, "[warning] conn_destroy unimplemented\n");
+  epoll_ctl(s->io_ctl.epoll_fd, EPOLL_CTL_DEL, conn->fd, &s->io_ctl.ev);
+  close(conn->fd);
+  s->on_ws_destroy(conn); // call the user's callback to allow clean up on data associated with this connection
+  free(conn);
 }
 
 int conn_drain_out_buf(struct ws_conn_t *conn) {

@@ -13,6 +13,8 @@ void on_msg(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin) {
 
 void on_close(ws_conn_t *ws_conn, int reason) { printf("on_close\n"); }
 
+void on_destroy(ws_conn_t *ws_conn) { printf("on_destroy\n"); }
+
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
 
 int main(void) {
@@ -24,6 +26,7 @@ int main(void) {
       .on_ws_msg = on_msg,
       .on_ws_drain = on_drain,
       .on_ws_close = on_close,
+      .on_ws_destroyed = on_destroy,
   };
 
   int ret = 0;
