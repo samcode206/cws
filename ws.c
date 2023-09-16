@@ -31,6 +31,18 @@ struct conn {
   uint8_t buf_out[BUF_SIZE];
 };
 
+typedef struct {
+  struct epoll_event events[MAX_EVENTS];
+  struct epoll_event ev;
+  int epoll_fd;
+} server_t;
+
+server_t *server_init(int server_fd);
+void server_shutdown(server_t *s, int sfd);
+int socket_bind_listen(uint16_t port, uint16_t addr, int backlog);
+
+int handle_conn(server_t *s, struct conn *conn, int nops);
+
 void on_msg(int fd, int binary, size_t len, unsigned char *msg, uint8_t *mask);
 
 void on_msg(int fd, int binary, size_t len, unsigned char *msg, uint8_t *mask) {
@@ -63,17 +75,14 @@ int ws_send_msg(struct conn *conn, const void *msg, size_t n) {
   }
 }
 
-typedef struct {
-  struct epoll_event events[MAX_EVENTS];
-  struct epoll_event ev;
-  int epoll_fd;
-} server_t;
+int conn_drain_out_buf(struct conn *conn) {
+  // returns 1, more data is writeable and on_drain should be called
+  // returns 0, we sent some data but there's more, on_drain won't be called
+  // returns -1, an error occurred and connection should be closed and resources
+  // cleaned up
 
-server_t *server_init(int server_fd);
-void server_shutdown(server_t *s, int sfd);
-int socket_bind_listen(uint16_t port, uint16_t addr, int backlog);
-
-int handle_conn(server_t *s, struct conn *conn, int nops);
+  conn->writeable = 1;
+}
 
 void conn_destroy(server_t *server, struct conn *conn) {
   assert(epoll_ctl(server->epoll_fd, EPOLL_CTL_DEL, conn->fd, &server->ev) ==
@@ -130,7 +139,13 @@ int main(void) {
           server->events[i].data.ptr = NULL;
         } else {
           if (server->events[i].events & EPOLLOUT) {
-
+            int ret = conn_drain_out_buf(server->events[i].data.ptr);
+            if (ret == -1) {
+              conn_destroy(server, server->events[i].data.ptr);
+              server->events[i].data.ptr = NULL;
+            } else if (ret == 1) {
+              // TODO: call on_drain callback
+            }
           } else if (server->events[i].events & EPOLLIN) {
             int ret = handle_conn(server, server->events[i].data.ptr, 8);
             if (ret == -1) {
