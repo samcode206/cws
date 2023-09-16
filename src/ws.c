@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 
-#include "frame.h"
-#include "handshake.h"
+#include "ws.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
