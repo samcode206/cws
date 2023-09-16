@@ -79,7 +79,7 @@ static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
                                        size_t len) {
-  unsigned char buf[128] = {0};
+  unsigned char buf[64] = {0};
   memcpy(buf, akhdr_val, strlen(akhdr_val));
   strcat((char *)buf, magic_str);
   len += sizeof magic_str;
