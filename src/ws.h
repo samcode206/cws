@@ -3,12 +3,14 @@
 
 #include "base64.h"
 #include <errno.h>
+#include <netinet/in.h>
 #include <openssl/sha.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-
-
+#include <unistd.h>
 // Handshake Utils
 
 #define GET_RQ "GET"
@@ -30,7 +32,7 @@
 #define CRLF "\r\n"
 #define CRLF2 "\r\n\r\n"
 
-static int get_header(const char *headers, const char *key, char *val,
+static inline int get_header(const char *headers, const char *key, char *val,
                       size_t n) {
   const char *header_start = strstr(headers, key);
   if (header_start) {
@@ -68,7 +70,7 @@ static int get_header(const char *headers, const char *key, char *val,
   return ERR_HDR_NOT_FOUND; // header isn't found
 }
 
-static ssize_t ws_build_upgrade_headers(const char *accept_key, size_t keylen,
+static inline ssize_t ws_build_upgrade_headers(const char *accept_key, size_t keylen,
                                         char *resp_headers) {
   memcpy(resp_headers, SWITCHING_PROTOCOLS, SWITCHING_PROTOCOLS_HDRS_LEN);
   keylen -= 1;
@@ -94,13 +96,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
   return Base64encode(derived_val, (const char *)hash, sizeof hash);
 }
 
-
-
-
 // Frame Utils
-
-
-
 
 #define FIN_MORE 0
 #define FIN_DONE 1
@@ -119,11 +115,11 @@ static inline uint8_t frame_get_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
 }
 
-static inline uint8_t frame_get_opcode(const unsigned char  *buf) {
+static inline uint8_t frame_get_opcode(const unsigned char *buf) {
   return buf[0] & 0x0F;
 }
 
-static inline size_t frame_payload_get_len126(const unsigned char  *buf) {
+static inline size_t frame_payload_get_len126(const unsigned char *buf) {
   return (buf[2] << 8) | buf[3];
 }
 
@@ -143,11 +139,11 @@ static inline uint32_t frame_is_masked(const unsigned char *buf) {
 }
 
 static inline size_t frame_get_mask_offset(size_t n) {
-    return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
+  return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
-static void frame_payload_unmask(const unsigned char *src, unsigned char *dst, uint8_t *mask,
-                                 size_t len) {
+static inline void frame_payload_unmask(const unsigned char *src, unsigned char *dst,
+                                 uint8_t *mask, size_t len) {
   size_t mask_idx = 0;
   for (size_t i = 0; i < len; ++i) {
     dst[i] = src[i] ^ mask[mask_idx];
@@ -155,5 +151,71 @@ static void frame_payload_unmask(const unsigned char *src, unsigned char *dst, u
   }
 }
 
+// server types
+
+typedef struct ws_conn_t ws_conn_t;
+
+typedef struct server ws_server_t;
+
+typedef void (*ws_open_cb_t)(
+    ws_conn_t *ws_conn); /* called after a connection is upgraded */
+
+typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin); /* called when a websocket msg is available */
+
+typedef void (*ws_close_cb_t)(
+    ws_conn_t *ws_conn, int reason); /* called when a connection is closed  */
+
+typedef void (*ws_drain_cb_t)(
+    ws_conn_t *ws_conn); /* called after send buffer is drained (after some back
+                            pressure buildup )*/
+
+struct ws_server_params {
+  in_addr_t addr;
+  uint16_t port;
+  size_t max_events; // defaults to 1024
+  ws_open_cb_t on_ws_open;
+  ws_msg_cb_t on_ws_msg;
+  ws_drain_cb_t on_ws_drain;
+  ws_close_cb_t on_ws_close;
+};
+
+#define WS_ESYS -1        // system error call should check errno
+#define WS_EINVAL_ARGS -2 // invalid argument/arguments provided
+
+#define WS_CREAT_EBAD_PORT -3
+#define WS_CREAT_ENO_CB -4
+
+static inline void ws_write_err(int fd, int err) {
+  switch (err) {
+  case WS_EINVAL_ARGS:
+    write(fd, "invalid arguments\n", sizeof("invalid arguments\n"));
+    fsync(fd);
+    return;
+  case WS_CREAT_EBAD_PORT:
+    write(fd, "invalid port provided\n", sizeof("invalid port provided\n"));
+    fsync(fd);
+    return;
+  case WS_CREAT_ENO_CB:
+    write(fd, "required callback not provided\n",
+          sizeof("required callback not provided\n"));
+    fsync(fd);
+    return;
+  case WS_ESYS: {
+    char *str = strerror(errno);
+    write(fd, str, sizeof str);
+    fsync(fd);
+    return;
+  }
+  }
+
+  write(fd, "unknown error\n", sizeof "unknown error\n");
+  fsync(fd);
+  return;
+}
+
+ws_server_t *ws_server_create(struct ws_server_params *params,
+                              int *ret); // allocates server resources
+
+int ws_server_start(ws_server_t *s, int backlog); // start serving connections
 
 #endif /* WS_PROTOCOL_PARSING23_H */
