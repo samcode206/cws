@@ -162,6 +162,8 @@ typedef void (*ws_open_cb_t)(
 
 typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin); /* called when a websocket msg is available */
 
+typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin); /* called when a client sends a PING */
+
 typedef void (*ws_close_cb_t)(
     ws_conn_t *ws_conn, int reason); /* called when a close frame is received */
 
@@ -177,6 +179,7 @@ struct ws_server_params {
   size_t max_events; // defaults to 1024
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
+  ws_ping_cb_t on_ws_ping;
   ws_drain_cb_t on_ws_drain;
   ws_close_cb_t on_ws_close;
   ws_destroy_cb_t on_ws_destroyed;

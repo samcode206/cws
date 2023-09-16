@@ -39,6 +39,7 @@ typedef struct server {
   size_t open_conns; // open websocket connections
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
+  ws_ping_cb_t on_ws_ping;
   ws_drain_cb_t on_ws_drain;
   ws_close_cb_t on_ws_close;
   ws_destroy_cb_t on_ws_destroy;
@@ -63,7 +64,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   }
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
-      !params->on_ws_drain || !params->on_ws_destroyed) {
+      !params->on_ws_drain || !params->on_ws_destroyed || !params->on_ws_ping) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -134,6 +135,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   }
 
   s->on_ws_open = params->on_ws_open;
+  s->on_ws_ping = params->on_ws_ping;
   s->on_ws_msg = params->on_ws_msg;
   s->on_ws_drain = params->on_ws_drain;
   s->on_ws_close = params->on_ws_close;
@@ -321,7 +323,22 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         // msg
       } else if ((opcode == OP_PING) | (opcode == OP_PONG)) {
         // handle ping pong stuff
-        printf("PING/PONG\n");
+        if (len > 125) {
+          // PINGs must be 125 or less
+          return -1; // TODO(sah): send a Close frame, & call close callback
+        }
+        size_t mask_offset = frame_get_mask_offset(len);
+        size_t frame_len = len + mask_offset + 4;
+        if (conn->buf_in_len >= frame_len) {
+          s->on_ws_ping(conn, conn->buf_in + mask_offset + 4,
+                        conn->buf_in + mask_offset, len, opcode == OP_BIN);
+          conn->buf_in_len -= frame_len;
+          if (conn->buf_in_len) {
+            memmove(conn, conn + frame_len,
+                    conn->buf_in_len); // move the remainder to the front
+          }
+        }
+
       } else if (opcode == OP_CLOSE) {
         // handle close stuff
       } else if (opcode == OP_CONT) {

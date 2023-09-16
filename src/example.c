@@ -6,6 +6,12 @@
 
 void on_open(ws_conn_t *c) { printf("websocket connection open %p\n", (void *)c); }
 
+
+void on_ping(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin) {
+  frame_payload_unmask(msg, msg, mask, n);
+  printf("on_ping: %s\n", (char *)msg);
+}
+
 void on_msg(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin) {
   frame_payload_unmask(msg, msg, mask, n);
   printf("on_msg: %s\n", (char *)msg);
@@ -24,6 +30,7 @@ int main(void) {
       .max_events = 1024,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
+      .on_ws_ping = on_ping,
       .on_ws_drain = on_drain,
       .on_ws_close = on_close,
       .on_ws_destroyed = on_destroy,
