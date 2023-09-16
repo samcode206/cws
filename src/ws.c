@@ -28,7 +28,6 @@ struct ws_conn_t {
 };
 
 typedef struct io_ctl {
-  struct epoll_event ev;
   int epoll_fd;
   size_t ev_cap;
   struct epoll_event events[];
@@ -48,7 +47,8 @@ typedef struct server {
 
 int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops);
 
-void conn_destroy(ws_server_t *s, struct ws_conn_t *conn);
+void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
+                  struct epoll_event *ev);
 
 int conn_drain_out_buf(struct ws_conn_t *conn);
 
@@ -195,14 +195,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
       } else {
         if (s->io_ctl.events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
-          // TODO(sah): invoke user callback
-          conn_destroy(s, s->io_ctl.events[i].data.ptr);
+          conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
           s->io_ctl.events[i].data.ptr = NULL;
         } else {
           if (s->io_ctl.events[i].events & EPOLLOUT) {
             int ret = conn_drain_out_buf(s->io_ctl.events[i].data.ptr);
             if (ret == -1) {
-              conn_destroy(s, s->io_ctl.events[i].data.ptr);
+              conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
               s->io_ctl.events[i].data.ptr = NULL;
             } else if (ret == 1) {
               s->on_ws_drain(s->io_ctl.events[i].data.ptr);
@@ -210,7 +209,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           } else if (s->io_ctl.events[i].events & EPOLLIN) {
             int ret = handle_conn(s, s->io_ctl.events[i].data.ptr, 8);
             if (ret == -1) {
-              conn_destroy(s, s->io_ctl.events[i].data.ptr);
+              conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
               s->io_ctl.events[i].data.ptr = NULL;
             }
           }
@@ -334,10 +333,12 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
   return 0;
 }
 
-void conn_destroy(ws_server_t *s, struct ws_conn_t *conn) {
-  epoll_ctl(s->io_ctl.epoll_fd, EPOLL_CTL_DEL, conn->fd, &s->io_ctl.ev);
+void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
+                  struct epoll_event *ev) {
+  epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, ev);
   close(conn->fd);
-  s->on_ws_destroy(conn); // call the user's callback to allow clean up on data associated with this connection
+  s->on_ws_destroy(conn); // call the user's callback to allow clean up on data
+                          // associated with this connection
   free(conn);
 }
 
