@@ -44,7 +44,7 @@ static inline uint32_t frame_is_masked(const unsigned char *buf) {
   return (buf[1] >> 7) & 0x01;
 }
 
-static inline size_t frame_get_mask_offset(const unsigned char *buf, size_t n) {
+static inline size_t frame_get_mask_offset(size_t n) {
     return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 

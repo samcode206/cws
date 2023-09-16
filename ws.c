@@ -22,8 +22,11 @@
 
 struct conn {
   int fd;
+  int writeable;
   size_t buf_in_len;
-  size_t buf_out_len;
+
+  size_t buf_out_head;
+  size_t buf_out_tail;
   uint8_t buf_in[BUF_SIZE];
   uint8_t buf_out[BUF_SIZE];
 };
@@ -33,6 +36,31 @@ void on_msg(int fd, int binary, size_t len, unsigned char *msg, uint8_t *mask);
 void on_msg(int fd, int binary, size_t len, unsigned char *msg, uint8_t *mask) {
   frame_payload_unmask(msg, msg, mask, len);
   printf("msg: %s\n", msg);
+}
+
+int ws_send_msg(struct conn *conn, const void *msg, size_t n) {
+  size_t offset = frame_get_mask_offset(n);
+  if (offset + n <= (BUF_SIZE - conn->buf_out_tail - conn->buf_out_head)) {
+    if (conn->writeable) {
+      // encode websocket frame
+      // try to write as much as possible
+      // if full msg is written return 1 indicating that more data can be sent
+      // immediately if none or only parts of the msg are written return 0
+      // indicating back pressure caller should stop calling this function at
+      // this point and wait for the on_drain even which we will only call when
+      // EPOLLOUT is triggered and we fully drained the buffer
+    } else {
+      // just copy into conn->buf_out
+      // TODO: HANDLE WRAP AROUND
+      memcpy(conn->buf_out + conn->buf_out_tail, msg, n);
+    }
+  } else {
+    // -1 is returned in cases where the user fails to respect the return codes
+    // of ws_send_msg and continued calling after 0 is returned (connection is
+    // not receiving data as fast as we are sending) the other case where -1 is
+    // returned is when n + (ws frame header size) os greater than BUF_SIZE
+    return -1;
+  }
 }
 
 typedef struct {
@@ -90,6 +118,7 @@ int main(void) {
           struct conn *conn = calloc(1, sizeof(struct conn));
           assert(conn != NULL);
           conn->fd = client_fd;
+          conn->writeable = 1;
           server->ev.data.ptr = conn;
           assert(epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, client_fd,
                            &server->ev) == 0);
@@ -263,7 +292,7 @@ int handle_conn(server_t *s, struct conn *conn, int nops) {
       }
 
       if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
-        size_t mask_offset = frame_get_mask_offset(conn->buf_in, len);
+        size_t mask_offset = frame_get_mask_offset(len);
         size_t frame_len = len + mask_offset + 4;
         if (conn->buf_in_len >= frame_len) {
           on_msg(conn->fd, opcode == OP_BIN, len,
