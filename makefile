@@ -1,2 +1,2 @@
 build:
-	gcc base64.c ws.c -lcrypto -O3 -Wall --pedantic -o server
+	gcc ./src/base64.c ./src/ws.c -lcrypto -O3 -Wall --pedantic -o server
