@@ -10,9 +10,9 @@
 #define OP_CONT 0x0
 #define OP_TXT 0x1
 #define OP_BIN 0x2
-
 #define OP_PING 0x9
 #define OP_PONG 0xA
+#define OP_CLOSE 0x8
 
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
@@ -44,7 +44,7 @@ static inline uint32_t frame_is_masked(const unsigned char *buf) {
   return (buf[1] >> 7) & 0x01;
 }
 
-static inline int frame_get_mask_offset(const unsigned char *buf, size_t n) {
+static inline size_t frame_get_mask_offset(const unsigned char *buf, size_t n) {
     return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
