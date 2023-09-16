@@ -232,7 +232,7 @@ int handle_conn(server_t *s, struct conn *conn, int nops) {
 
     conn->buf_in_len = 0;
   } else {
-
+    printf("buffer size: %zu\n", conn->buf_in_len);
     // need at least 2 bytes to read anything
     if (conn->buf_in_len >= 2) {
       uint8_t fin = frame_get_fin(conn->buf_in);
