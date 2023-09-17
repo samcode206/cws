@@ -61,6 +61,17 @@
 #define WS_CREAT_EBAD_PORT -7
 #define WS_CREAT_ENO_CB -8
 
+#define WS_CLOSE_NORMAL 1000 // normal closure (service is not longer needed)
+#define WS_CLOSE_GOAWAY 1001 // going away
+#define WS_CLOSE_EPROTO 1002 // protocol error 
+#define WS_CLOSE_UNSUPP 1003 // unsupported data type (example one end only works with text but binary was sent)
+#define WS_CLOSE_INVALD 1007 // example: opcode is text but payload 
+#define WS_CLOSE_POLVIO 1008 // policy violation 
+#define WS_CLOSE_LG_MSG 1009 // large msg
+#define WS_CLOSE_EXTNG 1010 // extension negotiation 
+#define WS_CLOSE_UNEXPCOND 1011 // unexpected condition encountered
+
+
 // server types
 typedef struct ws_conn_t ws_conn_t;
 
