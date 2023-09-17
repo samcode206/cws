@@ -373,6 +373,7 @@ int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
   } while ((i++ < nops) & (drained = buf_len(&conn->write_buf) > 0));
 
   if (drained) {
+    conn->writeable = 1;
     return 1;
   };
 
