@@ -14,7 +14,7 @@ void on_ping(ws_conn_t *c, void *msg, size_t n) {
     printf("pong sent\n");
   } else {
     printf("partial send or an error occurred waiting for <on_ws_drain | "
-           "on_ws_destroyed>\n");
+           "on_ws_disconnect>\n");
   }
 }
 
@@ -26,7 +26,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
     printf("msg sent\n");
   } else {
     printf("partial send or an error occurred waiting for <on_ws_drain | "
-           "on_ws_destroyed>\n");
+           "on_ws_disconnect>\n");
   }
 }
 
