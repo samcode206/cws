@@ -320,12 +320,12 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
 
       if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
         size_t mask_offset = frame_get_mask_offset(len);
-        size_t frame_len = len + mask_offset + 4;
-        if (buf_len(&conn->read_buf) >= frame_len) {
+        size_t hlen = len + mask_offset + 4;
+        if (buf_len(&conn->read_buf) >= hlen) {
           s->on_ws_msg(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len,
                        opcode == OP_BIN);
 
-          buf_consume(&conn->read_buf, frame_len);
+          buf_consume(&conn->read_buf, hlen);
         }
         // msg
       } else if ((opcode == OP_PING) | (opcode == OP_PONG)) {
@@ -336,14 +336,14 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         }
         uint8_t *buf = buf_peek(&conn->read_buf);
         size_t mask_offset = frame_get_mask_offset(len);
-        size_t frame_len = len + mask_offset + 4;
+        size_t hlen = len + mask_offset + 4;
 
-        if (buf_len(&conn->read_buf) >= frame_len) {
+        if (buf_len(&conn->read_buf) >= hlen) {
           // pings are unmasked automatically
           frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
                                buf + mask_offset, len);
           s->on_ws_ping(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len);
-          buf_consume(&conn->read_buf, frame_len);
+          buf_consume(&conn->read_buf, hlen);
         }
 
       } else if (opcode == OP_CLOSE) {
@@ -392,62 +392,118 @@ int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
   return 0;
 }
 
-inline int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
-  return conn_write_frame(s, c, msg, n, OP_PONG);
-}
-
-inline int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
-  return conn_write_frame(s, c, msg, n, OP_PING);
-}
-
 inline int ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
                          int reason) {
   return -1; // TODO
 }
 
-
 inline int ws_conn_destroy(ws_server_t *s, ws_conn_t *c) {
   return -1; // TODO
 }
 
+/**
+* returns:
+     1 data was completely written
+
+     0 part of the data was written caller should wait for on_drain event to
+start sending more data or an error occurred in which the corresponding callback
+will be called
+*/
+inline int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_frame(s, c, msg, n, OP_PONG);
+  if (stat == -1) {
+    conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
+  }
+  return stat == 1;
+}
+/**
+* returns:
+     1 data was completely written
+
+     0 part of the data was written caller should wait for on_drain event to
+start sending more data or an error occurred in which the corresponding callback
+will be called
+*/
+inline int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_frame(s, c, msg, n, OP_PING);
+  if (stat == -1) {
+    conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
+  }
+  return stat == 1;
+}
+
+/**
+* returns:
+     1 data was completely written
+
+     0 part of the data was written caller should wait for on_drain event to
+start sending more data or an error occurred in which the corresponding callback
+will be called
+*/
 inline int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
-  return conn_write_frame(s, c, msg, n, OP_BIN);
+  int stat = conn_write_frame(s, c, msg, n, OP_BIN);
+  if (stat == -1) {
+    conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
+  }
+  return stat == 1;
 }
 
+/**
+* returns:
+     1 data was completely written
+
+     0 part of the data was written caller should wait for on_drain event to
+start sending more data or an error occurred in which the corresponding callback
+will be called
+*/
 inline int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
-  return conn_write_frame(s, c, msg, n, OP_TXT);
+  int stat = conn_write_frame(s, c, msg, n, OP_TXT);
+  if (stat == -1) {
+    conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
+  }
+  return stat == 1;
 }
 
+/**
+* returns:
+     1 data was completely written
+
+     0 part of the data was written, caller should wait for on_drain event to
+start sending more data
+
+    -1 an error occurred connection should be closed, check errno
+*/
 int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
                      uint8_t op) {
   ssize_t n = 0;
-  size_t frame_len = frame_get_mask_offset(len);
-  if ((conn->writeable == 1) &
-      (buf_space(&conn->write_buf) > len + frame_len)) {
-    uint8_t frame_buf[frame_len];
-    memset(frame_buf, 0, frame_len);
+  size_t hlen = frame_get_mask_offset(len);
+  size_t flen = len + hlen;
 
-    frame_buf[0] = FIN | op; // Set FIN bit and opcode
-    if (frame_len == 2) {
-      frame_buf[1] = (uint8_t)len;
-    } else if (frame_len == 4) {
-      frame_buf[1] = PAYLOAD_LEN_16;
-      frame_buf[2] = (len >> 8) & 0xFF;
-      frame_buf[3] = len & 0xFF;
+  if ((conn->writeable == 1) & (buf_space(&conn->write_buf) > flen)) {
+    uint8_t hbuf[hlen];
+    memset(hbuf, 0, hlen);
+
+    hbuf[0] = FIN | op; // Set FIN bit and opcode
+    if (hlen == 2) {
+      hbuf[1] = (uint8_t)len;
+    } else if (hlen == 4) {
+      hbuf[1] = PAYLOAD_LEN_16;
+      hbuf[2] = (len >> 8) & 0xFF;
+      hbuf[3] = len & 0xFF;
     } else {
-      frame_buf[1] = PAYLOAD_LEN_64;
-      frame_buf[2] = (len >> 56) & 0xFF;
-      frame_buf[3] = (len >> 48) & 0xFF;
-      frame_buf[4] = (len >> 40) & 0xFF;
-      frame_buf[5] = (len >> 32) & 0xFF;
-      frame_buf[6] = (len >> 24) & 0xFF;
-      frame_buf[7] = (len >> 16) & 0xFF;
-      frame_buf[8] = (len >> 8) & 0xFF;
-      frame_buf[9] = len & 0xFF;
+      hbuf[1] = PAYLOAD_LEN_64;
+      hbuf[2] = (len >> 56) & 0xFF;
+      hbuf[3] = (len >> 48) & 0xFF;
+      hbuf[4] = (len >> 40) & 0xFF;
+      hbuf[5] = (len >> 32) & 0xFF;
+      hbuf[6] = (len >> 24) & 0xFF;
+      hbuf[7] = (len >> 16) & 0xFF;
+      hbuf[8] = (len >> 8) & 0xFF;
+      hbuf[9] = len & 0xFF;
     }
 
-    conn->iov[0].iov_len = frame_len;
-    conn->iov[0].iov_base = frame_buf;
+    conn->iov[0].iov_len = hlen;
+    conn->iov[0].iov_base = hbuf;
     conn->iov[1].iov_len = len;
     conn->iov[1].iov_base = data;
 
@@ -461,13 +517,13 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
       n = 0;
     }
 
-    if (n < len + frame_len) {
+    if (n < flen) {
       conn->writeable = 0;
-      if (n > frame_len) {
-        assert(buf_put(&conn->write_buf, (uint8_t *)data + (n - frame_len),
-                       len + frame_len - n) == 0);
+      if (n > hlen) {
+        assert(buf_put(&conn->write_buf, (uint8_t *)data + (n - hlen),
+                       flen - n) == 0);
       } else {
-        assert(buf_put(&conn->write_buf, frame_buf + n, frame_len - n) == 0);
+        assert(buf_put(&conn->write_buf, hbuf + n, hlen - n) == 0);
         assert(buf_put(&conn->write_buf, data, len) == 0);
       }
 
@@ -481,7 +537,7 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
     }
   }
 
-  return n;
+  return n == flen;
 }
 
 int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
