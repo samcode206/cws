@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-
+#include "buf.h"
 #include "ws.h"
 #include <assert.h>
 #include <errno.h>
@@ -14,17 +14,13 @@
 #include <sys/signal.h>
 #include <sys/socket.h>
 
-#define BUF_SIZE (1 << 13) /* 8kb */
-
 struct ws_conn_t {
   int fd;
   bool writeable;
+  bool upgraded;
   void *ctx; // user data ptr
-  size_t buf_in_len;
-  size_t buf_out_head;
-  size_t buf_out_tail;
-  uint8_t buf_in[BUF_SIZE];
-  uint8_t buf_out[BUF_SIZE];
+  buf_t read_buf;
+  buf_t write_buf;
 };
 
 typedef struct io_ctl {
@@ -51,7 +47,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops);
 void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
                   struct epoll_event *ev);
 
-int conn_drain_out_buf(struct ws_conn_t *conn);
+int conn_drain_write_buf(struct ws_conn_t *conn, int nops);
 
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
@@ -192,6 +188,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
           conn->fd = client_fd;
           conn->writeable = 1;
           ev.data.ptr = conn;
+
+          assert(buf_init(&conn->read_buf) == 0);
+          assert(buf_init(&conn->write_buf) == 0);
+
           assert(epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == 0);
         }
 
@@ -201,7 +201,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           s->io_ctl.events[i].data.ptr = NULL;
         } else {
           if (s->io_ctl.events[i].events & EPOLLOUT) {
-            int ret = conn_drain_out_buf(s->io_ctl.events[i].data.ptr);
+            int ret = conn_drain_write_buf(s->io_ctl.events[i].data.ptr, 8);
             if (ret == -1) {
               conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
               s->io_ctl.events[i].data.ptr = NULL;
@@ -239,9 +239,8 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
 }
 
 int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
+  ssize_t n = buf_recv(&conn->read_buf, conn->fd, 0);
 
-  ssize_t n = recv(conn->fd, conn->buf_in + conn->buf_in_len,
-                   BUF_SIZE - 1 - conn->buf_in_len, 0);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
       return 0;
@@ -251,15 +250,14 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
     return -1;
   }
 
-  conn->buf_in_len += n;
-  conn->buf_in[conn->buf_in_len] = '\0';
+  conn->read_buf.buf[buf_len(&conn->read_buf)] = '\0';
 
-  if (!strncmp((char *)conn->buf_in, GET_RQ, sizeof GET_RQ - 1)) {
+  if (!strncmp((char *)buf_peek(&conn->read_buf), GET_RQ, sizeof GET_RQ - 1)) {
     // printf("Req --------------------------------\n");
     // printf("%s", conn->buf_in);
     char res_hdrs[1024] = {0};
-    ssize_t ret =
-        handle_upgrade((char *)conn->buf_in, res_hdrs, sizeof res_hdrs);
+    ssize_t ret = handle_upgrade((char *)buf_peek(&conn->read_buf), res_hdrs,
+                                 sizeof res_hdrs);
 
     int n = send(conn->fd, res_hdrs, ret - 1, 0);
     if (n == ret - 1) {
@@ -273,34 +271,34 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
     }
     // printf("Res --------------------------------\n");
     // printf("%s\n", res_hdrs);
-
-    conn->buf_in_len = 0;
+    buf_consume(&conn->read_buf, buf_len(&conn->read_buf));
   } else {
     // printf("buffer size: %zu\n", conn->buf_in_len);
     // need at least 2 bytes to read anything
-    if (conn->buf_in_len >= 2) {
-      uint8_t fin = frame_get_fin(conn->buf_in);
-      int masked = frame_is_masked(conn->buf_in);
+
+    if (buf_len(&conn->read_buf) >= 2) {
+      uint8_t fin = frame_get_fin(buf_peek(&conn->read_buf));
+      int masked = frame_is_masked(buf_peek(&conn->read_buf));
       // if mask bit isn't set close the connection
       if (!masked) {
         printf("received unmasked client data\n");
         return -1;
       }
 
-      uint8_t opcode = frame_get_opcode(conn->buf_in);
-      size_t len = frame_payload_get_len(conn->buf_in);
+      uint8_t opcode = frame_get_opcode(buf_peek(&conn->read_buf));
+      size_t len = frame_payload_get_len(buf_peek(&conn->read_buf));
       // printf("fin: %d\n", fin);
       // printf("opcode: %d\n", opcode);
       // printf("len: %zu\n", len);
       if (len == PAYLOAD_LEN_16) {
-        if (conn->buf_in_len > 3) {
-          len = frame_payload_get_len126(conn->buf_in);
+        if (buf_len(&conn->read_buf) > 3) {
+          len = frame_payload_get_len126(buf_peek(&conn->read_buf));
         } else {
           return 0;
         }
       } else if (len == PAYLOAD_LEN_64) {
-        if (conn->buf_in_len > 9) {
-          len = frame_payload_get_len127(conn->buf_in);
+        if (buf_len(&conn->read_buf) > 9) {
+          len = frame_payload_get_len127(buf_peek(&conn->read_buf));
         } else {
           return 0;
         }
@@ -309,16 +307,12 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
       if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
         size_t mask_offset = frame_get_mask_offset(len);
         size_t frame_len = len + mask_offset + 4;
-        if (conn->buf_in_len >= frame_len) {
-          s->on_ws_msg(conn, conn->buf_in + mask_offset + 4,
-                       conn->buf_in + mask_offset, len, opcode == OP_BIN);
+        if (buf_len(&conn->read_buf) >= frame_len) {
+          s->on_ws_msg(conn, buf_peek(&conn->read_buf) + mask_offset + 4,
+                       buf_peek(&conn->read_buf) + mask_offset, len,
+                       opcode == OP_BIN);
 
-          conn->buf_in_len -= frame_len;
-          if (conn->buf_in_len) {
-            memmove(conn, conn + frame_len,
-                    conn->buf_in_len); // move the remainder to the front
-          }
-          // printf("processed msg, remaining: %zu\n", conn->buf_in_len);
+          buf_consume(&conn->read_buf, frame_len);
         }
         // msg
       } else if ((opcode == OP_PING) | (opcode == OP_PONG)) {
@@ -329,14 +323,11 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         }
         size_t mask_offset = frame_get_mask_offset(len);
         size_t frame_len = len + mask_offset + 4;
-        if (conn->buf_in_len >= frame_len) {
-          s->on_ws_ping(conn, conn->buf_in + mask_offset + 4,
-                        conn->buf_in + mask_offset, len, opcode == OP_BIN);
-          conn->buf_in_len -= frame_len;
-          if (conn->buf_in_len) {
-            memmove(conn, conn + frame_len,
-                    conn->buf_in_len); // move the remainder to the front
-          }
+        if (buf_len(&conn->read_buf) >= frame_len) {
+          s->on_ws_ping(conn, buf_peek(&conn->read_buf) + mask_offset + 4,
+                        buf_peek(&conn->read_buf) + mask_offset, len,
+                        opcode == OP_BIN);
+          buf_consume(&conn->read_buf, frame_len);
         }
 
       } else if (opcode == OP_CLOSE) {
@@ -359,7 +350,27 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
   free(conn);
 }
 
-int conn_drain_out_buf(struct ws_conn_t *conn) {
-  fprintf(stderr, "[warning] conn_drain_out_buf unimplemented\n");
+int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
+  int i = 0;
+  ssize_t n;
+  bool drained;
+  do {
+    n = buf_send(&conn->write_buf, conn->fd, 0);
+    if (n == -1){
+      if (errno == EAGAIN || errno == EWOULDBLOCK){
+        return 0;
+      } else {
+        return -1;
+      }
+    } else if (n == 0){
+      return -1;
+    }
+
+  } while ((i++ < nops) & (drained = buf_len(&conn->write_buf) > 0));
+
+  if (drained){
+    return 1;
+  };
+
   return 0;
 }
