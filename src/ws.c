@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
-#include "buf.h"
 #include "ws.h"
+#include "buf.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -356,21 +356,37 @@ int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
   bool drained;
   do {
     n = buf_send(&conn->write_buf, conn->fd, 0);
-    if (n == -1){
-      if (errno == EAGAIN || errno == EWOULDBLOCK){
+    if (n == -1) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
         return 0;
       } else {
         return -1;
       }
-    } else if (n == 0){
+    } else if (n == 0) {
       return -1;
     }
 
   } while ((i++ < nops) & (drained = buf_len(&conn->write_buf) > 0));
 
-  if (drained){
+  if (drained) {
     return 1;
   };
 
   return 0;
+}
+
+int ws_conn_pong(ws_conn_t *c, void *msg, size_t n, bool bin) {
+  return -1;
+}
+int ws_conn_ping(ws_conn_t *c, void *msg, size_t n, bool bin) {
+  return -1;
+}
+int ws_conn_close(ws_conn_t *c, void *msg, size_t n, int reason) {
+  return -1;
+}
+int ws_conn_destroy(ws_conn_t *c) {
+  return -1;
+}
+int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool bin) {
+  return -1;
 }

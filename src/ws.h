@@ -33,7 +33,7 @@
 #define CRLF2 "\r\n\r\n"
 
 static inline int get_header(const char *headers, const char *key, char *val,
-                      size_t n) {
+                             size_t n) {
   const char *header_start = strstr(headers, key);
   if (header_start) {
     header_start =
@@ -70,8 +70,9 @@ static inline int get_header(const char *headers, const char *key, char *val,
   return ERR_HDR_NOT_FOUND; // header isn't found
 }
 
-static inline ssize_t ws_build_upgrade_headers(const char *accept_key, size_t keylen,
-                                        char *resp_headers) {
+static inline ssize_t ws_build_upgrade_headers(const char *accept_key,
+                                               size_t keylen,
+                                               char *resp_headers) {
   memcpy(resp_headers, SWITCHING_PROTOCOLS, SWITCHING_PROTOCOLS_HDRS_LEN);
   keylen -= 1;
   memcpy(resp_headers + SWITCHING_PROTOCOLS_HDRS_LEN, accept_key, keylen);
@@ -142,8 +143,9 @@ static inline size_t frame_get_mask_offset(size_t n) {
   return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
-static inline void frame_payload_unmask(const unsigned char *src, unsigned char *dst,
-                                 uint8_t *mask, size_t len) {
+static inline void frame_payload_unmask(const unsigned char *src,
+                                        unsigned char *dst, uint8_t *mask,
+                                        size_t len) {
   size_t mask_idx = 0;
   for (size_t i = 0; i < len; ++i) {
     dst[i] = src[i] ^ mask[mask_idx];
@@ -160,18 +162,29 @@ typedef struct server ws_server_t;
 typedef void (*ws_open_cb_t)(
     ws_conn_t *ws_conn); /* called after a connection is upgraded */
 
-typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin); /* called when a websocket msg is available */
+typedef void (*ws_msg_cb_t)(
+    ws_conn_t *c, void *msg, uint8_t *mask, size_t n,
+    bool bin); /* called when a websocket msg is available */
 
-typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin); /* called when a client sends a PING */
+typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, uint8_t *mask, size_t n,
+                             bool bin); /* called when a client sends a PING */
 
 typedef void (*ws_close_cb_t)(
     ws_conn_t *ws_conn, int reason); /* called when a close frame is received */
 
-typedef void (*ws_destroy_cb_t)(ws_conn_t *ws_conn);  /* called after the connection is closed, use for user data clean up */
+typedef void (*ws_destroy_cb_t)(
+    ws_conn_t *ws_conn); /* called after the connection is closed, use for user
+                            data clean up */
 
 typedef void (*ws_drain_cb_t)(
     ws_conn_t *ws_conn); /* called after send buffer is drained (after some back
                             pressure buildup) */
+
+int ws_conn_pong(ws_conn_t *c, void *msg, size_t n, bool bin);
+int ws_conn_ping(ws_conn_t *c, void *msg, size_t n, bool bin);
+int ws_conn_close(ws_conn_t *c, void *msg, size_t n, int reason);
+int ws_conn_destroy(ws_conn_t *c);
+int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool bin);
 
 struct ws_server_params {
   in_addr_t addr;
