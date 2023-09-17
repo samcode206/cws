@@ -32,7 +32,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
 
 void on_close(ws_conn_t *ws_conn, int reason) { printf("on_close\n"); }
 
-void on_destroy(ws_conn_t *ws_conn) { printf("on_destroy\n"); }
+void on_disconnect(ws_conn_t *ws_conn, int err) { printf("on_disconnect\n"); }
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
 
@@ -46,7 +46,7 @@ int main(void) {
       .on_ws_ping = on_ping,
       .on_ws_drain = on_drain,
       .on_ws_close = on_close,
-      .on_ws_destroyed = on_destroy,
+      .on_ws_disconnect = on_disconnect,
   };
 
   int ret = 0;

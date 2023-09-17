@@ -197,8 +197,8 @@ typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n); /* called when 
 typedef void (*ws_close_cb_t)(
     ws_conn_t *ws_conn, int reason); /* called when a close frame is received */
 
-typedef void (*ws_destroy_cb_t)(
-    ws_conn_t *ws_conn); /* called after the connection is closed, use for user
+typedef void (*ws_disconnect_cb_t)(
+    ws_conn_t *ws_conn, int err); /* called after the connection is closed, use for user
                             data clean up */
 
 typedef void (*ws_drain_cb_t)(
@@ -230,7 +230,7 @@ struct ws_server_params {
   ws_ping_cb_t on_ws_ping;
   ws_drain_cb_t on_ws_drain;
   ws_close_cb_t on_ws_close;
-  ws_destroy_cb_t on_ws_destroyed;
+  ws_disconnect_cb_t on_ws_disconnect;
 };
 
 #define WS_ESYS -1        // system error call should check errno
