@@ -1,9 +1,4 @@
 #include "ws.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/uio.h>
-#include <unistd.h>
 
 void on_open(ws_conn_t *c) { ws_conn_ping(ws_conn_server(c), c, "welcome", 8); }
 
@@ -41,9 +36,12 @@ void on_server_err(ws_server_t *s, int err) {
 }
 
 int main(void) {
+  const size_t max_events = 1024;
+  const uint16_t port = 9919;
+  const int backlog = 1024;
   struct ws_server_params sp = {.addr = INADDR_ANY,
-                                .port = 9919,
-                                .max_events = 1024,
+                                .port = port,
+                                .max_events = max_events,
                                 .on_ws_open = on_open,
                                 .on_ws_msg = on_msg,
                                 .on_ws_ping = on_ping,
@@ -62,7 +60,7 @@ int main(void) {
 
   printf("websocket server starting on port : %d\n", sp.port);
 
-  ret = ws_server_start(s, 1024);
+  ret = ws_server_start(s, backlog);
 
   exit(ret);
 }
