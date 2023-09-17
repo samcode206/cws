@@ -36,18 +36,21 @@ void on_disconnect(ws_conn_t *ws_conn, int err) { printf("on_disconnect\n"); }
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
 
+void on_server_err(ws_server_t *s, int err) {
+  fprintf(stderr, "on_server_err: %s\n", strerror(err));
+}
+
 int main(void) {
-  struct ws_server_params sp = {
-      .addr = INADDR_ANY,
-      .port = 9919,
-      .max_events = 1024,
-      .on_ws_open = on_open,
-      .on_ws_msg = on_msg,
-      .on_ws_ping = on_ping,
-      .on_ws_drain = on_drain,
-      .on_ws_close = on_close,
-      .on_ws_disconnect = on_disconnect,
-  };
+  struct ws_server_params sp = {.addr = INADDR_ANY,
+                                .port = 9919,
+                                .max_events = 1024,
+                                .on_ws_open = on_open,
+                                .on_ws_msg = on_msg,
+                                .on_ws_ping = on_ping,
+                                .on_ws_drain = on_drain,
+                                .on_ws_close = on_close,
+                                .on_ws_disconnect = on_disconnect,
+                                .on_ws_err = on_server_err};
 
   int ret = 0;
   ws_server_t *s = ws_server_create(&sp, &ret);

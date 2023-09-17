@@ -167,7 +167,6 @@ static inline size_t frame_get_mask_offset(size_t n) {
   return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
-
 static inline void msg_unmask(unsigned char *src, unsigned char *dst,
                               size_t len) {
   size_t mask_idx = 0;
@@ -192,18 +191,22 @@ typedef void (*ws_msg_cb_t)(
     ws_conn_t *c, void *msg, size_t n,
     bool bin); /* called when a websocket msg is available */
 
-typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n); /* called when a client sends a PING */
+typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg,
+                             size_t n); /* called when a client sends a PING */
 
 typedef void (*ws_close_cb_t)(
     ws_conn_t *ws_conn, int reason); /* called when a close frame is received */
 
-typedef void (*ws_disconnect_cb_t)(
-    ws_conn_t *ws_conn, int err); /* called after the connection is closed, use for user
-                            data clean up */
+typedef void (*ws_disconnect_cb_t)(ws_conn_t *ws_conn,
+                                   int err); /* called after the connection is
+                                       closed, use for user data clean up */
 
 typedef void (*ws_drain_cb_t)(
     ws_conn_t *ws_conn); /* called after send buffer is drained (after some back
                             pressure buildup) */
+
+typedef void (*ws_err_cb_t)(ws_server_t *s,
+                            int err); /* called if an internal error occurs */
 
 int ws_conn_fd(ws_conn_t *c);
 
@@ -215,11 +218,9 @@ int ws_conn_destroy(ws_server_t *s, ws_conn_t *c);
 int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
 int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
 
-
-ws_server_t* ws_conn_server(ws_conn_t *c);
+ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
 void ws_conn_ctx_attach(ws_conn_t *c, void *ctx);
-
 
 struct ws_server_params {
   in_addr_t addr;
@@ -231,6 +232,7 @@ struct ws_server_params {
   ws_drain_cb_t on_ws_drain;
   ws_close_cb_t on_ws_close;
   ws_disconnect_cb_t on_ws_disconnect;
+  ws_err_cb_t on_ws_err;
 };
 
 #define WS_ESYS -1        // system error call should check errno

@@ -68,6 +68,7 @@ typedef struct server {
   ws_drain_cb_t on_ws_drain;
   ws_close_cb_t on_ws_close;
   ws_disconnect_cb_t on_ws_disconnect;
+  ws_err_cb_t on_ws_err;
   io_ctl_t io_ctl; // io controller
 } ws_server_t;
 
@@ -99,7 +100,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
       !params->on_ws_drain || !params->on_ws_disconnect ||
-      !params->on_ws_ping) {
+      !params->on_ws_ping || !params->on_ws_err) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -175,6 +176,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_drain = params->on_ws_drain;
   s->on_ws_close = params->on_ws_close;
   s->on_ws_disconnect = params->on_ws_disconnect;
+  s->on_ws_err = params->on_ws_err;
   // server resources all ready
   return s;
 }
@@ -197,14 +199,17 @@ int ws_server_start(ws_server_t *s, int backlog) {
   ev.events = EPOLLIN;
 
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+    int err = errno;
+    s->on_ws_err(s, err);
     return -1;
   };
 
   for (;;) {
     int n_evs = epoll_wait(epfd, s->io_ctl.events, max_events, -1);
     if (n_evs < 0) {
-      perror("epoll_wait");
-      return EXIT_FAILURE;
+      int err = errno;
+      s->on_ws_err(s, err);
+      return -1;
     }
 
     // loop over events
@@ -216,7 +221,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
           if ((client_fd < 0)) {
             if (!(errno == EAGAIN)) {
-              perror("accept");
+              int err = errno;
+              s->on_ws_err(s, err);
             }
             break;
           }
@@ -232,7 +238,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
           assert(buf_init(&conn->read_buf) == 0);
           assert(buf_init(&conn->write_buf) == 0);
 
-          assert(epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == 0);
+          if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
+            int err = errno;
+            s->on_ws_err(s, err);
+          };
         }
 
       } else {
@@ -388,11 +397,18 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
   int err = errno;
   s->on_ws_disconnect(conn, err); // call the user's callback to allow clean up
                                   // on data associated with this connection
+  int ret;
+  ret = epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, ev);
+  if (ret == -1) {
+    int err = errno;
+    s->on_ws_err(s, err);
+  }
+  ret = close(conn->fd);
+  if (ret == -1) {
+    int err = errno;
+    s->on_ws_err(s, err);
+  }
 
-  // todo(sah): add an err callback for internal stuff like below
-  epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, ev);
-  close(conn->fd);
-  
   free(conn);
 }
 
