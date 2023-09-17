@@ -44,7 +44,7 @@ typedef struct server {
 } ws_server_t;
 
 // generic send function
-int conn_write(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
+int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
 int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops);
 
@@ -263,7 +263,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
     ssize_t ret = handle_upgrade((char *)buf_peek(&conn->read_buf), res_hdrs,
                                  sizeof res_hdrs);
 
-    int n = conn_write(s, conn, res_hdrs, ret - 1);
+    int n = conn_send(s, conn, res_hdrs, ret - 1);
     if (n == ret - 1) {
       s->on_ws_open(conn); // websocket connection is upgraded
     } else {
@@ -398,7 +398,7 @@ int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
   return -1;
 }
 
-int conn_write(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
+int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
   ssize_t n = send(conn->fd, data, len, 0);
   if ((n == -1) &( (errno == EAGAIN) | (errno == EWOULDBLOCK))) {
     s->io_ctl.ev.events = EPOLLOUT | EPOLLRDHUP;
