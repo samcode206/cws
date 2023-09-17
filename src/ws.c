@@ -411,11 +411,12 @@ int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
 int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
                      uint8_t op) {
   ssize_t n = 0;
-  if (conn->writeable) {
-    size_t frame_len = frame_get_mask_offset(len);
+  size_t frame_len = frame_get_mask_offset(len);
+  if ((conn->writeable == 1) &
+      (buf_space(&conn->write_buf) > len + frame_len)) {
     uint8_t frame_buf[frame_len];
     memset(frame_buf, 0, frame_len);
-    
+
     frame_buf[0] = FIN | op; // Set FIN bit and opcode
     if (frame_len == 2) {
       frame_buf[1] = (uint8_t)len;
@@ -476,7 +477,7 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
 int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
   ssize_t n = 0;
 
-  if (conn->writeable) {
+  if ((conn->writeable == 1) & (buf_space(&conn->write_buf) > len)) {
     n = send(conn->fd, data, len, 0);
     if (n == 0) {
       return -1;

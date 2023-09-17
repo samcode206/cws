@@ -71,7 +71,6 @@ static inline int buf_init(buf_t *r) {
     return -1;
   };
 
-
   if (base != r->buf) {
     return -1;
   }
@@ -89,6 +88,10 @@ static inline int buf_init(buf_t *r) {
 }
 
 static inline size_t buf_len(buf_t *r) { return r->head - r->tail; }
+
+static inline size_t buf_space(buf_t *r) {
+  return RBUF_SIZE - (r->head - r->tail);
+}
 
 static inline int buf_put(buf_t *r, const void *data, size_t n) {
   if (RBUF_SIZE - (r->head - r->tail) < n) {
