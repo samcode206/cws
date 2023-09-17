@@ -99,8 +99,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 
 // Frame Utils
 
-#define FIN_MORE 0
-#define FIN_DONE 1
+#define FIN 0x80
 
 #define OP_CONT 0x0
 #define OP_TXT 0x1

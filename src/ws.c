@@ -415,10 +415,25 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
     size_t frame_len = frame_get_mask_offset(len);
     uint8_t frame_buf[frame_len];
     memset(frame_buf, 0, frame_len);
-
-    frame_buf[0] = 0x80 | op; // Set FIN bit and PONG opcode.
-    frame_buf[1] = (uint8_t)
-        len; // Payload length as a single byte. TODO handle 2 & 8 bytes
+    
+    frame_buf[0] = FIN | op; // Set FIN bit and opcode
+    if (frame_len == 2) {
+      frame_buf[1] = (uint8_t)len;
+    } else if (frame_len == 4) {
+      frame_buf[1] = PAYLOAD_LEN_16;
+      frame_buf[2] = (len >> 8) & 0xFF;
+      frame_buf[3] = len & 0xFF;
+    } else {
+      frame_buf[1] = PAYLOAD_LEN_64;
+      frame_buf[2] = (len >> 56) & 0xFF;
+      frame_buf[3] = (len >> 48) & 0xFF;
+      frame_buf[4] = (len >> 40) & 0xFF;
+      frame_buf[5] = (len >> 32) & 0xFF;
+      frame_buf[6] = (len >> 24) & 0xFF;
+      frame_buf[7] = (len >> 16) & 0xFF;
+      frame_buf[8] = (len >> 8) & 0xFF;
+      frame_buf[9] = len & 0xFF;
+    }
 
     conn->iov[0].iov_len = frame_len;
     conn->iov[0].iov_base = frame_buf;
@@ -438,7 +453,7 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
     if (n < len + frame_len) {
       conn->writeable = 0;
       if (n > frame_len) {
-        assert(buf_put(&conn->write_buf, (uint8_t*)data + (n - frame_len),
+        assert(buf_put(&conn->write_buf, (uint8_t *)data + (n - frame_len),
                        len + frame_len - n) == 0);
       } else {
         assert(buf_put(&conn->write_buf, frame_buf + n, frame_len - n) == 0);
@@ -476,7 +491,7 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
       s->io_ctl.ev.events = EPOLLOUT | EPOLLRDHUP;
       s->io_ctl.ev.data.ptr = conn;
       conn->writeable = 0;
-      assert(buf_put(&conn->write_buf, (uint8_t*)data + n, len - n) == 0);
+      assert(buf_put(&conn->write_buf, (uint8_t *)data + n, len - n) == 0);
       if (epoll_ctl(s->io_ctl.epoll_fd, EPOLL_CTL_MOD, conn->fd,
                     &s->io_ctl.ev) == -1) {
         return -1;
@@ -486,7 +501,6 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
     }
   }
 
- 
   return n;
 }
 
