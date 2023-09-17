@@ -3,24 +3,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/uio.h>
+#include <unistd.h>
 
+void on_open(ws_conn_t *c) { ws_conn_ping(ws_conn_server(c), c, "welcome", 8); }
 
-void on_open(ws_conn_t *c) {
-  printf("websocket connection open %p\n", (void *)c);
-}
-
-void on_ping(ws_conn_t *c, void *msg, size_t n, bool bin) {
-  ws_server_t *s = ws_conn_server(c);
-  ws_conn_pong(s, c, msg, n, bin);
+void on_ping(ws_conn_t *c, void *msg, size_t n) {
   printf("on_ping: %s\n", (char *)msg);
+  ws_conn_pong(ws_conn_server(c), c, msg, n);
 }
-
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   msg_unmask(msg, msg, n);
   printf("on_msg: %s\n", (char *)msg);
+  ws_conn_send_txt(ws_conn_server(c), c, msg, n);
 }
 
 void on_close(ws_conn_t *ws_conn, int reason) { printf("on_close\n"); }

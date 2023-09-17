@@ -342,8 +342,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
           // pings are unmasked automatically
           frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
                                buf + mask_offset, len);
-          s->on_ws_ping(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len,
-                        opcode == OP_BIN);
+          s->on_ws_ping(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len);
           buf_consume(&conn->read_buf, frame_len);
         }
 
@@ -393,23 +392,30 @@ int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
   return 0;
 }
 
-int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
+inline int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   return conn_write_frame(s, c, msg, n, OP_PONG);
 }
 
-int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
-  return -1;
+inline int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
+  return conn_write_frame(s, c, msg, n, OP_PING);
 }
 
-int ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
-                  int reason) {
-  return -1;
+inline int ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
+                         int reason) {
+  return -1; // TODO
 }
 
-int ws_conn_destroy(ws_server_t *s, ws_conn_t *c) { return -1; }
 
-int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
-  return -1;
+inline int ws_conn_destroy(ws_server_t *s, ws_conn_t *c) {
+  return -1; // TODO
+}
+
+inline int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
+  return conn_write_frame(s, c, msg, n, OP_BIN);
+}
+
+inline int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
+  return conn_write_frame(s, c, msg, n, OP_TXT);
 }
 
 int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
@@ -512,6 +518,10 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
 int ws_conn_fd(ws_conn_t *c) { return c->fd; }
 
 inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
+
+inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
+
+inline void ws_conn_ctx_attach(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
 
 static inline void frame_payload_unmask(unsigned char *src, unsigned char *dst,
                                         uint8_t *mask, size_t len) {

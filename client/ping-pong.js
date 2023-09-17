@@ -21,10 +21,13 @@ ws.onmessage = (msg) => {
   console.info("msg");
 };
 
-ws.on("pong", (data) => {
-  console.log('pong', data.toString());
-})
+ws.on("ping", (data) => {
+  console.log("ping", data.toString());
+});
 
+ws.on("pong", (data) => {
+  console.log("pong", data.toString());
+});
 ws.on("unexpected-response", (req, res) => {
   console.log(res);
 });

@@ -167,8 +167,7 @@ typedef void (*ws_msg_cb_t)(
     ws_conn_t *c, void *msg, size_t n,
     bool bin); /* called when a websocket msg is available */
 
-typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n,
-                             bool bin); /* called when a client sends a PING */
+typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n); /* called when a client sends a PING */
 
 typedef void (*ws_close_cb_t)(
     ws_conn_t *ws_conn, int reason); /* called when a close frame is received */
@@ -183,15 +182,18 @@ typedef void (*ws_drain_cb_t)(
 
 int ws_conn_fd(ws_conn_t *c);
 
-int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin);
-int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin);
+int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
+int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
 int ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
                   int reason);
 int ws_conn_destroy(ws_server_t *s, ws_conn_t *c);
-int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin);
+int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
+int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
 
 
 ws_server_t* ws_conn_server(ws_conn_t *c);
+void *ws_conn_ctx(ws_conn_t *c);
+void ws_conn_ctx_attach(ws_conn_t *c, void *ctx);
 
 
 struct ws_server_params {

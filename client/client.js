@@ -2,7 +2,6 @@ const WebSocket = require("ws");
 
 const ws = new WebSocket("ws://127.0.0.1:9919/", {
   perMessageDeflate: false,
-  
 });
 
 ws.onopen = (ev) => {
@@ -17,13 +16,18 @@ ws.onerror = (err) => {
   console.log("err", err);
 };
 
-ws.onmessage = (msg) => {
-  console.info("msg");
-};
+
+ws.on("message", (msg, bin) => {
+  console.log(bin ? " binary": "text", "msg",  msg.toString());
+})
+
+ws.on("ping", (data) => {
+  console.log("ping", data.toString());
+});
 
 ws.on("pong", (data) => {
-  console.log('pong', data.toString());
-})
+  console.log("pong", data.toString());
+});
 
 ws.on("unexpected-response", (req, res) => {
   console.log(res);
@@ -31,7 +35,7 @@ ws.on("unexpected-response", (req, res) => {
 
 process.stdin.on("data", (data) => {
   if (ws.OPEN) {
-    ws.send(data.toString('ascii'), (err) => {
+    ws.send(data.toString("ascii"), (err) => {
       if (err) {
         console.error(err);
       }
