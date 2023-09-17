@@ -6,24 +6,20 @@
 #include <unistd.h>
 #include <sys/uio.h>
 
-ws_server_t *s;
 
 void on_open(ws_conn_t *c) {
   printf("websocket connection open %p\n", (void *)c);
 }
 
 void on_ping(ws_conn_t *c, void *msg, size_t n, bool bin) {
-
+  ws_server_t *s = ws_conn_server(c);
   ws_conn_pong(s, c, msg, n, bin);
-
-
-
   printf("on_ping: %s\n", (char *)msg);
-
 }
 
-void on_msg(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin) {
-  frame_payload_unmask(msg, msg, mask, n);
+
+void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
+  msg_unmask(msg, msg, n);
   printf("on_msg: %s\n", (char *)msg);
 }
 
@@ -47,7 +43,7 @@ int main(void) {
   };
 
   int ret = 0;
-  s = ws_server_create(&sp, &ret);
+  ws_server_t *s = ws_server_create(&sp, &ret);
 
   if (ret < 0) {
     ws_write_err(STDERR_FILENO, ret);

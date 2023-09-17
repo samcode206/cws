@@ -31,7 +31,7 @@ ws.on("unexpected-response", (req, res) => {
 
 process.stdin.on("data", (data) => {
   if (ws.OPEN) {
-    ws.send(data.toString('ascii'), (err) => {
+    ws.ping(data.toString('ascii'), (err) => {
       if (err) {
         console.error(err);
       }

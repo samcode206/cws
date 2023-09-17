@@ -142,10 +142,12 @@ static inline size_t frame_get_mask_offset(size_t n) {
   return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
-static inline void frame_payload_unmask(const unsigned char *src,
-                                        unsigned char *dst, uint8_t *mask,
-                                        size_t len) {
+
+static inline void msg_unmask(unsigned char *src, unsigned char *dst,
+                              size_t len) {
   size_t mask_idx = 0;
+  uint8_t *mask = (uint8_t *)(src - frame_get_mask_offset(len) - 2);
+
   for (size_t i = 0; i < len; ++i) {
     dst[i] = src[i] ^ mask[mask_idx];
     mask_idx = (mask_idx + 1) & 3;
@@ -162,7 +164,7 @@ typedef void (*ws_open_cb_t)(
     ws_conn_t *ws_conn); /* called after a connection is upgraded */
 
 typedef void (*ws_msg_cb_t)(
-    ws_conn_t *c, void *msg, uint8_t *mask, size_t n,
+    ws_conn_t *c, void *msg, size_t n,
     bool bin); /* called when a websocket msg is available */
 
 typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n,
@@ -179,14 +181,17 @@ typedef void (*ws_drain_cb_t)(
     ws_conn_t *ws_conn); /* called after send buffer is drained (after some back
                             pressure buildup) */
 
-
 int ws_conn_fd(ws_conn_t *c);
 
-int ws_conn_pong(ws_server_t *s,ws_conn_t *c, void *msg, size_t n, bool bin);
-int ws_conn_ping(ws_server_t *s,ws_conn_t *c, void *msg, size_t n, bool bin);
-int ws_conn_close(ws_server_t *s,ws_conn_t *c, void *msg, size_t n, int reason);
-int ws_conn_destroy(ws_server_t *s,ws_conn_t *c);
-int ws_conn_send(ws_server_t *s,ws_conn_t *c, void *msg, size_t n, bool bin);
+int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin);
+int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin);
+int ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
+                  int reason);
+int ws_conn_destroy(ws_server_t *s, ws_conn_t *c);
+int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin);
+
+
+ws_server_t* ws_conn_server(ws_conn_t *c);
 
 
 struct ws_server_params {

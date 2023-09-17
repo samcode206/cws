@@ -19,6 +19,7 @@ struct ws_conn_t {
   int fd;
   bool writeable;
   bool upgraded;
+  ws_server_t *base;
   void *ctx; // user data ptr
   struct iovec iov[2];
   buf_t read_buf;
@@ -57,6 +58,9 @@ int conn_drain_write_buf(struct ws_conn_t *conn, int nops);
 
 int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
                      uint8_t op);
+
+static inline void frame_payload_unmask(unsigned char *src, unsigned char *dst,
+                                        uint8_t *mask, size_t len);
 
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
@@ -195,6 +199,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           struct ws_conn_t *conn = calloc(1, sizeof(struct ws_conn_t));
           assert(conn != NULL);
           conn->fd = client_fd;
+          conn->base = s;
           conn->writeable = 1;
           ev.data.ptr = conn;
 
@@ -317,8 +322,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         size_t mask_offset = frame_get_mask_offset(len);
         size_t frame_len = len + mask_offset + 4;
         if (buf_len(&conn->read_buf) >= frame_len) {
-          s->on_ws_msg(conn, buf_peek(&conn->read_buf) + mask_offset + 4,
-                       buf_peek(&conn->read_buf) + mask_offset, len,
+          s->on_ws_msg(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len,
                        opcode == OP_BIN);
 
           buf_consume(&conn->read_buf, frame_len);
@@ -506,3 +510,14 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
 }
 
 int ws_conn_fd(ws_conn_t *c) { return c->fd; }
+
+inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
+
+static inline void frame_payload_unmask(unsigned char *src, unsigned char *dst,
+                                        uint8_t *mask, size_t len) {
+  size_t mask_idx = 0;
+  for (size_t i = 0; i < len; ++i) {
+    dst[i] = src[i] ^ mask[mask_idx];
+    mask_idx = (mask_idx + 1) & 3;
+  }
+}
