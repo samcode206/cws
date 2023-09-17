@@ -15,9 +15,13 @@ void on_ping(ws_conn_t *c, void *msg, size_t n) {
   if (stat == 1) {
     printf("pong sent\n");
   } else {
-    printf("partial send or an error occurred waiting for <on_ws_drain | "
+    printf("partial pong sent or an error occurred waiting for <on_ws_drain | "
            "on_ws_disconnect>\n");
   }
+}
+
+void on_pong(ws_conn_t *c, void *msg, size_t n) {
+  printf("on_pong: %s\n", (char *)msg);
 }
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
@@ -52,6 +56,7 @@ int main(void) {
                                 .on_ws_open = on_open,
                                 .on_ws_msg = on_msg,
                                 .on_ws_ping = on_ping,
+                                .on_ws_pong = on_pong,
                                 .on_ws_drain = on_drain,
                                 .on_ws_close = on_close,
                                 .on_ws_disconnect = on_disconnect,
@@ -61,8 +66,8 @@ int main(void) {
   ws_server_t *s = ws_server_create(&sp, &ret);
 
   if (ret < 0) {
-    ws_write_err(STDERR_FILENO, ret);
-    exit(ret);
+    fprintf(stderr, "ws_server_create: %d\n", ret);
+    exit(1);
   }
 
   printf("websocket server starting on port : %d\n", sp.port);
@@ -71,6 +76,5 @@ int main(void) {
 
   exit(ret);
 }
-
 
 ```

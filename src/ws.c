@@ -65,6 +65,7 @@ typedef struct server {
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
   ws_ping_cb_t on_ws_ping;
+  ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;
   ws_close_cb_t on_ws_close;
   ws_disconnect_cb_t on_ws_disconnect;
@@ -72,7 +73,130 @@ typedef struct server {
   io_ctl_t io_ctl; // io controller
 } ws_server_t;
 
-// generic send function
+// Frame Utils
+static inline uint8_t frame_get_fin(const unsigned char *buf) {
+  return (buf[0] >> 7) & 0x01;
+}
+
+static inline uint8_t frame_get_opcode(const unsigned char *buf) {
+  return buf[0] & 0x0F;
+}
+
+static inline size_t frame_payload_get_len126(const unsigned char *buf) {
+  return (buf[2] << 8) | buf[3];
+}
+
+static inline size_t frame_payload_get_len127(const unsigned char *buf) {
+  return ((uint64_t)buf[2] << 56) | ((uint64_t)buf[3] << 48) |
+         ((uint64_t)buf[4] << 40) | ((uint64_t)buf[5] << 32) |
+         ((uint64_t)buf[6] << 24) | ((uint64_t)buf[7] << 16) |
+         ((uint64_t)buf[8] << 8) | (uint64_t)buf[9];
+}
+
+static inline size_t frame_payload_get_len(const unsigned char *buf) {
+  return buf[1] & 0X7F;
+}
+
+static inline uint32_t frame_is_masked(const unsigned char *buf) {
+  return (buf[1] >> 7) & 0x01;
+}
+
+static inline size_t frame_get_mask_offset(size_t n) {
+  return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
+}
+
+inline void msg_unmask(unsigned char *src, unsigned char *dst, size_t len) {
+  size_t mask_idx = 0;
+  uint8_t *mask = (uint8_t *)(src - frame_get_mask_offset(len) - 2);
+
+  for (size_t i = 0; i < len; ++i) {
+    dst[i] = src[i] ^ mask[mask_idx];
+    mask_idx = (mask_idx + 1) & 3;
+  }
+}
+
+// HTTP & Handshake Utils
+#define WS_VERSION 13
+
+#define SPACE 0x20
+#define CRLF "\r\n"
+#define CRLF2 "\r\n\r\n"
+
+#define GET_RQ "GET"
+#define SEC_WS_KEY_HDR "Sec-WebSocket-Key"
+
+#define SWITCHING_PROTOCOLS                                                    \
+  "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: "     \
+  "Upgrade\r\nSec-WebSocket-Accept: "
+#define SWITCHING_PROTOCOLS_HDRS_LEN                                           \
+  sizeof(SWITCHING_PROTOCOLS) - 1 // -1 to ignore the nul
+
+static inline int get_header(const char *headers, const char *key, char *val,
+                             size_t n) {
+  const char *header_start = strstr(headers, key);
+  if (header_start) {
+    header_start =
+        strchr(header_start,
+               ':'); // skip colon symbol, if not found header is malformed
+    if (header_start == NULL) {
+      return ERR_HDR_MALFORMED;
+    }
+
+    ++header_start; // skipping colon symbol happens here after validating it's
+                    // existence in the buffer
+    // skip spaces
+    while (*header_start == SPACE) {
+      ++header_start;
+    }
+
+    const char *header_end =
+        strstr(header_start, CRLF); // move to the end of the header value
+    if (header_end) {
+      // if string is larger than n, return to caller with ERR_HDR_TOO_LARGE
+      if ((header_end - header_start) + 1 > n) {
+        return ERR_HDR_TOO_LARGE;
+      }
+      memcpy(val, header_start, (header_end - header_start));
+      val[header_end - header_start + 1] =
+          '\0'; // nul terminate the header value
+      return header_end - header_start +
+             1; // we only add one here because of adding '\0'
+    } else {
+      return ERR_HDR_MALFORMED; // if no CRLF is found the headers is malformed
+    }
+  }
+
+  return ERR_HDR_NOT_FOUND; // header isn't found
+}
+
+static inline ssize_t ws_build_upgrade_headers(const char *accept_key,
+                                               size_t keylen,
+                                               char *resp_headers) {
+  memcpy(resp_headers, SWITCHING_PROTOCOLS, SWITCHING_PROTOCOLS_HDRS_LEN);
+  keylen -= 1;
+  memcpy(resp_headers + SWITCHING_PROTOCOLS_HDRS_LEN, accept_key, keylen);
+  memcpy(resp_headers + SWITCHING_PROTOCOLS_HDRS_LEN + keylen, CRLF2,
+         sizeof(CRLF2));
+  return SWITCHING_PROTOCOLS_HDRS_LEN + keylen + sizeof(CRLF2);
+}
+
+const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
+                                       size_t len) {
+  unsigned char buf[64] = {0};
+  memcpy(buf, akhdr_val, strlen(akhdr_val));
+  strcat((char *)buf, magic_str);
+  len += sizeof magic_str;
+  len -= 1;
+
+  unsigned char hash[20] = {0};
+  SHA1(buf, len, hash);
+
+  return Base64encode(derived_val, (const char *)hash, sizeof hash);
+}
+
+// generic send function (used for upgrade)
 int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
 int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops);
@@ -100,7 +224,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
       !params->on_ws_drain || !params->on_ws_disconnect ||
-      !params->on_ws_ping || !params->on_ws_err) {
+      !params->on_ws_ping || !params->on_ws_pong || !params->on_ws_err) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -172,6 +296,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   s->on_ws_open = params->on_ws_open;
   s->on_ws_ping = params->on_ws_ping;
+  s->on_ws_pong = params->on_ws_pong;
   s->on_ws_msg = params->on_ws_msg;
   s->on_ws_drain = params->on_ws_drain;
   s->on_ws_close = params->on_ws_close;
@@ -272,8 +397,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   return 0;
 }
 
-#define would_block(n) (n == -1) & ((errno == EAGAIN) | (errno == EWOULDBLOCK))
-
 ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
   int ret = get_header(buf, SEC_WS_KEY_HDR, res_hdrs, n);
   if (ret < 0) {
@@ -327,6 +450,10 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
 
     if (buf_len(&conn->read_buf) >= 2) {
       uint8_t fin = frame_get_fin(buf_peek(&conn->read_buf));
+      if (!fin) {
+        return -1; // all frames must have fin bit set
+      }
+
       int masked = frame_is_masked(buf_peek(&conn->read_buf));
       // if mask bit isn't set close the connection
       if (!masked) {
@@ -363,7 +490,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
           buf_consume(&conn->read_buf, hlen);
         }
         // msg
-      } else if ((opcode == OP_PING) | (opcode == OP_PONG)) {
+      } else if (opcode == OP_PING) {
         // handle ping pong stuff
         if (len > 125) {
           // PINGs must be 125 or less
@@ -381,6 +508,22 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
           buf_consume(&conn->read_buf, hlen);
         }
 
+      } else if (opcode == OP_PONG) {
+        if (len > 125) {
+          // PONGs must be 125 or less
+          return -1; // TODO(sah): send a Close frame, & call close callback
+        }
+        uint8_t *buf = buf_peek(&conn->read_buf);
+        size_t mask_offset = frame_get_mask_offset(len);
+        size_t hlen = len + mask_offset + 4;
+
+        if (buf_len(&conn->read_buf) >= hlen) {
+          // pings are unmasked automatically
+          frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
+                               buf + mask_offset, len);
+          s->on_ws_pong(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len);
+          buf_consume(&conn->read_buf, hlen);
+        }
       } else if (opcode == OP_CLOSE) {
         // handle close stuff
       } else if (opcode == OP_CONT) {
