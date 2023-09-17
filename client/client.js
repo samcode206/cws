@@ -21,13 +21,17 @@ ws.onmessage = (msg) => {
   console.info("msg");
 };
 
+ws.on("pong", (data) => {
+  console.log('pong', data.toString());
+})
+
 ws.on("unexpected-response", (req, res) => {
   console.log(res);
 });
 
 process.stdin.on("data", (data) => {
   if (ws.OPEN) {
-    ws.send(data.toString('ascii'), (err) => {
+    ws.ping(data.toString('ascii'), (err) => {
       if (err) {
         console.error(err);
       }

@@ -419,3 +419,7 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
 
   return n;
 }
+
+int ws_conn_fd(ws_conn_t *c){
+  return c->fd;
+}

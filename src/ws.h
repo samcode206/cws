@@ -180,11 +180,15 @@ typedef void (*ws_drain_cb_t)(
     ws_conn_t *ws_conn); /* called after send buffer is drained (after some back
                             pressure buildup) */
 
+
+int ws_conn_fd(ws_conn_t *c);
+
 int ws_conn_pong(ws_server_t *s,ws_conn_t *c, void *msg, size_t n, bool bin);
 int ws_conn_ping(ws_server_t *s,ws_conn_t *c, void *msg, size_t n, bool bin);
 int ws_conn_close(ws_server_t *s,ws_conn_t *c, void *msg, size_t n, int reason);
 int ws_conn_destroy(ws_server_t *s,ws_conn_t *c);
 int ws_conn_send(ws_server_t *s,ws_conn_t *c, void *msg, size_t n, bool bin);
+
 
 struct ws_server_params {
   in_addr_t addr;

@@ -2,14 +2,29 @@
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
-void on_open(ws_conn_t *c) { printf("websocket connection open %p\n", (void *)c); }
-
+void on_open(ws_conn_t *c) {
+  printf("websocket connection open %p\n", (void *)c);
+}
 
 void on_ping(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin) {
+
   frame_payload_unmask(msg, msg, mask, n);
+  uint8_t frame_header[2] = {0, 0};
+
+  unsigned char * m = (unsigned char *)msg;
+
+  m = m - 2;
+  memset(m, 0, 2);
+  m[0] = 0x80 | OP_PONG; // Set FIN bit and PONG opcode.
+  m[1] = (uint8_t)n;     // Payload length as a single byte.
+
+  send(ws_conn_fd(c), m, n+2, 0);
+
   printf("on_ping: %s\n", (char *)msg);
+
 }
 
 void on_msg(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin) {
@@ -26,7 +41,7 @@ void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
 int main(void) {
   struct ws_server_params sp = {
       .addr = INADDR_ANY,
-      .port =  9919,
+      .port = 9919,
       .max_events = 1024,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
