@@ -26,6 +26,7 @@ struct ws_conn_t {
 typedef struct io_ctl {
   int epoll_fd;
   size_t ev_cap;
+  struct epoll_event ev;
   struct epoll_event events[];
 } io_ctl_t;
 
@@ -41,6 +42,9 @@ typedef struct server {
   ws_destroy_cb_t on_ws_destroy;
   io_ctl_t io_ctl; // io controller
 } ws_server_t;
+
+// generic send function
+int conn_write(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
 int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops);
 
@@ -259,7 +263,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
     ssize_t ret = handle_upgrade((char *)buf_peek(&conn->read_buf), res_hdrs,
                                  sizeof res_hdrs);
 
-    int n = send(conn->fd, res_hdrs, ret - 1, 0);
+    int n = conn_write(s, conn, res_hdrs, ret - 1);
     if (n == ret - 1) {
       s->on_ws_open(conn); // websocket connection is upgraded
     } else {
@@ -375,18 +379,42 @@ int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
   return 0;
 }
 
-int ws_conn_pong(ws_conn_t *c, void *msg, size_t n, bool bin) {
+int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
   return -1;
 }
-int ws_conn_ping(ws_conn_t *c, void *msg, size_t n, bool bin) {
+
+int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
   return -1;
 }
-int ws_conn_close(ws_conn_t *c, void *msg, size_t n, int reason) {
+
+int ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
+                  int reason) {
   return -1;
 }
-int ws_conn_destroy(ws_conn_t *c) {
+
+int ws_conn_destroy(ws_server_t *s, ws_conn_t *c) { return -1; }
+
+int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
   return -1;
 }
-int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool bin) {
-  return -1;
+
+int conn_write(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
+  ssize_t n = send(conn->fd, data, len, 0);
+  if ((n == -1) &( (errno == EAGAIN) | (errno == EWOULDBLOCK))) {
+    s->io_ctl.ev.events = EPOLLOUT | EPOLLRDHUP;
+    s->io_ctl.ev.data.ptr = conn;
+    conn->writeable = 0;
+    assert(buf_put(&conn->write_buf, data, len) == 0);
+    if (epoll_ctl(s->io_ctl.epoll_fd, EPOLL_CTL_MOD, conn->fd, &s->io_ctl.ev) ==
+        -1) {
+      return -1;
+    };
+    return 0;
+  } else if (n == -1) {
+    return -1;
+  } else if (n == 0) {
+    return -1;
+  }
+
+  return n;
 }
