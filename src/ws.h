@@ -166,7 +166,7 @@ typedef void (*ws_msg_cb_t)(
     ws_conn_t *c, void *msg, uint8_t *mask, size_t n,
     bool bin); /* called when a websocket msg is available */
 
-typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, uint8_t *mask, size_t n,
+typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n,
                              bool bin); /* called when a client sends a PING */
 
 typedef void (*ws_close_cb_t)(

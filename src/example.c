@@ -4,24 +4,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/uio.h>
+
+ws_server_t *s;
 
 void on_open(ws_conn_t *c) {
   printf("websocket connection open %p\n", (void *)c);
 }
 
-void on_ping(ws_conn_t *c, void *msg, uint8_t *mask, size_t n, bool bin) {
+void on_ping(ws_conn_t *c, void *msg, size_t n, bool bin) {
 
-  frame_payload_unmask(msg, msg, mask, n);
-  uint8_t frame_header[2] = {0, 0};
+  ws_conn_pong(s, c, msg, n, bin);
 
-  unsigned char * m = (unsigned char *)msg;
 
-  m = m - 2;
-  memset(m, 0, 2);
-  m[0] = 0x80 | OP_PONG; // Set FIN bit and PONG opcode.
-  m[1] = (uint8_t)n;     // Payload length as a single byte.
-
-  send(ws_conn_fd(c), m, n+2, 0);
 
   printf("on_ping: %s\n", (char *)msg);
 
@@ -52,7 +47,7 @@ int main(void) {
   };
 
   int ret = 0;
-  ws_server_t *s = ws_server_create(&sp, &ret);
+  s = ws_server_create(&sp, &ret);
 
   if (ret < 0) {
     ws_write_err(STDERR_FILENO, ret);

@@ -13,12 +13,14 @@
 #include <sys/mman.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 
 struct ws_conn_t {
   int fd;
   bool writeable;
   bool upgraded;
   void *ctx; // user data ptr
+  struct iovec iov[2];
   buf_t read_buf;
   buf_t write_buf;
 };
@@ -52,6 +54,9 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
                   struct epoll_event *ev);
 
 int conn_drain_write_buf(struct ws_conn_t *conn, int nops);
+
+int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
+                     uint8_t op);
 
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
@@ -325,11 +330,15 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
           // PINGs must be 125 or less
           return -1; // TODO(sah): send a Close frame, & call close callback
         }
+        uint8_t *buf = buf_peek(&conn->read_buf);
         size_t mask_offset = frame_get_mask_offset(len);
         size_t frame_len = len + mask_offset + 4;
+
         if (buf_len(&conn->read_buf) >= frame_len) {
-          s->on_ws_ping(conn, buf_peek(&conn->read_buf) + mask_offset + 4,
-                        buf_peek(&conn->read_buf) + mask_offset, len,
+          // pings are unmasked automatically
+          frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
+                               buf + mask_offset, len);
+          s->on_ws_ping(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len,
                         opcode == OP_BIN);
           buf_consume(&conn->read_buf, frame_len);
         }
@@ -381,7 +390,7 @@ int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
 }
 
 int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
-  return -1;
+  return conn_write_frame(s, c, msg, n, OP_PONG);
 }
 
 int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
@@ -399,27 +408,86 @@ int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n, bool bin) {
   return -1;
 }
 
-int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
-  ssize_t n = send(conn->fd, data, len, 0);
-  if ((n == -1) &( (errno == EAGAIN) | (errno == EWOULDBLOCK))) {
-    s->io_ctl.ev.events = EPOLLOUT | EPOLLRDHUP;
-    s->io_ctl.ev.data.ptr = conn;
-    conn->writeable = 0;
-    assert(buf_put(&conn->write_buf, data, len) == 0);
-    if (epoll_ctl(s->io_ctl.epoll_fd, EPOLL_CTL_MOD, conn->fd, &s->io_ctl.ev) ==
-        -1) {
+int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
+                     uint8_t op) {
+  ssize_t n = 0;
+  if (conn->writeable) {
+    size_t frame_len = frame_get_mask_offset(len);
+    uint8_t frame_buf[frame_len];
+    memset(frame_buf, 0, frame_len);
+
+    frame_buf[0] = 0x80 | op; // Set FIN bit and PONG opcode.
+    frame_buf[1] = (uint8_t)
+        len; // Payload length as a single byte. TODO handle 2 & 8 bytes
+
+    conn->iov[0].iov_len = frame_len;
+    conn->iov[0].iov_base = frame_buf;
+    conn->iov[1].iov_len = len;
+    conn->iov[1].iov_base = data;
+
+    n = writev(conn->fd, conn->iov, 2);
+    if (n == 0) {
       return -1;
-    };
-    return 0;
-  } else if (n == -1) {
-    return -1;
-  } else if (n == 0) {
-    return -1;
+    } else if (n == -1) {
+      if (!((errno == EAGAIN) | (errno == EWOULDBLOCK))) {
+        return -1;
+      }
+      n = 0;
+    }
+
+    if (n < len + frame_len) {
+      conn->writeable = 0;
+      if (n > frame_len) {
+        assert(buf_put(&conn->write_buf, (uint8_t*)data + (n - frame_len),
+                       len + frame_len - n) == 0);
+      } else {
+        assert(buf_put(&conn->write_buf, frame_buf + n, frame_len - n) == 0);
+        assert(buf_put(&conn->write_buf, data, len) == 0);
+      }
+
+      s->io_ctl.ev.events = EPOLLOUT | EPOLLRDHUP;
+      s->io_ctl.ev.data.ptr = conn;
+      if (epoll_ctl(s->io_ctl.epoll_fd, EPOLL_CTL_MOD, conn->fd,
+                    &s->io_ctl.ev) == -1) {
+        return -1;
+      };
+      return 0;
+    }
   }
 
   return n;
 }
 
-int ws_conn_fd(ws_conn_t *c){
-  return c->fd;
+int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
+  ssize_t n = 0;
+
+  if (conn->writeable) {
+    n = send(conn->fd, data, len, 0);
+    if (n == 0) {
+      return -1;
+    } else if (n == -1) {
+      if (!((errno == EAGAIN) | (errno == EWOULDBLOCK))) {
+        return -1;
+      }
+      n = 0;
+    }
+
+    if (n < len) {
+      s->io_ctl.ev.events = EPOLLOUT | EPOLLRDHUP;
+      s->io_ctl.ev.data.ptr = conn;
+      conn->writeable = 0;
+      assert(buf_put(&conn->write_buf, (uint8_t*)data + n, len - n) == 0);
+      if (epoll_ctl(s->io_ctl.epoll_fd, EPOLL_CTL_MOD, conn->fd,
+                    &s->io_ctl.ev) == -1) {
+        return -1;
+      };
+
+      return 0;
+    }
+  }
+
+ 
+  return n;
 }
+
+int ws_conn_fd(ws_conn_t *c) { return c->fd; }
