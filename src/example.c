@@ -38,7 +38,7 @@ void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason, strlen(reason), code);
 }
 
-void on_disconnect(ws_conn_t *ws_conn, int err) { printf("on_disconnect\n"); }
+void on_disconnect(ws_conn_t *ws_conn, int err) { printf("on_disconnect %d\n", err); }
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
 

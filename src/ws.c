@@ -199,12 +199,12 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 // generic send function (used for upgrade)
 int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
-int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops);
+int handle_conn(ws_server_t *s, struct ws_conn_t *conn);
 
 void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
                   struct epoll_event *ev);
 
-int conn_drain_write_buf(struct ws_conn_t *conn, int nops);
+int conn_drain_write_buf(struct ws_conn_t *conn);
 
 int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
                      uint8_t op);
@@ -375,7 +375,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           s->io_ctl.events[i].data.ptr = NULL;
         } else {
           if (s->io_ctl.events[i].events & EPOLLOUT) {
-            int ret = conn_drain_write_buf(s->io_ctl.events[i].data.ptr, 8);
+            int ret = conn_drain_write_buf(s->io_ctl.events[i].data.ptr);
             if (ret == -1) {
               conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
               s->io_ctl.events[i].data.ptr = NULL;
@@ -383,8 +383,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
               s->on_ws_drain(s->io_ctl.events[i].data.ptr);
             }
           } else if (s->io_ctl.events[i].events & EPOLLIN) {
-            int ret = handle_conn(s, s->io_ctl.events[i].data.ptr, 8);
+            int ret = handle_conn(s, s->io_ctl.events[i].data.ptr);
             if (ret == -1) {
+              // printf("here\n");
               conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
               s->io_ctl.events[i].data.ptr = NULL;
             }
@@ -410,7 +411,7 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
   return ws_build_upgrade_headers(accept_key, len, res_hdrs);
 }
 
-int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
+int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
   ssize_t n = buf_recv(&conn->read_buf, conn->fd, 0);
 
   if (n == -1) {
@@ -422,13 +423,11 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
     return -1;
   }
 
-
-    uint8_t *buf = buf_peek(&conn->read_buf);
+  uint8_t *buf = buf_peek(&conn->read_buf);
 
   if (!strncmp((char *)buf, GET_RQ, sizeof GET_RQ - 1)) {
     char res_hdrs[1024] = {0};
-    ssize_t ret = handle_upgrade((char *)buf, res_hdrs,
-                                 sizeof res_hdrs);
+    ssize_t ret = handle_upgrade((char *)buf, res_hdrs, sizeof res_hdrs);
 
     int n = conn_send(s, conn, res_hdrs, ret - 1);
     if (n == ret - 1) {
@@ -478,8 +477,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         size_t flen = len + mask_offset + 4;
 
         if (buf_len(&conn->read_buf) >= flen) {
-          s->on_ws_msg(conn, buf + mask_offset + 4, len,
-                       opcode == OP_BIN);
+          s->on_ws_msg(conn, buf + mask_offset + 4, len, opcode == OP_BIN);
 
           buf_consume(&conn->read_buf, flen);
         }
@@ -579,25 +577,22 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
   free(conn);
 }
 
-int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
-  int i = 0;
-  ssize_t n;
-  bool drained;
-  do {
-    n = buf_send(&conn->write_buf, conn->fd, 0);
-    if (n == -1) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return 0;
-      } else {
-        return -1;
-      }
-    } else if (n == 0) {
+int conn_drain_write_buf(struct ws_conn_t *conn) {
+  size_t to_write = buf_len(&conn->read_buf);
+  ssize_t n = 0;
+  
+  n = buf_send(&conn->write_buf, conn->fd, 0);
+  if (n == -1) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return 0;
+    } else {
       return -1;
     }
+  } else if (n == 0) {
+    return -1;
+  }
 
-  } while ((i++ < nops) & (drained = buf_len(&conn->write_buf) > 0));
-
-  if (drained) {
+  if (to_write == n) {
     conn->writeable = 1;
     return 1;
   };

@@ -119,14 +119,10 @@ static inline int buf_consume(buf_t *r, size_t n) {
     return -1;
   }
 
-  memset(r->buf + r->rpos, 0, n);
-
   r->rpos += n;
-  if (r->rpos > RBUF_SIZE) {
-    r->rpos -= RBUF_SIZE;
-    r->wpos -= RBUF_SIZE;
-  }
-
+  int ovf = r->rpos > RBUF_SIZE;
+  r->rpos -= ovf * RBUF_SIZE;
+  r->wpos -= ovf * RBUF_SIZE;
   return 0;
 }
 
@@ -140,10 +136,10 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
   r->rpos += (n > 0) * n;
   
-  if (r->rpos > RBUF_SIZE) {
-    r->rpos -= RBUF_SIZE;
-    r->wpos -= RBUF_SIZE;
-  }
+  int ovf = r->rpos > RBUF_SIZE;
+  r->rpos -= ovf * RBUF_SIZE;
+  r->wpos -= ovf * RBUF_SIZE;
+
   return n;
 }
 
