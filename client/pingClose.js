@@ -17,7 +17,7 @@ ws.onmessage = (msg) => {
 };
 
 ws.on("close", (code, reason) => {
-  console.log("close", code, reason);
+  console.log("close", code, reason.toString());
 });
 
 ws.on("ping", (data) => {
