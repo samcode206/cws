@@ -61,6 +61,8 @@
 #define WS_CREAT_EBAD_PORT -7
 #define WS_CREAT_ENO_CB -8
 
+#define WS_CLOSED -99
+
 // Standard WebSocket close status codes
 #define WS_CLOSE_NORMAL     1000  // Normal closure, meaning that the purpose for which the connection was established has been fulfilled.
 #define WS_CLOSE_GOAWAY     1001  // An endpoint is "going away," such as a server going down or a browser having navigated away from a page.
@@ -127,8 +129,8 @@ int ws_conn_fd(ws_conn_t *c);
 
 int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
 int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
-int ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
-                  int reason);
+void ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
+                  uint16_t code);
 int ws_conn_destroy(ws_server_t *s, ws_conn_t *c);
 int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
 int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);

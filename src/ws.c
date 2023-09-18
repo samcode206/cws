@@ -532,7 +532,6 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         } else {
           uint8_t *buf = buf_peek(&conn->read_buf);
           size_t mask_offset = frame_get_mask_offset(len);
-          printf("mask_offset: %zu\n", mask_offset);
           size_t flen = len + mask_offset + 4;
           if (flen > 125) {
             // close frames can be more but this is the most that will be
@@ -613,15 +612,6 @@ int conn_drain_write_buf(struct ws_conn_t *conn, int nops) {
   return 0;
 }
 
-inline int ws_conn_close(ws_server_t *s, ws_conn_t *c, void *msg, size_t n,
-                         int reason) {
-  return -1; // TODO
-}
-
-inline int ws_conn_destroy(ws_server_t *s, ws_conn_t *c) {
-  return -1; // TODO
-}
-
 /**
 * returns:
      1 data was completely written
@@ -683,6 +673,61 @@ inline int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
     conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
   }
   return stat == 1;
+}
+
+void ws_conn_close(ws_server_t *s, ws_conn_t *conn, void *msg, size_t len,
+                   uint16_t code) {
+  // reason string must be less than 124
+  // this isn't a websocket protocol restriction but it will be here
+  if (len > 124) {
+    return;
+  }
+
+  if (conn->writeable) {
+    // reason msg was provided
+    if (len) {
+      uint8_t buf1[4] = {0, 0};
+      buf1[0] = FIN | OP_CLOSE;
+      buf1[1] = len + 2;
+      buf1[2] = (code >> 8) & 0xFF;
+      buf1[3] = code & 0xFF;
+      conn->iov[0].iov_len = 4;
+      conn->iov[0].iov_base = buf1;
+      conn->iov[1].iov_len = len;
+      conn->iov[1].iov_base = msg;
+
+      writev(conn->fd, conn->iov, 2);
+    } else {
+      uint8_t buf[4] = {0, 0};
+      buf[0] = FIN | OP_CLOSE;
+      buf[1] = 2;
+      buf[2] = (code >> 8) & 0xFF;
+      buf[3] = code & 0xFF;
+      send(conn->fd, buf, 4, 0);
+    }
+  }
+
+  int ret;
+  ret = epoll_ctl(s->io_ctl.epoll_fd, EPOLL_CTL_DEL, conn->fd, &s->io_ctl.ev);
+  if (ret == -1) {
+    int err = errno;
+    s->on_ws_err(s, err);
+  }
+  ret = close(conn->fd);
+  if (ret == -1) {
+    int err = errno;
+    s->on_ws_err(s, err);
+  }
+
+  if (!ret) {
+    s->on_ws_disconnect(conn, WS_CLOSED);
+  }
+
+  free(conn);
+}
+
+inline int ws_conn_destroy(ws_server_t *s, ws_conn_t *c) {
+  return -1; // TODO
 }
 
 /**
