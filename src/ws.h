@@ -96,7 +96,7 @@ typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg,
                              size_t n); /* called when a client sends a PONG */
 
 typedef void (*ws_close_cb_t)(
-    ws_conn_t *ws_conn, int reason); /* called when a close frame is received */
+    ws_conn_t *ws_conn, int code, const void *reason); /* called when a close frame is received */
 
 typedef void (*ws_disconnect_cb_t)(ws_conn_t *ws_conn,
                                    int err); /* called after the connection is

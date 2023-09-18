@@ -524,10 +524,39 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         }
       } else if (opcode == OP_CLOSE) {
         // handle close stuff
-        
-        printf("%zu\n", len); 
+        uint16_t code =
+            WS_CLOSE_NOSTAT; // pessimistically assume no code provided
 
-        return -1;
+        if (len < 2) {
+          s->on_ws_close(conn, code, NULL);
+        } else {
+          uint8_t *buf = buf_peek(&conn->read_buf);
+          size_t mask_offset = frame_get_mask_offset(len);
+          printf("mask_offset: %zu\n", mask_offset);
+          size_t flen = len + mask_offset + 4;
+          if (flen > 125) {
+            // close frames can be more but this is the most that will be
+            // supported for various reasons close frames generally should
+            // contain just the 16bit code and a short string for the reason at
+            // most
+            return -1;
+          }
+
+          if (buf_len(&conn->read_buf) >= flen) {
+            if (len > 2) {
+              frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
+                                   buf + mask_offset, len);
+              code = (buf[6] << 8) | buf[7];
+              s->on_ws_close(conn, code, buf + mask_offset + 6);
+            } else {
+              frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
+                                   buf + mask_offset, len);
+              code = (buf[6] << 8) | buf[7];
+              s->on_ws_close(conn, code, NULL);
+            }
+            buf_consume(&conn->read_buf, flen);
+          }
+        }
 
       } else if (opcode == OP_CONT) {
         return -1; // unsupported
