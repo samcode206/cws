@@ -422,13 +422,12 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
     return -1;
   }
 
-  conn->read_buf.buf[buf_len(&conn->read_buf)] = '\0';
 
-  if (!strncmp((char *)buf_peek(&conn->read_buf), GET_RQ, sizeof GET_RQ - 1)) {
-    // printf("Req --------------------------------\n");
-    // printf("%s", conn->buf_in);
+    uint8_t *buf = buf_peek(&conn->read_buf);
+
+  if (!strncmp((char *)buf, GET_RQ, sizeof GET_RQ - 1)) {
     char res_hdrs[1024] = {0};
-    ssize_t ret = handle_upgrade((char *)buf_peek(&conn->read_buf), res_hdrs,
+    ssize_t ret = handle_upgrade((char *)buf, res_hdrs,
                                  sizeof res_hdrs);
 
     int n = conn_send(s, conn, res_hdrs, ret - 1);
@@ -445,36 +444,30 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
     // printf("%s\n", res_hdrs);
     buf_consume(&conn->read_buf, buf_len(&conn->read_buf));
   } else {
-    // printf("buffer size: %zu\n", conn->buf_in_len);
-    // need at least 2 bytes to read anything
-
     if (buf_len(&conn->read_buf) >= 2) {
-      uint8_t fin = frame_get_fin(buf_peek(&conn->read_buf));
+      uint8_t fin = frame_get_fin(buf);
       if (!fin) {
         return -1; // all frames must have fin bit set
       }
 
-      int masked = frame_is_masked(buf_peek(&conn->read_buf));
+      int masked = frame_is_masked(buf);
       // if mask bit isn't set close the connection
       if (!masked) {
         printf("received unmasked client data\n");
         return -1;
       }
 
-      uint8_t opcode = frame_get_opcode(buf_peek(&conn->read_buf));
-      size_t len = frame_payload_get_len(buf_peek(&conn->read_buf));
-      // printf("fin: %d\n", fin);
-      // printf("opcode: %d\n", opcode);
-      // printf("len: %zu\n", len);
+      uint8_t opcode = frame_get_opcode(buf);
+      size_t len = frame_payload_get_len(buf);
       if (len == PAYLOAD_LEN_16) {
         if (buf_len(&conn->read_buf) > 3) {
-          len = frame_payload_get_len126(buf_peek(&conn->read_buf));
+          len = frame_payload_get_len126(buf);
         } else {
           return 0;
         }
       } else if (len == PAYLOAD_LEN_64) {
         if (buf_len(&conn->read_buf) > 9) {
-          len = frame_payload_get_len127(buf_peek(&conn->read_buf));
+          len = frame_payload_get_len127(buf);
         } else {
           return 0;
         }
@@ -483,8 +476,9 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
       if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
         size_t mask_offset = frame_get_mask_offset(len);
         size_t flen = len + mask_offset + 4;
+
         if (buf_len(&conn->read_buf) >= flen) {
-          s->on_ws_msg(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len,
+          s->on_ws_msg(conn, buf + mask_offset + 4, len,
                        opcode == OP_BIN);
 
           buf_consume(&conn->read_buf, flen);
@@ -494,7 +488,6 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
           // PINGs must be 125 or less
           return -1; // TODO(sah): send a Close frame, & call close callback
         }
-        uint8_t *buf = buf_peek(&conn->read_buf);
         size_t mask_offset = frame_get_mask_offset(len);
         size_t flen = len + mask_offset + 4;
 
@@ -502,7 +495,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
           // pings are unmasked automatically
           frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
                                buf + mask_offset, len);
-          s->on_ws_ping(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len);
+          s->on_ws_ping(conn, buf + mask_offset + 4, len);
           buf_consume(&conn->read_buf, flen);
         }
 
@@ -511,7 +504,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
           // PONGs must be 125 or less
           return -1; // TODO(sah): send a Close frame, & call close callback
         }
-        uint8_t *buf = buf_peek(&conn->read_buf);
+
         size_t mask_offset = frame_get_mask_offset(len);
         size_t flen = len + mask_offset + 4;
 
@@ -519,7 +512,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
           // pings are unmasked automatically
           frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
                                buf + mask_offset, len);
-          s->on_ws_pong(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len);
+          s->on_ws_pong(conn, buf + mask_offset + 4, len);
           buf_consume(&conn->read_buf, flen);
         }
       } else if (opcode == OP_CLOSE) {
@@ -530,7 +523,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         if (len < 2) {
           s->on_ws_close(conn, code, NULL);
         } else {
-          uint8_t *buf = buf_peek(&conn->read_buf);
+
           size_t mask_offset = frame_get_mask_offset(len);
           size_t flen = len + mask_offset + 4;
           if (flen > 125) {
@@ -678,7 +671,7 @@ inline int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
 void ws_conn_close(ws_server_t *s, ws_conn_t *conn, void *msg, size_t len,
                    uint16_t code) {
   // reason string must be less than 124
-  // this isn't a websocket protocol restriction but it will be here
+  // this isn't a websocket protocol restriction but it will be here for now
   if (len > 124) {
     return;
   }

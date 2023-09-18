@@ -39,8 +39,8 @@
 #define RBUF_SIZE 8192
 
 typedef struct {
-  size_t tail;
-  size_t head;
+  size_t rpos;
+  size_t wpos;
   int fd;
   uint8_t *buf;
 } buf_t;
@@ -87,72 +87,75 @@ static inline int buf_init(buf_t *r) {
   return 0;
 }
 
-static inline size_t buf_len(buf_t *r) { return r->head - r->tail; }
+static inline size_t buf_len(buf_t *r) { return r->wpos - r->rpos; }
 
 static inline size_t buf_space(buf_t *r) {
-  return RBUF_SIZE - (r->head - r->tail);
+  return RBUF_SIZE - (r->wpos - r->rpos);
 }
 
 static inline int buf_put(buf_t *r, const void *data, size_t n) {
-  if (RBUF_SIZE - (r->head - r->tail) < n) {
+  if (buf_space(r) < n) {
     return -1;
   }
-  memcpy(r->buf + r->head, data, n);
-  r->head += n;
+  memcpy(r->buf + r->wpos, data, n);
+  r->wpos += n;
   return 0;
 }
 
 static inline int buf_cpy(buf_t *r, void *data, size_t n) {
-  if (r->head - r->tail < n) {
+  if (buf_len(r) < n) {
     return -1;
   }
-  memcpy(data, r->buf + r->tail, n);
-  r->tail += n;
-  if (r->tail > RBUF_SIZE) {
-    r->tail -= RBUF_SIZE;
-    r->head -= RBUF_SIZE;
+  memcpy(data, r->buf + r->rpos, n);
+  r->rpos += n;
+  if (r->rpos > RBUF_SIZE) {
+    r->rpos -= RBUF_SIZE;
+    r->wpos -= RBUF_SIZE;
   }
 
   return 0;
 }
 
-static inline uint8_t *buf_peek(buf_t *r) { return r->buf + r->tail; }
+static inline uint8_t *buf_peek(buf_t *r) { 
+  return r->buf + r->rpos; }
 
 static inline uint8_t *buf_peekn(buf_t *r, size_t n) {
-  if (r->head - r->tail < n) {
+  if (buf_len(r) < n) {
     return NULL;
   }
 
-  return r->buf + r->tail;
+  return r->buf + r->rpos;
 }
 
 static inline int buf_consume(buf_t *r, size_t n) {
-  if (r->head - r->tail < n) {
+  if (buf_len(r) < n) {
     return -1;
   }
 
-  r->tail += n;
-  if (r->tail > RBUF_SIZE) {
-    r->tail -= RBUF_SIZE;
-    r->head -= RBUF_SIZE;
+  memset(r->buf + r->rpos, 0, n);
+
+  r->rpos += n;
+  if (r->rpos > RBUF_SIZE) {
+    r->rpos -= RBUF_SIZE;
+    r->wpos -= RBUF_SIZE;
   }
 
   return 0;
 }
 
 static inline ssize_t buf_recv(buf_t *r, int fd, int flags) {
-  ssize_t n =
-      recv(fd, r->buf + r->head, RBUF_SIZE - (r->head - r->tail), flags);
-  r->head += (n > 0) * n;
+  ssize_t n = recv(fd, r->buf + r->wpos, buf_space(r), flags);
+  r->wpos += (n > 0) * n;
   return n;
 }
 
 static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
-  ssize_t n = send(fd, r->buf + r->tail, r->head - r->tail, flags);
-  r->tail += (n > 0) * n;
-  if (r->tail > RBUF_SIZE) {
-    r->tail -= RBUF_SIZE;
-    r->head -= RBUF_SIZE;
+  ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
+  r->rpos += (n > 0) * n;
+  
+  if (r->rpos > RBUF_SIZE) {
+    r->rpos -= RBUF_SIZE;
+    r->wpos -= RBUF_SIZE;
   }
   return n;
 }

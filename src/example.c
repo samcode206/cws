@@ -1,4 +1,5 @@
 #include "ws.h"
+#include <stdio.h>
 
 void on_open(ws_conn_t *c) { ws_conn_ping(ws_conn_server(c), c, "welcome", 8); }
 
@@ -19,8 +20,11 @@ void on_pong(ws_conn_t *c, void *msg, size_t n) {
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   msg_unmask(msg, msg, n);
-  printf("on_msg: %s\n", (char *)msg);
+  printf("on_msg: ");
+  fwrite(msg, sizeof (char), n, stdout);
+  fwrite("\n", 1, 1, stdout);
   int stat = ws_conn_send_txt(ws_conn_server(c), c, msg, n);
+
   if (stat == 1) {
     printf("msg sent\n");
   } else {
