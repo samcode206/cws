@@ -61,15 +61,20 @@
 #define WS_CREAT_EBAD_PORT -7
 #define WS_CREAT_ENO_CB -8
 
-#define WS_CLOSE_NORMAL 1000 // normal closure (service is not longer needed)
-#define WS_CLOSE_GOAWAY 1001 // going away
-#define WS_CLOSE_EPROTO 1002 // protocol error 
-#define WS_CLOSE_UNSUPP 1003 // unsupported data type (example one end only works with text but binary was sent)
-#define WS_CLOSE_INVALD 1007 // example: opcode is text but payload 
-#define WS_CLOSE_POLVIO 1008 // policy violation 
-#define WS_CLOSE_LG_MSG 1009 // large msg
-#define WS_CLOSE_EXTNG 1010 // extension negotiation 
-#define WS_CLOSE_UNEXPCOND 1011 // unexpected condition encountered
+// Standard WebSocket close status codes
+#define WS_CLOSE_NORMAL     1000  // Normal closure, meaning that the purpose for which the connection was established has been fulfilled.
+#define WS_CLOSE_GOAWAY     1001  // An endpoint is "going away," such as a server going down or a browser having navigated away from a page.
+#define WS_CLOSE_EPROTO     1002  // Protocol error.
+#define WS_CLOSE_UNSUPP     1003  // Unsupported data; for example, the client expects only text but server sends a binary message.
+#define WS_CLOSE_INVALID    1007  // Received data is inconsistent with the type of the message (e.g., a text message that contains invalid UTF-8).
+#define WS_CLOSE_POLVIO     1008  // Policy violation.
+#define WS_CLOSE_LG_MSG     1009  // A message is too big for its destination.
+#define WS_CLOSE_EXTNG      1010  // The client is terminating the connection because it expected the server to negotiate one or more extensions.
+#define WS_CLOSE_UNEXPCOND  1011  // An unexpected condition prevented the request from being fulfilled.
+
+// Internal status codes for special situations
+#define WS_CLOSE_NOSTAT     1005  // Close frame did not contain a status code.
+#define WS_CLOSE_ABNORM     1006  // Connection closed abnormally (e.g., without sending or receiving a Close frame).
 
 
 // server types

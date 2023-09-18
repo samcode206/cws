@@ -8,10 +8,6 @@ ws.onopen = (ev) => {
   console.log("opened");
 };
 
-ws.onclose = (ev) => {
-  console.log("close", ev);
-};
-
 ws.onerror = (err) => {
   console.log("err", err);
 };

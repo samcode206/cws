@@ -482,30 +482,28 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
 
       if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
         size_t mask_offset = frame_get_mask_offset(len);
-        size_t hlen = len + mask_offset + 4;
-        if (buf_len(&conn->read_buf) >= hlen) {
+        size_t flen = len + mask_offset + 4;
+        if (buf_len(&conn->read_buf) >= flen) {
           s->on_ws_msg(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len,
                        opcode == OP_BIN);
 
-          buf_consume(&conn->read_buf, hlen);
+          buf_consume(&conn->read_buf, flen);
         }
-        // msg
       } else if (opcode == OP_PING) {
-        // handle ping pong stuff
         if (len > 125) {
           // PINGs must be 125 or less
           return -1; // TODO(sah): send a Close frame, & call close callback
         }
         uint8_t *buf = buf_peek(&conn->read_buf);
         size_t mask_offset = frame_get_mask_offset(len);
-        size_t hlen = len + mask_offset + 4;
+        size_t flen = len + mask_offset + 4;
 
-        if (buf_len(&conn->read_buf) >= hlen) {
+        if (buf_len(&conn->read_buf) >= flen) {
           // pings are unmasked automatically
           frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
                                buf + mask_offset, len);
           s->on_ws_ping(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len);
-          buf_consume(&conn->read_buf, hlen);
+          buf_consume(&conn->read_buf, flen);
         }
 
       } else if (opcode == OP_PONG) {
@@ -515,17 +513,22 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn, int nops) {
         }
         uint8_t *buf = buf_peek(&conn->read_buf);
         size_t mask_offset = frame_get_mask_offset(len);
-        size_t hlen = len + mask_offset + 4;
+        size_t flen = len + mask_offset + 4;
 
-        if (buf_len(&conn->read_buf) >= hlen) {
+        if (buf_len(&conn->read_buf) >= flen) {
           // pings are unmasked automatically
           frame_payload_unmask(buf + mask_offset + 4, buf + mask_offset + 4,
                                buf + mask_offset, len);
           s->on_ws_pong(conn, buf_peek(&conn->read_buf) + mask_offset + 4, len);
-          buf_consume(&conn->read_buf, hlen);
+          buf_consume(&conn->read_buf, flen);
         }
       } else if (opcode == OP_CLOSE) {
         // handle close stuff
+        
+        printf("%zu\n", len); 
+
+        return -1;
+
       } else if (opcode == OP_CONT) {
         return -1; // unsupported
       }
