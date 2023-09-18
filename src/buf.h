@@ -102,19 +102,6 @@ static inline int buf_put(buf_t *r, const void *data, size_t n) {
   return 0;
 }
 
-static inline int buf_cpy(buf_t *r, void *data, size_t n) {
-  if (buf_len(r) < n) {
-    return -1;
-  }
-  memcpy(data, r->buf + r->rpos, n);
-  r->rpos += n;
-  if (r->rpos > RBUF_SIZE) {
-    r->rpos -= RBUF_SIZE;
-    r->wpos -= RBUF_SIZE;
-  }
-
-  return 0;
-}
 
 static inline uint8_t *buf_peek(buf_t *r) { 
   return r->buf + r->rpos; }
