@@ -44,6 +44,8 @@ struct ws_conn_t {
   int fd;
   bool writeable;
   bool upgraded;
+  size_t
+      rlo_watermark; // minimum amount of bytes before beginning frame decoding
   ws_server_t *base;
   void *ctx; // user data ptr
   struct iovec iov[2];
@@ -94,8 +96,28 @@ static inline size_t frame_payload_get_len127(const unsigned char *buf) {
          ((uint64_t)buf[8] << 8) | (uint64_t)buf[9];
 }
 
-static inline size_t frame_payload_get_len(const unsigned char *buf) {
+static inline size_t frame_payload_get_raw_len(const unsigned char *buf) {
   return buf[1] & 0X7F;
+}
+
+int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len, size_t *res) {
+  size_t raw_len = frame_payload_get_raw_len(buf);
+  *res = raw_len;
+  if (raw_len == PAYLOAD_LEN_16) {
+    if (rbuf_len > 3) {
+      *res = frame_payload_get_len126(buf);
+    } else {
+      return 3;
+    }
+  } else if (raw_len == PAYLOAD_LEN_64) {
+    if (rbuf_len > 9) {
+      *res = frame_payload_get_len127(buf);
+    } else {
+      return 9;
+    }
+  }
+
+  return 0;
 }
 
 static inline uint32_t frame_is_masked(const unsigned char *buf) {
@@ -200,10 +222,14 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 // generic send function (used for upgrade)
 int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
-int handle_conn(ws_server_t *s, struct ws_conn_t *conn);
+int handle_ws(ws_server_t *s, struct ws_conn_t *conn);
+
+int handle_http(ws_server_t *s, struct ws_conn_t *conn);
 
 void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd, int err,
                   struct epoll_event *ev);
+
+static inline int conn_read(ws_server_t *s, struct ws_conn_t *conn);
 
 int conn_drain_write_buf(struct ws_conn_t *conn);
 
@@ -358,6 +384,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
           conn->fd = client_fd;
           conn->base = s;
           conn->writeable = 1;
+          conn->rlo_watermark =
+              2; // start at 2 bytes, works even before upgrade
           ev.data.ptr = conn;
 
           assert(buf_init(&conn->read_buf) == 0);
@@ -377,18 +405,22 @@ int ws_server_start(ws_server_t *s, int backlog) {
         } else {
           if (s->io_ctl.events[i].events & EPOLLOUT) {
             int ret = conn_drain_write_buf(s->io_ctl.events[i].data.ptr);
-            if (ret == -1) {
-              conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd,
-                           WS_CLOSE_ABNORM, &ev);
-              s->io_ctl.events[i].data.ptr = NULL;
-            } else if (ret == 1) {
+            if (ret == 1) {
               s->on_ws_drain(s->io_ctl.events[i].data.ptr);
             }
           } else if (s->io_ctl.events[i].events & EPOLLIN) {
-            int ret = handle_conn(s, s->io_ctl.events[i].data.ptr);
-            if (ret == -1) {
-              // conn_destroy is called by handle_conn
-              s->io_ctl.events[i].data.ptr = NULL;
+            ws_conn_t *c = s->io_ctl.events[i].data.ptr;
+            int ret = conn_read(s, c);
+            if (ret == 0) {
+              if (c->upgraded == 0) {
+                handle_http(s, c);
+              } else {
+                while ((buf_len(&c->read_buf) >= c->rlo_watermark)) {
+                  ret = handle_ws(s, c);
+                  if (ret == -1)
+                    break;
+                }
+              }
             }
           }
         }
@@ -412,11 +444,9 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
   return ws_build_upgrade_headers(accept_key, len, res_hdrs);
 }
 
-int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
+static inline int conn_read(ws_server_t *s, struct ws_conn_t *conn) {
   ssize_t n = buf_recv(&conn->read_buf, conn->fd, 0);
   int epfd = s->io_ctl.epoll_fd;
-
-  size_t rbuf_len = buf_len(&conn->read_buf);
 
   if (n == -1) {
     if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -429,8 +459,12 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
     return -1;
   }
 
-  uint8_t *buf = buf_peek(&conn->read_buf);
+  return 0;
+}
 
+int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
+  uint8_t *buf = buf_peek(&conn->read_buf);
+  size_t rbuf_len = buf_len(&conn->read_buf);
   if (!strncmp((char *)buf, GET_RQ, sizeof GET_RQ - 1)) {
     char res_hdrs[1024] = {0};
     ssize_t ret = handle_upgrade((char *)buf, res_hdrs, sizeof res_hdrs);
@@ -448,119 +482,115 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
     // printf("Res --------------------------------\n");
     // printf("%s\n", res_hdrs);
     buf_consume(&conn->read_buf, rbuf_len);
-  } else {
-    if (rbuf_len >= 2) {
+    conn->upgraded = 1;
+    return 0;
+  }
 
-      uint8_t fin = frame_get_fin(buf);
-      uint8_t opcode = frame_get_opcode(buf);
-      size_t len = frame_payload_get_len(buf);
-      if (len == PAYLOAD_LEN_16) {
-        if (rbuf_len > 3) {
-          len = frame_payload_get_len126(buf);
-        } else {
-          return 0;
-        }
-      } else if (len == PAYLOAD_LEN_64) {
-        if (rbuf_len > 9) {
-          len = frame_payload_get_len127(buf);
-        } else {
-          return 0;
-        }
-      }
-      if ((!fin) | (opcode == OP_CONT)) {
-        // update WS_CLOSE_UNSUPP
-        // TODO: read each fragment call the callback for fragmented frames when
-        // a single fragmented frame or more are in the buffer then remove them
-        // from the buffer, we can't present the full msg to the user through
-        // on_msg because we don't know when the msg ends and it could be that
-        // the msg is longer than the buffer size or it could be that the msg
-        // spans indefinably for this reason, we route the msg to on_ws_fmsg
-        // once we have the full frame then we remove it from the ws connection
-        // buffer the user can copy the data when we call on_ws_fmsg
+  // TODO(sah): handle errors
+  return -1;
+}
 
+int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
+  int epfd = s->io_ctl.epoll_fd;
 
-        size_t mask_offset = frame_get_mask_offset(len);
-        size_t flen = len + mask_offset + 4;
-        if (rbuf_len >= flen) {
-          s->on_ws_fmsg(conn, buf + mask_offset + 4, len, opcode, fin == 1);
+  uint8_t *buf = buf_peek(&conn->read_buf);
+  int masked = frame_is_masked(buf);
+  // if mask bit isn't set close the connection
+  if (!masked) {
+    conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+    printf("received unmasked client data\n");
+    return -1;
+  }
 
-          buf_consume(&conn->read_buf, flen);
-        }
+  size_t rbuf_len = buf_len(&conn->read_buf);
+  uint8_t fin = frame_get_fin(buf);
+  uint8_t opcode = frame_get_opcode(buf);
+  size_t len = 0;
+  int missing_len = frame_decode_payload_len(buf, rbuf_len, &len);
+  if (missing_len) {
+    conn->rlo_watermark = missing_len; // assuming payload is at the front
+    return 0;
+  }
 
-        return 0;
-      }
+  size_t mask_offset = frame_get_mask_offset(len);
+  size_t flen = len + mask_offset + 4;
+  printf("rbuf_len: %zu %zu %zu %zu %d\n", rbuf_len, flen, conn->rlo_watermark,
+         len, opcode);
+  if (rbuf_len < flen) {
+    conn->rlo_watermark = flen; // assuming payload is at the front
+    return 0;
+  }
 
-      int masked = frame_is_masked(buf);
-      // if mask bit isn't set close the connection
-      if (!masked) {
+  if ((!fin) | (opcode == OP_CONT)) {
+    // update WS_CLOSE_UNSUPP
+    // TODO: read each fragment call the callback for fragmented frames when
+    // a single fragmented frame or more are in the buffer then remove them
+    // from the buffer, we can't present the full msg to the user through
+    // on_msg because we don't know when the msg ends and it could be that
+    // the msg is longer than the buffer size or it could be that the msg
+    // spans indefinably for this reason, we route the msg to on_ws_fmsg
+    // once we have the full frame then we remove it from the ws connection
+    // buffer the user can copy the data when we call on_ws_fmsg
+    s->on_ws_fmsg(conn, buf + mask_offset + 4, len, opcode, fin == 1);
+    buf_consume(&conn->read_buf, flen);
+    conn->rlo_watermark = 2;
+
+  } else if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
+    s->on_ws_msg(conn, buf + mask_offset + 4, len, opcode == OP_BIN);
+    buf_consume(&conn->read_buf, flen);
+    conn->rlo_watermark = 2;
+
+  } else if ((opcode == OP_PING) | (opcode == OP_PONG)) {
+    if (len > 125) {
+      // PINGs must be 125 or less
+      conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+      return -1; // TODO(sah): send a Close frame, & call close callback
+    }
+
+    size_t mask_offset = frame_get_mask_offset(len);
+
+    msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
+    if (opcode == OP_PING) {
+      s->on_ws_ping(conn, buf + mask_offset + 4, len);
+    } else {
+      s->on_ws_pong(conn, buf + mask_offset + 4, len);
+    }
+
+    buf_consume(&conn->read_buf, flen);
+    conn->rlo_watermark = 2;
+
+  } else if (opcode == OP_CLOSE) {
+    // handle close stuff
+    uint16_t code = WS_CLOSE_NOSTAT; // pessimistically assume no code provided
+
+    if (len < 2) {
+      s->on_ws_close(conn, code, NULL);
+    } else {
+      size_t mask_offset = frame_get_mask_offset(len);
+      if (flen > 125) {
+        // close frames can be more but this is the most that will be
+        // supported for various reasons close frames generally should
+        // contain just the 16bit code and a short string for the reason at
+        // most
         conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
-        printf("received unmasked client data\n");
         return -1;
       }
 
-      if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
-        size_t mask_offset = frame_get_mask_offset(len);
-        size_t flen = len + mask_offset + 4;
-        if (rbuf_len >= flen) {
-          s->on_ws_msg(conn, buf + mask_offset + 4, len, opcode == OP_BIN);
-
-          buf_consume(&conn->read_buf, flen);
-        }
-      } else if ((opcode == OP_PING) | (opcode == OP_PING)) {
-        if (len > 125) {
-          // PINGs must be 125 or less
-          conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
-          return -1; // TODO(sah): send a Close frame, & call close callback
-        }
-        size_t mask_offset = frame_get_mask_offset(len);
-        size_t flen = len + mask_offset + 4;
-
-        if (rbuf_len >= flen) {
-
-          msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
-          if (opcode == OP_PING){
-              s->on_ws_ping(conn, buf + mask_offset + 4, len);
-          } else {
-              s->on_ws_pong(conn, buf + mask_offset + 4, len);
-          }
-        
-          buf_consume(&conn->read_buf, flen);
-        }
-
-      } else if (opcode == OP_CLOSE) {
-        // handle close stuff
-        uint16_t code =
-            WS_CLOSE_NOSTAT; // pessimistically assume no code provided
-
-        if (len < 2) {
-          s->on_ws_close(conn, code, NULL);
-        } else {
-
-          size_t mask_offset = frame_get_mask_offset(len);
-          size_t flen = len + mask_offset + 4;
-          if (flen > 125) {
-            // close frames can be more but this is the most that will be
-            // supported for various reasons close frames generally should
-            // contain just the 16bit code and a short string for the reason at
-            // most
-            return -1;
-          }
-
-          if (rbuf_len >= flen) {
-            if (len > 2) {
-              msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
-              code = (buf[6] << 8) | buf[7];
-              s->on_ws_close(conn, code, buf + mask_offset + 6);
-            } else {
-              msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
-              code = (buf[6] << 8) | buf[7];
-              s->on_ws_close(conn, code, NULL);
-            }
-            buf_consume(&conn->read_buf, flen);
-          }
-        }
+      if (len > 2) {
+        msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
+        code = (buf[6] << 8) | buf[7];
+        s->on_ws_close(conn, code, buf + mask_offset + 6);
+      } else {
+        msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
+        code = (buf[6] << 8) | buf[7];
+        s->on_ws_close(conn, code, NULL);
       }
+      buf_consume(&conn->read_buf, flen);
+      conn->rlo_watermark = 2;
     }
+  } else {
+    
+    return -1;
   }
 
   return 0;
@@ -596,9 +626,15 @@ int conn_drain_write_buf(struct ws_conn_t *conn) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       return 0;
     } else {
+      ws_server_t *s = ws_conn_server(conn);
+      conn_destroy(ws_conn_server(conn), conn, s->io_ctl.epoll_fd,
+                   WS_CLOSE_ABNORM, &s->io_ctl.ev);
       return -1;
     }
   } else if (n == 0) {
+    ws_server_t *s = ws_conn_server(conn);
+    conn_destroy(ws_conn_server(conn), conn, s->io_ctl.epoll_fd,
+                 WS_CLOSE_ABNORM, &s->io_ctl.ev);
     return -1;
   }
 
@@ -842,4 +878,3 @@ inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
 inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
 inline void ws_conn_ctx_attach(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
-
