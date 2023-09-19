@@ -201,7 +201,7 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
 int handle_conn(ws_server_t *s, struct ws_conn_t *conn);
 
-void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
+void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd, int err,
                   struct epoll_event *ev);
 
 int conn_drain_write_buf(struct ws_conn_t *conn);
@@ -371,13 +371,15 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
       } else {
         if (s->io_ctl.events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
-          conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
+          conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, WS_CLOSE_ABNORM,
+                       &ev);
           s->io_ctl.events[i].data.ptr = NULL;
         } else {
           if (s->io_ctl.events[i].events & EPOLLOUT) {
             int ret = conn_drain_write_buf(s->io_ctl.events[i].data.ptr);
             if (ret == -1) {
-              conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
+              conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd,
+                           WS_CLOSE_ABNORM, &ev);
               s->io_ctl.events[i].data.ptr = NULL;
             } else if (ret == 1) {
               s->on_ws_drain(s->io_ctl.events[i].data.ptr);
@@ -385,8 +387,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           } else if (s->io_ctl.events[i].events & EPOLLIN) {
             int ret = handle_conn(s, s->io_ctl.events[i].data.ptr);
             if (ret == -1) {
-              // printf("here\n");
-              conn_destroy(s, s->io_ctl.events[i].data.ptr, epfd, &ev);
+              // conn_destroy is called by handle_conn
               s->io_ctl.events[i].data.ptr = NULL;
             }
           }
@@ -413,13 +414,16 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
 
 int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
   ssize_t n = buf_recv(&conn->read_buf, conn->fd, 0);
+  int epfd = s->io_ctl.epoll_fd;
 
   if (n == -1) {
     if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
       return 0;
     }
+    conn_destroy(s, conn, epfd, errno, &s->io_ctl.ev);
     return -1;
   } else if (n == 0) {
+    conn_destroy(s, conn, epfd, WS_CLOSE_ABNORM, &s->io_ctl.ev);
     return -1;
   }
 
@@ -446,12 +450,15 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
     if (buf_len(&conn->read_buf) >= 2) {
       uint8_t fin = frame_get_fin(buf);
       if (!fin) {
+        // update WS_CLOSE_UNSUPP
+        conn_destroy(s, conn, epfd, WS_CLOSE_UNSUPP, &s->io_ctl.ev);
         return -1; // all frames must have fin bit set
       }
 
       int masked = frame_is_masked(buf);
       // if mask bit isn't set close the connection
       if (!masked) {
+        conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
         printf("received unmasked client data\n");
         return -1;
       }
@@ -484,6 +491,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
       } else if (opcode == OP_PING) {
         if (len > 125) {
           // PINGs must be 125 or less
+          conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
           return -1; // TODO(sah): send a Close frame, & call close callback
         }
         size_t mask_offset = frame_get_mask_offset(len);
@@ -500,6 +508,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
       } else if (opcode == OP_PONG) {
         if (len > 125) {
           // PONGs must be 125 or less
+          conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
           return -1; // TODO(sah): send a Close frame, & call close callback
         }
 
@@ -549,7 +558,9 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
         }
 
       } else if (opcode == OP_CONT) {
-        return -1; // unsupported
+        conn_destroy(s, conn, epfd, WS_CLOSE_UNSUPP,
+                     &s->io_ctl.ev); // unsupported for now
+        return -1;                   // unsupported
       }
     }
   }
@@ -557,11 +568,8 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
   return 0;
 }
 
-void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
+void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd, int err,
                   struct epoll_event *ev) {
-  int err = errno;
-  s->on_ws_disconnect(conn, err); // call the user's callback to allow clean up
-                                  // on data associated with this connection
   int ret;
   ret = epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, ev);
   if (ret == -1) {
@@ -572,6 +580,10 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
   if (ret == -1) {
     int err = errno;
     s->on_ws_err(s, err);
+  } else {
+    s->on_ws_disconnect(conn,
+                        err); // call the user's callback to allow clean up
+                              // on data associated with this connection
   }
 
   free(conn);
@@ -580,7 +592,7 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
 int conn_drain_write_buf(struct ws_conn_t *conn) {
   size_t to_write = buf_len(&conn->read_buf);
   ssize_t n = 0;
-  
+
   n = buf_send(&conn->write_buf, conn->fd, 0);
   if (n == -1) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -611,7 +623,7 @@ will be called
 inline int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(s, c, msg, n, OP_PONG);
   if (stat == -1) {
-    conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
+    conn_destroy(s, c, s->io_ctl.epoll_fd, errno, &s->io_ctl.ev);
   }
   return stat == 1;
 }
@@ -626,7 +638,7 @@ will be called
 inline int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(s, c, msg, n, OP_PING);
   if (stat == -1) {
-    conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
+    conn_destroy(s, c, s->io_ctl.epoll_fd, errno, &s->io_ctl.ev);
   }
   return stat == 1;
 }
@@ -642,7 +654,7 @@ will be called
 inline int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(s, c, msg, n, OP_BIN);
   if (stat == -1) {
-    conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
+    conn_destroy(s, c, s->io_ctl.epoll_fd, errno, &s->io_ctl.ev);
   }
   return stat == 1;
 }
@@ -658,7 +670,7 @@ will be called
 inline int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(s, c, msg, n, OP_TXT);
   if (stat == -1) {
-    conn_destroy(s, c, s->io_ctl.epoll_fd, &s->io_ctl.ev);
+    conn_destroy(s, c, s->io_ctl.epoll_fd, errno, &s->io_ctl.ev);
   }
   return stat == 1;
 }
