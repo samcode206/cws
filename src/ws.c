@@ -120,6 +120,10 @@ int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len, size_t *res) {
   return 0;
 }
 
+static inline int frame_has_reserved_bits_set(uint8_t *buf) {
+  return (buf[0] & 0x70) != 0;
+}
+
 static inline uint32_t frame_is_masked(const unsigned char *buf) {
   return (buf[1] >> 7) & 0x01;
 }
@@ -496,9 +500,8 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
   uint8_t *buf = buf_peek(&conn->read_buf);
   int masked = frame_is_masked(buf);
   // if mask bit isn't set close the connection
-  if (!masked) {
+  if ((masked == 0) | (frame_has_reserved_bits_set(buf) == 1)) {
     conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
-    printf("received unmasked client data\n");
     return -1;
   }
 
