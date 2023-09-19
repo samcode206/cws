@@ -64,7 +64,7 @@ typedef struct server {
   size_t open_conns; // open websocket connections
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
-  ws_fmsg_cb_t  on_ws_fmsg;
+  ws_fmsg_cb_t on_ws_fmsg;
   ws_ping_cb_t on_ws_ping;
   ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;
@@ -225,7 +225,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
       !params->on_ws_drain || !params->on_ws_disconnect ||
-      !params->on_ws_ping || !params->on_ws_pong || !params->on_ws_err || !params->on_ws_fmsg) {
+      !params->on_ws_ping || !params->on_ws_pong || !params->on_ws_err ||
+      !params->on_ws_fmsg) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -451,7 +452,8 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
   } else {
     if (buf_len(&conn->read_buf) >= 2) {
       uint8_t fin = frame_get_fin(buf);
-      if (!fin) {
+      uint8_t opcode = frame_get_opcode(buf);
+      if ((!fin) | (opcode == OP_CONT)) {
         // update WS_CLOSE_UNSUPP
         // TODO: read each fragment call the callback for fragmented frames when
         // a single fragmented frame or more are in the buffer then remove them
@@ -461,8 +463,30 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
         // spans indefinably for this reason, we route the msg to on_ws_fmsg
         // once we have the full frame then we remove it from the ws connection
         // buffer the user can copy the data when we call on_ws_fmsg
-        conn_destroy(s, conn, epfd, WS_CLOSE_UNSUPP, &s->io_ctl.ev);
-        return -1; // all frames must have fin bit set
+
+        size_t len = frame_payload_get_len(buf);
+        if (len == PAYLOAD_LEN_16) {
+          if (buf_len(&conn->read_buf) > 3) {
+            len = frame_payload_get_len126(buf);
+          } else {
+            return 0;
+          }
+        } else if (len == PAYLOAD_LEN_64) {
+          if (buf_len(&conn->read_buf) > 9) {
+            len = frame_payload_get_len127(buf);
+          } else {
+            return 0;
+          }
+        }
+        size_t mask_offset = frame_get_mask_offset(len);
+        size_t flen = len + mask_offset + 4;
+        if (buf_len(&conn->read_buf) >= flen) {
+          s->on_ws_fmsg(conn, buf + mask_offset + 4, len, opcode, fin == 1);
+
+          buf_consume(&conn->read_buf, flen);
+        }
+
+        return 0;
       }
 
       int masked = frame_is_masked(buf);
@@ -473,7 +497,6 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
         return -1;
       }
 
-      uint8_t opcode = frame_get_opcode(buf);
       size_t len = frame_payload_get_len(buf);
       if (len == PAYLOAD_LEN_16) {
         if (buf_len(&conn->read_buf) > 3) {
@@ -566,16 +589,6 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
             buf_consume(&conn->read_buf, flen);
           }
         }
-
-      } else if (opcode == OP_CONT) {
-        // frame received
-        conn_destroy(s, conn, epfd, WS_CLOSE_UNSUPP,
-                     &s->io_ctl.ev); // unsupported for now
-
-        if (fin) {
-          // final fragment
-        }
-        return -1;
       }
     }
   }

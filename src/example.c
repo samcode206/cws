@@ -35,8 +35,13 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
 
 void on_fragmented_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
                        bool fin) {
-                        
-                       }
+  msg_unmask(msg, msg, n);
+    printf("is final: %d\n", fin);
+  printf("on_fragmented_msg: ");
+  fwrite(msg, sizeof(char), n, stdout);
+  fwrite("\n", 1, 1, stdout);
+
+}
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d reason: %s\n", code, (char *)reason);
