@@ -35,7 +35,8 @@ ws.on("unexpected-response", (req, res) => {
 
 process.stdin.on("data", (data) => {
   if (ws.OPEN) {
-    ws.send(data.toString("ascii"), (err) => {
+    let data = '*'.repeat(126);
+    ws.send(data, (err) => {
       if (err) {
         console.error(err);
       }

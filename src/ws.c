@@ -106,9 +106,9 @@ static inline size_t frame_get_mask_offset(size_t n) {
   return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
-inline void msg_unmask(unsigned char *src, unsigned char *dst, size_t len) {
+inline void msg_unmask(uint8_t *src, uint8_t *dst, size_t len) {
   size_t mask_idx = 0;
-  uint8_t *mask = (uint8_t *)(src - frame_get_mask_offset(len) - 2);
+  uint8_t *mask = (uint8_t *)src - 4;
 
   for (size_t i = 0; i < len; ++i) {
     dst[i] = src[i] ^ mask[mask_idx];
@@ -451,8 +451,23 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
     buf_consume(&conn->read_buf, buf_len(&conn->read_buf));
   } else {
     if (buf_len(&conn->read_buf) >= 2) {
+
       uint8_t fin = frame_get_fin(buf);
       uint8_t opcode = frame_get_opcode(buf);
+      size_t len = frame_payload_get_len(buf);
+      if (len == PAYLOAD_LEN_16) {
+        if (buf_len(&conn->read_buf) > 3) {
+          len = frame_payload_get_len126(buf);
+        } else {
+          return 0;
+        }
+      } else if (len == PAYLOAD_LEN_64) {
+        if (buf_len(&conn->read_buf) > 9) {
+          len = frame_payload_get_len127(buf);
+        } else {
+          return 0;
+        }
+      }
       if ((!fin) | (opcode == OP_CONT)) {
         // update WS_CLOSE_UNSUPP
         // TODO: read each fragment call the callback for fragmented frames when
@@ -464,20 +479,7 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
         // once we have the full frame then we remove it from the ws connection
         // buffer the user can copy the data when we call on_ws_fmsg
 
-        size_t len = frame_payload_get_len(buf);
-        if (len == PAYLOAD_LEN_16) {
-          if (buf_len(&conn->read_buf) > 3) {
-            len = frame_payload_get_len126(buf);
-          } else {
-            return 0;
-          }
-        } else if (len == PAYLOAD_LEN_64) {
-          if (buf_len(&conn->read_buf) > 9) {
-            len = frame_payload_get_len127(buf);
-          } else {
-            return 0;
-          }
-        }
+
         size_t mask_offset = frame_get_mask_offset(len);
         size_t flen = len + mask_offset + 4;
         if (buf_len(&conn->read_buf) >= flen) {
@@ -497,25 +499,9 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
         return -1;
       }
 
-      size_t len = frame_payload_get_len(buf);
-      if (len == PAYLOAD_LEN_16) {
-        if (buf_len(&conn->read_buf) > 3) {
-          len = frame_payload_get_len126(buf);
-        } else {
-          return 0;
-        }
-      } else if (len == PAYLOAD_LEN_64) {
-        if (buf_len(&conn->read_buf) > 9) {
-          len = frame_payload_get_len127(buf);
-        } else {
-          return 0;
-        }
-      }
-
       if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
         size_t mask_offset = frame_get_mask_offset(len);
         size_t flen = len + mask_offset + 4;
-
         if (buf_len(&conn->read_buf) >= flen) {
           s->on_ws_msg(conn, buf + mask_offset + 4, len, opcode == OP_BIN);
 

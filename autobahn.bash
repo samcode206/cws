@@ -6,4 +6,4 @@ cd ./test/autobahn && sudo docker run -it --rm \
     --name fuzzingclient \
      crossbario/autobahn-testsuite \
      wstest -m fuzzingclient --spec /config/fuzzingclient.json \
-     && cd .. \
+
