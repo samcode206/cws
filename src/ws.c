@@ -64,6 +64,7 @@ typedef struct server {
   size_t open_conns; // open websocket connections
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
+  ws_fmsg_cb_t  on_ws_fmsg;
   ws_ping_cb_t on_ws_ping;
   ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;
@@ -224,7 +225,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
       !params->on_ws_drain || !params->on_ws_disconnect ||
-      !params->on_ws_ping || !params->on_ws_pong || !params->on_ws_err) {
+      !params->on_ws_ping || !params->on_ws_pong || !params->on_ws_err || !params->on_ws_fmsg) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -298,6 +299,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_ping = params->on_ws_ping;
   s->on_ws_pong = params->on_ws_pong;
   s->on_ws_msg = params->on_ws_msg;
+  s->on_ws_fmsg = params->on_ws_fmsg;
   s->on_ws_drain = params->on_ws_drain;
   s->on_ws_close = params->on_ws_close;
   s->on_ws_disconnect = params->on_ws_disconnect;
@@ -451,11 +453,14 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
       uint8_t fin = frame_get_fin(buf);
       if (!fin) {
         // update WS_CLOSE_UNSUPP
-        // TODO: read each fragment call the callback for fragmented frames when a single fragmented frame or more are in the buffer
-        // then remove them from the buffer, we can't present the full msg to the user through on_msg because we don't know when the msg ends
-        // and it could be that the msg is longer than the buffer size or it could be that the msg spans indefinably
-        // for this reason, we route the msg to on_ws_fmsg once we have the full frame then we remove it from the ws connection buffer
-        // the user can copy the data when we call on_ws_fmsg 
+        // TODO: read each fragment call the callback for fragmented frames when
+        // a single fragmented frame or more are in the buffer then remove them
+        // from the buffer, we can't present the full msg to the user through
+        // on_msg because we don't know when the msg ends and it could be that
+        // the msg is longer than the buffer size or it could be that the msg
+        // spans indefinably for this reason, we route the msg to on_ws_fmsg
+        // once we have the full frame then we remove it from the ws connection
+        // buffer the user can copy the data when we call on_ws_fmsg
         conn_destroy(s, conn, epfd, WS_CLOSE_UNSUPP, &s->io_ctl.ev);
         return -1; // all frames must have fin bit set
       }
@@ -563,9 +568,14 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
         }
 
       } else if (opcode == OP_CONT) {
+        // frame received
         conn_destroy(s, conn, epfd, WS_CLOSE_UNSUPP,
                      &s->io_ctl.ev); // unsupported for now
-        return -1;                   // unsupported
+
+        if (fin) {
+          // final fragment
+        }
+        return -1;
       }
     }
   }

@@ -91,6 +91,7 @@ typedef void (*ws_msg_cb_t)(
     ws_conn_t *c, void *msg, size_t n,
     bool bin); /* called when a websocket msg is available */
 
+typedef void (*ws_fmsg_cb_t)(ws_conn_t *c, void *msg, size_t n, uint8_t op, bool fin);  /* called when msg is fragmented */
 typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg,
                              size_t n); /* called when a client sends a PING */
 
@@ -117,6 +118,7 @@ struct ws_server_params {
   size_t max_events; // defaults to 1024
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
+  ws_fmsg_cb_t on_ws_fmsg;
   ws_ping_cb_t on_ws_ping;
   ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;

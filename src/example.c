@@ -21,7 +21,7 @@ void on_pong(ws_conn_t *c, void *msg, size_t n) {
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   msg_unmask(msg, msg, n);
   printf("on_msg: ");
-  fwrite(msg, sizeof (char), n, stdout);
+  fwrite(msg, sizeof(char), n, stdout);
   fwrite("\n", 1, 1, stdout);
   int stat = ws_conn_send_txt(ws_conn_server(c), c, msg, n);
 
@@ -33,12 +33,20 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   }
 }
 
-void on_close(ws_conn_t *ws_conn, int code, const void *reason) { 
+void on_fragmented_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
+                       bool fin) {
+                        
+                       }
+
+void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d reason: %s\n", code, (char *)reason);
-  ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason, strlen(reason), code);
+  ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason,
+                strlen(reason), code);
 }
 
-void on_disconnect(ws_conn_t *ws_conn, int err) { printf("on_disconnect %d\n", err); }
+void on_disconnect(ws_conn_t *ws_conn, int err) {
+  printf("on_disconnect %d\n", err);
+}
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
 
@@ -55,6 +63,7 @@ int main(void) {
                                 .max_events = max_events,
                                 .on_ws_open = on_open,
                                 .on_ws_msg = on_msg,
+                                .on_ws_fmsg = on_fragmented_msg,
                                 .on_ws_ping = on_ping,
                                 .on_ws_pong = on_pong,
                                 .on_ws_drain = on_drain,
