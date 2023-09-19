@@ -514,8 +514,7 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
   size_t mask_offset = frame_get_mask_offset(len);
   size_t flen = len + mask_offset + 4;
-  printf("rbuf_len: %zu %zu %zu %zu %d\n", rbuf_len, flen, conn->rlo_watermark,
-         len, opcode);
+
   if (rbuf_len < flen) {
     conn->rlo_watermark = flen; // assuming payload is at the front
     return 0;
