@@ -36,7 +36,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define RBUF_SIZE 8192
+#define RBUF_SIZE 1024 * 128
 
 typedef struct {
   size_t rpos;
