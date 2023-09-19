@@ -451,6 +451,11 @@ int handle_conn(ws_server_t *s, struct ws_conn_t *conn) {
       uint8_t fin = frame_get_fin(buf);
       if (!fin) {
         // update WS_CLOSE_UNSUPP
+        // TODO: read each fragment call the callback for fragmented frames when a single fragmented frame or more are in the buffer
+        // then remove them from the buffer, we can't present the full msg to the user through on_msg because we don't know when the msg ends
+        // and it could be that the msg is longer than the buffer size or it could be that the msg spans indefinably
+        // for this reason, we route the msg to on_ws_fmsg once we have the full frame then we remove it from the ws connection buffer
+        // the user can copy the data when we call on_ws_fmsg 
         conn_destroy(s, conn, epfd, WS_CLOSE_UNSUPP, &s->io_ctl.ev);
         return -1; // all frames must have fin bit set
       }
