@@ -4,7 +4,9 @@
 void on_open(ws_conn_t *c) { }
 
 void on_ping(ws_conn_t *c, void *msg, size_t n) {
-  printf("on_ping: %s\n", (char *)msg);
+  printf("on_ping:");
+  fwrite(msg, sizeof(char), n, stdout);
+  fwrite("\n", 1, 1, stdout);
   int stat = ws_conn_pong(ws_conn_server(c), c, msg, n);
   if (stat == 1) {
     printf("pong sent\n");

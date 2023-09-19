@@ -34,11 +34,13 @@ ws.on("unexpected-response", (req, res) => {
 
 process.stdin.on("data", (data) => {
   if (ws.OPEN) {
-    ws.ping(data.toString('ascii'), (err) => {
-      if (err) {
-        console.error(err);
-      }
-    });
+    for (let i = 0; i < 10; i++){
+      ws.ping(`payload-${i}`, (err) => {
+        if (err) {
+          console.error(err);
+        }
+      });
+    }
   } else if (ws.CONNECTING) {
     console.warn("please try later connecting...");
   } else {
