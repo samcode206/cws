@@ -589,7 +589,8 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       conn->rlo_watermark = 2;
     }
   } else {
-    
+    // unknown opcode
+    conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
     return -1;
   }
 
