@@ -133,12 +133,29 @@ static inline size_t frame_get_mask_offset(size_t n) {
 }
 
 inline void msg_unmask(uint8_t *src, uint8_t *dst, size_t len) {
-  size_t mask_idx = 0;
   uint8_t *mask = (uint8_t *)src - 4;
 
   for (size_t i = 0; i < len; ++i) {
+    dst[i] = src[i] ^ mask[i & 3];
+  }
+}
+
+void msg_unmask2(volatile uint8_t *src, volatile uint8_t *dst, size_t len) {
+  size_t mask_idx = 0;
+  uint8_t *mask = (uint8_t *)(src - 4);
+  size_t i = 0;
+  size_t unaligned = len & 3;
+
+  for (; i < unaligned; ++i) {
     dst[i] = src[i] ^ mask[mask_idx];
     mask_idx = (mask_idx + 1) & 3;
+  }
+
+  for (; i < len; i += 4) {
+    dst[i] = src[i] ^ mask[mask_idx & 3];
+    dst[i + 1] = src[i + 1] ^ mask[(mask_idx + 1) & 3];
+    dst[i + 2] = src[i + 2] ^ mask[(mask_idx + 2) & 3];
+    dst[i + 3] = src[i + 3] ^ mask[(mask_idx + 3) & 3];
   }
 }
 
@@ -585,7 +602,7 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
       msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
       code = (buf[6] << 8) | buf[7];
-      // this is horrendous, please remove this ASAP 
+      // this is horrendous, please remove this ASAP
       if (code < 1000) {
         s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
         return -1;
