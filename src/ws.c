@@ -140,7 +140,7 @@ inline void msg_unmask(uint8_t *src, uint8_t *dst, size_t len) {
   }
 }
 
-void msg_unmask2(volatile uint8_t *src, volatile uint8_t *dst, size_t len) {
+void msg_unmask2(uint8_t *src, uint8_t *dst, size_t len) {
   size_t mask_idx = 0;
   uint8_t *mask = (uint8_t *)(src - 4);
   size_t i = 0;
