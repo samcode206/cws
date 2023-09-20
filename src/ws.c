@@ -564,12 +564,17 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
   } else if (opcode == OP_CLOSE) {
     // handle close stuff
     uint16_t code = WS_CLOSE_NOSTAT; // pessimistically assume no code provided
+    if (!len) {
+      s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
+      return -1;
+    } else if (len < 2) {
+      s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+      return -1;
+    }
 
-    if (len < 2) {
-      s->on_ws_close(conn, code, NULL);
-    } else {
+    else {
       size_t mask_offset = frame_get_mask_offset(len);
-      if (flen > 125) {
+      if (len > 125) {
         // close frames can be more but this is the most that will be
         // supported for various reasons close frames generally should
         // contain just the 16bit code and a short string for the reason at
@@ -578,18 +583,43 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
         return -1;
       }
 
-      if (len > 2) {
-        msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
-        code = (buf[6] << 8) | buf[7];
-        s->on_ws_close(conn, code, buf + mask_offset + 6);
-      } else {
-        msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
-        code = (buf[6] << 8) | buf[7];
-        s->on_ws_close(conn, code, NULL);
+      msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
+      code = (buf[6] << 8) | buf[7];
+      // this is horrendous, please remove this ASAP 
+      if (code < 1000) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
+      } else if (code == 1004) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
+      } else if (code == 1100) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
+      } else if (code == 1005) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
+      } else if (code == 1006) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
+      } else if (code == 1016) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
+      } else if (code == 1015) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
+      } else if (code == 2000) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
+      } else if (code == 2999) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return -1;
       }
-      buf_consume(&conn->read_buf, flen);
-      conn->rlo_watermark = 2;
+
+      s->on_ws_close(conn, code, buf + mask_offset + 6);
+
+      return -1; // stop with -1 here this is the last frame we will handle
     }
+
   } else {
     // unknown opcode
     conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);

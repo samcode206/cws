@@ -1,7 +1,7 @@
 #include "ws.h"
-#include <stdio.h>
 
-void on_open(ws_conn_t *c) { }
+
+void on_open(ws_conn_t *c) {}
 
 void on_ping(ws_conn_t *c, void *msg, size_t n) {
   printf("on_ping:");
@@ -26,36 +26,36 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   fwrite(msg, sizeof(char), n, stdout);
   fwrite("\n", 1, 1, stdout);
   int stat;
-  if (bin){
-      stat = ws_conn_send(ws_conn_server(c), c, msg, n);
-  } 
-  else {
-      stat = ws_conn_send_txt(ws_conn_server(c), c, msg, n);
+  if (bin) {
+    stat = ws_conn_send(ws_conn_server(c), c, msg, n);
+  } else {
+    stat = ws_conn_send_txt(ws_conn_server(c), c, msg, n);
   }
 
-    if (stat == 1) {
+  if (stat == 1) {
     printf("msg sent\n");
   } else {
     printf("partial send or an error occurred waiting for <on_ws_drain | "
            "on_ws_disconnect>\n");
   }
-
 }
 
 void on_fragmented_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
                        bool fin) {
   msg_unmask(msg, msg, n);
-    printf("is final: %d\n", fin);
+  printf("is final: %d\n", fin);
   printf("on_fragmented_msg: ");
   fwrite(msg, sizeof(char), n, stdout);
   fwrite("\n", 1, 1, stdout);
-
 }
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d reason: %s\n", code, (char *)reason);
-  ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason,
-                0, code);
+  if ((code == WS_CLOSE_ABNORM) | (code == WS_CLOSE_NOSTAT)) {
+    ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason, 0, WS_CLOSE_NORMAL);
+  } else {
+    ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason, 0, code);
+  }
 }
 
 void on_disconnect(ws_conn_t *ws_conn, int err) {
