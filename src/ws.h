@@ -148,7 +148,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params,
 int ws_server_start(ws_server_t *s, int backlog); // start serving connections
 
 
-void msg_unmask(unsigned char *src, unsigned char *dst,
-                              size_t len);
+void msg_unmask(uint8_t *src,
+                              size_t n);
 
 #endif /* WS_PROTOCOL_PARSING23_H */

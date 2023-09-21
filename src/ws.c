@@ -140,20 +140,20 @@ static inline size_t frame_get_mask_offset(size_t n) {
 //   }
 // }
 
-void msg_unmask(uint8_t *src, uint8_t *dst, size_t len) {
+void msg_unmask(uint8_t *src, size_t n) {
   uint8_t *mask = (uint8_t *)(src - 4);
   size_t i = 0;
-  size_t unaligned = len & 3;
+  size_t unaligned = n & 3;
 
   for (; i < unaligned; ++i) {
-    dst[i] = src[i] ^ mask[i & 3];
+    src[i] = src[i] ^ mask[i & 3];
   }
 
-  for (; i < len; i += 4) {
-    dst[i] = src[i] ^ mask[i & 3];
-    dst[i + 1] = src[i + 1] ^ mask[(i + 1) & 3];
-    dst[i + 2] = src[i + 2] ^ mask[(i + 2) & 3];
-    dst[i + 3] = src[i + 3] ^ mask[(i + 3) & 3];
+  for (; i < n; i += 4) {
+    src[i] = src[i] ^ mask[i & 3];
+    src[i + 1] = src[i + 1] ^ mask[(i + 1) & 3];
+    src[i + 2] = src[i + 2] ^ mask[(i + 2) & 3];
+    src[i + 3] = src[i + 3] ^ mask[(i + 3) & 3];
   }
 }
 
@@ -566,7 +566,7 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
     size_t mask_offset = frame_get_mask_offset(len);
 
-    msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
+    msg_unmask(buf + mask_offset + 4, len);
     if (opcode == OP_PING) {
       s->on_ws_ping(conn, buf + mask_offset + 4, len);
     } else {
@@ -598,7 +598,7 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
         return -1;
       }
 
-      msg_unmask(buf + mask_offset + 4, buf + mask_offset + 4, len);
+      msg_unmask(buf + mask_offset + 4, len);
       code = (buf[6] << 8) | buf[7];
       // this is horrendous, please remove this ASAP
       if (code < 1000) {
