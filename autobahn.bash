@@ -1,6 +1,6 @@
 #!bin/bash
 
-cd ./test/autobahn && sudo docker run -it --rm \
+sudo rm -rf ./test/autobahn/reports && cd ./test/autobahn && sudo docker run -it --rm \
     -v "${PWD}/config:/config"  -v "${PWD}/reports:/reports" \
     --network="host"     \
     --name fuzzingclient \
