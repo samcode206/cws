@@ -48,7 +48,6 @@ struct ws_conn_t {
       rlo_watermark; // minimum amount of bytes before beginning frame decoding
   ws_server_t *base;
   void *ctx; // user data ptr
-  struct iovec iov[2];
   buf_t read_buf;
   buf_t write_buf;
 };
@@ -767,18 +766,19 @@ void ws_conn_close(ws_server_t *s, ws_conn_t *conn, void *msg, size_t len,
 
   if (conn->writeable) {
     // reason msg was provided
+    struct iovec iovs[2];
     if (len) {
       uint8_t buf1[4] = {0, 0};
       buf1[0] = FIN | OP_CLOSE;
       buf1[1] = len + 2;
       buf1[2] = (code >> 8) & 0xFF;
       buf1[3] = code & 0xFF;
-      conn->iov[0].iov_len = 4;
-      conn->iov[0].iov_base = buf1;
-      conn->iov[1].iov_len = len;
-      conn->iov[1].iov_base = msg;
+      iovs[0].iov_len = 4;
+      iovs[0].iov_base = buf1;
+      iovs[1].iov_len = len;
+      iovs[1].iov_base = msg;
 
-      writev(conn->fd, conn->iov, 2);
+      writev(conn->fd, iovs, 2);
     } else {
       uint8_t buf[4] = {0, 0};
       buf[0] = FIN | OP_CLOSE;
@@ -830,7 +830,7 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
   if ((conn->writeable == 1) & (buf_space(&conn->write_buf) > flen)) {
     uint8_t hbuf[hlen];
     memset(hbuf, 0, hlen);
-
+    struct iovec iovs[2];
     hbuf[0] = FIN | op; // Set FIN bit and opcode
     if (hlen == 2) {
       hbuf[1] = (uint8_t)len;
@@ -850,12 +850,12 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
       hbuf[9] = len & 0xFF;
     }
 
-    conn->iov[0].iov_len = hlen;
-    conn->iov[0].iov_base = hbuf;
-    conn->iov[1].iov_len = len;
-    conn->iov[1].iov_base = data;
+    iovs[0].iov_len = hlen;
+    iovs[0].iov_base = hbuf;
+    iovs[1].iov_len = len;
+    iovs[1].iov_base = data;
 
-    n = writev(conn->fd, conn->iov, 2);
+    n = writev(conn->fd, iovs, 2);
     if (n == 0) {
       return -1;
     } else if (n == -1) {
