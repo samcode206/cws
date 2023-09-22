@@ -143,9 +143,9 @@ static inline size_t frame_get_mask_offset(size_t n) {
 void msg_unmask(uint8_t *src, size_t n) {
   uint8_t *mask = (uint8_t *)(src - 4);
   size_t i = 0;
-  size_t unaligned = n & 3;
+  size_t left_over = n & 3;
 
-  for (; i < unaligned; ++i) {
+  for (; i < left_over; ++i) {
     src[i] = src[i] ^ mask[i & 3];
   }
 
