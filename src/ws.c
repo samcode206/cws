@@ -44,8 +44,7 @@ struct ws_conn_t {
   int fd;
   bool writeable;
   bool upgraded;
-  size_t
-      rlo_watermark; // minimum amount of bytes before beginning frame decoding
+  size_t rlo_watermark; // minimum amount of bytes before beginning frame decoding
   ws_server_t *base;
   void *ctx; // user data ptr
   buf_t read_buf;
