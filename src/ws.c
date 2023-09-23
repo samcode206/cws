@@ -105,13 +105,13 @@ int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len, size_t *res) {
     if (rbuf_len > 3) {
       *res = frame_payload_get_len126(buf);
     } else {
-      return 3;
+      return 4;
     }
   } else if (raw_len == PAYLOAD_LEN_64) {
     if (rbuf_len > 9) {
       *res = frame_payload_get_len127(buf);
     } else {
-      return 9;
+      return 10;
     }
   }
 
