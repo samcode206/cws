@@ -586,7 +586,6 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
     }
 
     else {
-      size_t mask_offset = frame_get_mask_offset(len);
       if (len > 125) {
         // close frames can be more but this is the most that will be
         // supported for various reasons close frames generally should
