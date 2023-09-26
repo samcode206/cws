@@ -47,6 +47,8 @@ process.stdin.on("data", (chunk) => {
         console.error(err);
       }
     });
+
+    ws.ping('hi');
   } else if (ws.CONNECTING) {
     console.warn("please try later connecting...");
   } else {

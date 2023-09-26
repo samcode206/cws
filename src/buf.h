@@ -104,7 +104,12 @@ static inline int buf_put(buf_t *r, const void *data, size_t n) {
 
 
 static inline uint8_t *buf_peek(buf_t *r) { 
-  return r->buf + r->rpos; }
+  return r->buf + r->rpos; 
+}
+
+static inline uint8_t *buf_peek_at(buf_t *r, size_t at){
+  return r->buf + at;
+}
 
 static inline uint8_t *buf_peekn(buf_t *r, size_t n) {
   if (buf_len(r) < n) {

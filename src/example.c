@@ -21,7 +21,6 @@ void on_pong(ws_conn_t *c, void *msg, size_t n) {
 }
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
-  msg_unmask(msg, n);
   printf("on_msg: ");
   fwrite(msg, sizeof(char), n, stdout);
   fwrite("\n", 1, 1, stdout);
@@ -40,14 +39,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   }
 }
 
-void on_fragmented_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
-                       bool fin) {
-  msg_unmask(msg, n);
-  printf("is final: %d\n", fin);
-  printf("on_fragmented_msg: ");
-  fwrite(msg, sizeof(char), n, stdout);
-  fwrite("\n", 1, 1, stdout);
-}
+
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d reason: %s\n", code, (char *)reason);
@@ -77,7 +69,6 @@ int main(void) {
                                 .max_events = max_events,
                                 .on_ws_open = on_open,
                                 .on_ws_msg = on_msg,
-                                .on_ws_fmsg = on_fragmented_msg,
                                 .on_ws_ping = on_ping,
                                 .on_ws_pong = on_pong,
                                 .on_ws_drain = on_drain,

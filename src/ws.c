@@ -44,7 +44,11 @@ struct ws_conn_t {
   int fd;
   bool writeable;
   bool upgraded;
-  size_t rlo_watermark; // minimum amount of bytes before beginning frame decoding
+  bool fmsg;
+  bool fmsg_bin;
+  size_t fmsg_end;
+  size_t
+      rlo_watermark; // minimum amount of bytes before beginning frame decoding
   ws_server_t *base;
   void *ctx; // user data ptr
   buf_t read_buf;
@@ -64,7 +68,6 @@ typedef struct server {
   size_t open_conns; // open websocket connections
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
-  ws_fmsg_cb_t on_ws_fmsg;
   ws_ping_cb_t on_ws_ping;
   ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;
@@ -241,6 +244,8 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
 int handle_ws(ws_server_t *s, struct ws_conn_t *conn);
 
+void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn);
+
 int handle_http(ws_server_t *s, struct ws_conn_t *conn);
 
 void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd, int err,
@@ -265,8 +270,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
       !params->on_ws_drain || !params->on_ws_disconnect ||
-      !params->on_ws_ping || !params->on_ws_pong || !params->on_ws_err ||
-      !params->on_ws_fmsg) {
+      !params->on_ws_ping || !params->on_ws_pong || !params->on_ws_err) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -340,7 +344,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_ping = params->on_ws_ping;
   s->on_ws_pong = params->on_ws_pong;
   s->on_ws_msg = params->on_ws_msg;
-  s->on_ws_fmsg = params->on_ws_fmsg;
   s->on_ws_drain = params->on_ws_drain;
   s->on_ws_close = params->on_ws_close;
   s->on_ws_disconnect = params->on_ws_disconnect;
@@ -432,10 +435,14 @@ int ws_server_start(ws_server_t *s, int backlog) {
               if (c->upgraded == 0) {
                 handle_http(s, c);
               } else {
-                while ((buf_len(&c->read_buf) >= c->rlo_watermark)) {
-                  ret = handle_ws(s, c);
-                  if (ret == -1)
-                    break;
+                if (c->fmsg) {
+                  handle_ws_fmsg(s, c);
+                } else {
+                  while ((buf_len(&c->read_buf) >= c->rlo_watermark)) {
+                    ret = handle_ws(s, c);
+                    if (ret == -1)
+                      break;
+                  }
                 }
               }
             }
@@ -507,9 +514,142 @@ int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
   return -1;
 }
 
-int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
+void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
   int epfd = s->io_ctl.epoll_fd;
 
+  uint8_t *buf;
+  size_t rbuf_len = rbuf_len = conn->read_buf.wpos - conn->fmsg_end;
+
+  int masked;
+  uint8_t fin;
+  uint8_t opcode;
+
+  size_t msg_len;     // user data portion size
+  int missing_len;    // length missing to be able to calculate msg_len
+  size_t mask_offset; // mask offset (depends on msg length)
+  size_t flen;        // full frame length
+
+  while (1) {
+    if (rbuf_len < 2) {
+      conn->rlo_watermark = 2;
+      return;
+    }
+
+    buf = buf_peek_at(&conn->read_buf, conn->fmsg_end);
+
+    assert(rbuf_len < RBUF_SIZE); // no wrap around test
+    masked = frame_is_masked(buf);
+    // if mask bit isn't set close the connection
+    if ((masked == 0) | (frame_has_reserved_bits_set(buf) == 1)) {
+      printf("unmasked or reserved bits set\n");
+      conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+      return;
+    }
+    fin = frame_get_fin(buf);
+    opcode = frame_get_opcode(buf);
+
+    // decode msg length, if we can't due to a partial header, stop
+    // and wait for it by adjusting the read watermark
+    missing_len = frame_decode_payload_len(buf, rbuf_len, &msg_len);
+    if (missing_len) {
+      conn->rlo_watermark = missing_len;
+      return;
+    }
+
+    mask_offset = frame_get_mask_offset(msg_len);
+    flen = msg_len + mask_offset + 4;
+
+    printf("wpos=%zu rpos=%zu fmsg_read_idx=%zu buf_size=%zu\n",
+           conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end, rbuf_len);
+
+    // check to see if the full frame is available
+    // it not stop, adjust and adjust the read watermark
+    if (rbuf_len < flen) {
+      conn->rlo_watermark = flen;
+      return;
+    }
+
+    if ((opcode == OP_TXT) | (opcode == OP_BIN) | (opcode == OP_CONT)) {
+      if (!fin) {
+        // unmask the msg
+        msg_unmask(buf + mask_offset + 4, msg_len);
+        printf("%.*s\n", (int)msg_len, buf + mask_offset + 4);
+        memmove(buf, buf + mask_offset + 4, rbuf_len - mask_offset - 4);
+        rbuf_len = conn->read_buf.wpos - flen - conn->fmsg_end;
+
+        conn->fmsg_end += msg_len;
+        conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
+        buf = buf_peek_at(&conn->read_buf,  conn->fmsg_end);
+        printf("flen = %zu\n", flen);
+        printf("read fragmented msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
+               "buf_size=%zu\n",
+               conn->read_buf.wpos, conn->read_buf.rpos,  conn->fmsg_end, rbuf_len);
+        printf("-----------------------------------------\n");
+      } else {
+        if (opcode != OP_CONT) {
+          conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+          return;
+        } else {
+          // back to non fragmented msgs
+          conn->fmsg = 0;
+          s->on_ws_msg(conn, buf_peek(&conn->read_buf), conn->fmsg_end - conn->read_buf.rpos, conn->fmsg_bin);
+          buf_consume(&conn->read_buf, conn->fmsg_end - conn->read_buf.rpos);
+          return;
+        }
+      }
+    } else if ((opcode == OP_PING) | (opcode == OP_PONG)) {
+      if (!fin) {
+        conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+        return;
+      } else {
+        // handle interleaved control frame
+        if (msg_len > 125) {
+          // PINGs must be 125 or less
+          conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+          return; // TODO(sah): send a Close frame, & call close callback
+        }
+
+        msg_unmask(buf + mask_offset + 4, msg_len);
+        if (opcode == OP_PING) {
+          s->on_ws_ping(conn, buf + mask_offset + 4, msg_len);
+        } else {
+          s->on_ws_pong(conn, buf + mask_offset + 4, msg_len);
+        }
+        memmove(conn->read_buf.buf + conn->fmsg_end, buf + flen,
+                rbuf_len - flen);
+        rbuf_len = conn->read_buf.wpos - conn->fmsg_end - flen;
+        printf("wpos before: %zu\n", conn->read_buf.wpos);
+        conn->read_buf.wpos = conn->read_buf.wpos - flen;
+
+        printf("flen = %zu\n", flen);
+        printf("read ctl msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
+               "buf_size=%zu\n",
+               conn->read_buf.wpos, conn->read_buf.rpos,  conn->fmsg_end, rbuf_len);
+        printf("-----------------------------------------\n");
+      }
+    } else if (opcode == OP_CLOSE) {
+      // handle interleaved control frame
+      if (msg_len > 125) {
+        // PINGs must be 125 or less
+        conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+        return; // TODO(sah): send a Close frame, & call close callback
+      }
+
+      printf("close during fragmented msgs is TODO\n");
+
+    } else {
+      // unknown opcode
+      conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+      return;
+    }
+  }
+
+  printf("done\n");
+  return;
+}
+
+int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
+  int epfd = s->io_ctl.epoll_fd;
   uint8_t *buf = buf_peek(&conn->read_buf);
   int masked = frame_is_masked(buf);
   // if mask bit isn't set close the connection
@@ -519,12 +659,21 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
   }
 
   size_t rbuf_len = buf_len(&conn->read_buf);
+  printf("%zu\n", rbuf_len);
   uint8_t fin = frame_get_fin(buf);
   uint8_t opcode = frame_get_opcode(buf);
+  if (!fin || conn->fmsg) {
+    conn->fmsg = 1;
+    conn->fmsg_bin = opcode == OP_BIN;
+    conn->fmsg_end = conn->read_buf.rpos;
+    handle_ws_fmsg(s, conn);
+    return -1;
+  }
+
   size_t len = 0;
   int missing_len = frame_decode_payload_len(buf, rbuf_len, &len);
   if (missing_len) {
-    conn->rlo_watermark = missing_len; // assuming payload is at the front
+    conn->rlo_watermark = missing_len;
     return 0;
   }
 
@@ -546,11 +695,12 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
     // spans indefinably for this reason, we route the msg to on_ws_fmsg
     // once we have the full frame then we remove it from the ws connection
     // buffer the user can copy the data when we call on_ws_fmsg
-    s->on_ws_fmsg(conn, buf + mask_offset + 4, len, opcode, fin == 1);
+    // s->on_ws_fmsg(conn, buf + mask_offset + 4, len, opcode, fin == 1);
     buf_consume(&conn->read_buf, flen);
     conn->rlo_watermark = 2;
 
   } else if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
+    msg_unmask(buf + mask_offset + 4, len);
     s->on_ws_msg(conn, buf + mask_offset + 4, len, opcode == OP_BIN);
     buf_consume(&conn->read_buf, flen);
     conn->rlo_watermark = 2;
