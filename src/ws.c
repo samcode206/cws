@@ -570,33 +570,34 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
     }
 
     if ((opcode == OP_TXT) | (opcode == OP_BIN) | (opcode == OP_CONT)) {
-      if (!fin) {
-        // unmask the msg
-        msg_unmask(buf + mask_offset + 4, msg_len);
-        printf("%.*s\n", (int)msg_len, buf + mask_offset + 4);
-        memmove(buf, buf + mask_offset + 4, rbuf_len - mask_offset - 4);
-        rbuf_len = conn->read_buf.wpos - flen - conn->fmsg_end;
+      msg_unmask(buf + mask_offset + 4, msg_len);
+      printf("%.*s\n", (int)msg_len, buf + mask_offset + 4);
+      memmove(buf, buf + mask_offset + 4, rbuf_len - mask_offset - 4);
+      rbuf_len = conn->read_buf.wpos - flen - conn->fmsg_end;
 
-        conn->fmsg_end += msg_len;
-        conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
-        buf = buf_peek_at(&conn->read_buf,  conn->fmsg_end);
-        printf("flen = %zu\n", flen);
-        printf("read fragmented msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
-               "buf_size=%zu\n",
-               conn->read_buf.wpos, conn->read_buf.rpos,  conn->fmsg_end, rbuf_len);
-        printf("-----------------------------------------\n");
-      } else {
-        if (opcode != OP_CONT) {
-          conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+      conn->fmsg_end += msg_len;
+      conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
+      buf = buf_peek_at(&conn->read_buf, conn->fmsg_end);
+      printf("flen = %zu\n", flen);
+      printf("read fragmented msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
+             "buf_size=%zu\n",
+             conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end,
+             rbuf_len);
+      printf("opcode= %d fin=%d\n", opcode, fin);
+      printf("-----------------------------------------\n");
+      if (fin) {
+        if (opcode == OP_CONT) {
+          conn->fmsg = 0;
+          s->on_ws_msg(conn, buf_peek(&conn->read_buf),
+                       conn->fmsg_end - conn->read_buf.rpos, conn->fmsg_bin);
+          buf_consume(&conn->read_buf, conn->fmsg_end - conn->read_buf.rpos);
           return;
         } else {
-          // back to non fragmented msgs
-          conn->fmsg = 0;
-          s->on_ws_msg(conn, buf_peek(&conn->read_buf), conn->fmsg_end - conn->read_buf.rpos, conn->fmsg_bin);
-          buf_consume(&conn->read_buf, conn->fmsg_end - conn->read_buf.rpos);
+          conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
           return;
         }
       }
+
     } else if ((opcode == OP_PING) | (opcode == OP_PONG)) {
       if (!fin) {
         conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
@@ -624,7 +625,8 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
         printf("flen = %zu\n", flen);
         printf("read ctl msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
                "buf_size=%zu\n",
-               conn->read_buf.wpos, conn->read_buf.rpos,  conn->fmsg_end, rbuf_len);
+               conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end,
+               rbuf_len);
         printf("-----------------------------------------\n");
       }
     } else if (opcode == OP_CLOSE) {
@@ -663,6 +665,10 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
   uint8_t fin = frame_get_fin(buf);
   uint8_t opcode = frame_get_opcode(buf);
   if (!fin || conn->fmsg) {
+    if (opcode == OP_CONT) {
+      conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+      return -1;
+    }
     conn->fmsg = 1;
     conn->fmsg_bin = opcode == OP_BIN;
     conn->fmsg_end = conn->read_buf.rpos;
@@ -685,21 +691,7 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
     return 0;
   }
 
-  if ((!fin) | (opcode == OP_CONT)) {
-    // update WS_CLOSE_UNSUPP
-    // TODO: read each fragment call the callback for fragmented frames when
-    // a single fragmented frame or more are in the buffer then remove them
-    // from the buffer, we can't present the full msg to the user through
-    // on_msg because we don't know when the msg ends and it could be that
-    // the msg is longer than the buffer size or it could be that the msg
-    // spans indefinably for this reason, we route the msg to on_ws_fmsg
-    // once we have the full frame then we remove it from the ws connection
-    // buffer the user can copy the data when we call on_ws_fmsg
-    // s->on_ws_fmsg(conn, buf + mask_offset + 4, len, opcode, fin == 1);
-    buf_consume(&conn->read_buf, flen);
-    conn->rlo_watermark = 2;
-
-  } else if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
+  if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
     msg_unmask(buf + mask_offset + 4, len);
     s->on_ws_msg(conn, buf + mask_offset + 4, len, opcode == OP_BIN);
     buf_consume(&conn->read_buf, flen);
@@ -782,6 +774,9 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       return -1; // stop with -1 here this is the last frame we will handle
     }
 
+  } else if (opcode == OP_CONT) {
+    conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+    return -1;
   } else {
     // unknown opcode
     conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
