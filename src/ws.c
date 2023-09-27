@@ -588,6 +588,15 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
       if (fin) {
         if (opcode == OP_CONT) {
           conn->fmsg = 0;
+
+          if (!conn->fmsg_bin) {
+            if (!utf8_is_valid(buf_peek(&conn->read_buf),
+                               conn->fmsg_end - conn->read_buf.rpos)) {
+              conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+              return;
+            };
+          }
+
           s->on_ws_msg(conn, buf_peek(&conn->read_buf),
                        conn->fmsg_end - conn->read_buf.rpos, conn->fmsg_bin);
           buf_consume(&conn->read_buf, conn->fmsg_end - conn->read_buf.rpos);
@@ -719,7 +728,16 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
   if ((opcode == OP_BIN) | (opcode == OP_TXT)) {
     msg_unmask(buf + mask_offset + 4, len);
-    s->on_ws_msg(conn, buf + mask_offset + 4, len, opcode == OP_BIN);
+    if (opcode == OP_TXT) {
+      if (!utf8_is_valid(buf + mask_offset + 4, len)) {
+        conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+        return -1; // TODO(sah): send a Close frame, & call close callback
+      }
+
+      s->on_ws_msg(conn, buf + mask_offset + 4, len, 0);
+    } else {
+      s->on_ws_msg(conn, buf + mask_offset + 4, len, 1);
+    }
     buf_consume(&conn->read_buf, flen);
     conn->rlo_watermark = 2;
 
@@ -764,6 +782,12 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       }
 
       msg_unmask(buf + mask_offset + 4, len);
+
+      if (!utf8_is_valid(buf + mask_offset + 6, len - 2)) {
+        conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+        return -1;
+      };
+
       code = (buf[6] << 8) | buf[7];
       if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
           code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
@@ -1072,3 +1096,46 @@ inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
 inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
 inline void ws_conn_ctx_attach(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
+
+int utf8_is_valid(uint8_t *s, size_t n) {
+  for (uint8_t *e = s + n; s != e;) {
+    if (s + 4 <= e) {
+      uint32_t tmp;
+      memcpy(&tmp, s, 4);
+      if ((tmp & 0x80808080) == 0) {
+        s += 4;
+        continue;
+      }
+    }
+
+    while (!(*s & 0x80)) {
+      if (++s == e) {
+        return 1;
+      }
+    }
+
+    if ((s[0] & 0x60) == 0x40) {
+      if (s + 1 >= e || (s[1] & 0xc0) != 0x80 || (s[0] & 0xfe) == 0xc0) {
+        return 0;
+      }
+      s += 2;
+    } else if ((s[0] & 0xf0) == 0xe0) {
+      if (s + 2 >= e || (s[1] & 0xc0) != 0x80 || (s[2] & 0xc0) != 0x80 ||
+          (s[0] == 0xe0 && (s[1] & 0xe0) == 0x80) ||
+          (s[0] == 0xed && (s[1] & 0xe0) == 0xa0)) {
+        return 0;
+      }
+      s += 3;
+    } else if ((s[0] & 0xf8) == 0xf0) {
+      if (s + 3 >= e || (s[1] & 0xc0) != 0x80 || (s[2] & 0xc0) != 0x80 ||
+          (s[3] & 0xc0) != 0x80 || (s[0] == 0xf0 && (s[1] & 0xf0) == 0x80) ||
+          (s[0] == 0xf4 && s[1] > 0x8f) || s[0] > 0xf4) {
+        return 0;
+      }
+      s += 4;
+    } else {
+      return 0;
+    }
+  }
+  return 1;
+}

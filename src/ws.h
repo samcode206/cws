@@ -147,4 +147,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params,
 int ws_server_start(ws_server_t *s, int backlog); // start serving connections
 
 
+// for text stuff
+int utf8_is_valid(uint8_t *s, size_t n);
+
+
 #endif /* WS_PROTOCOL_PARSING23_H */
