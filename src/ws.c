@@ -630,14 +630,40 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
         printf("-----------------------------------------\n");
       }
     } else if (opcode == OP_CLOSE) {
-      // handle interleaved control frame
-      if (msg_len > 125) {
-        // PINGs must be 125 or less
-        conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
-        return; // TODO(sah): send a Close frame, & call close callback
+      // handle close stuff
+      uint16_t code =
+          WS_CLOSE_NOSTAT; // pessimistically assume no code provided
+      if (!msg_len) {
+        s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
+        return;
+      } else if (msg_len < 2) {
+        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        return;
       }
 
-      printf("close during fragmented msgs is TODO\n");
+      else {
+        if (msg_len > 125) {
+          // close frames can be more but this is the most that will be
+          // supported for various reasons close frames generally should
+          // contain just the 16bit code and a short string for the reason at
+          // most
+          conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
+          return;
+        }
+
+        msg_unmask(buf + mask_offset + 4, msg_len);
+        code = (buf[6] << 8) | buf[7];
+        if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
+            code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
+            code == 2999) {
+          s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+          return;
+        }
+
+        s->on_ws_close(conn, code, buf + mask_offset + 6);
+
+        return;
+      }
 
     } else {
       // unknown opcode
@@ -739,32 +765,9 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
       msg_unmask(buf + mask_offset + 4, len);
       code = (buf[6] << 8) | buf[7];
-      // this is horrendous, please remove this ASAP
-      if (code < 1000) {
-        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-        return -1;
-      } else if (code == 1004) {
-        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-        return -1;
-      } else if (code == 1100) {
-        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-        return -1;
-      } else if (code == 1005) {
-        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-        return -1;
-      } else if (code == 1006) {
-        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-        return -1;
-      } else if (code == 1016) {
-        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-        return -1;
-      } else if (code == 1015) {
-        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-        return -1;
-      } else if (code == 2000) {
-        s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-        return -1;
-      } else if (code == 2999) {
+      if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
+          code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
+          code == 2999) {
         s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
         return -1;
       }
