@@ -426,7 +426,14 @@ int ws_server_start(ws_server_t *s, int backlog) {
           if (s->io_ctl.events[i].events & EPOLLOUT) {
             int ret = conn_drain_write_buf(s->io_ctl.events[i].data.ptr);
             if (ret == 1) {
-              s->on_ws_drain(s->io_ctl.events[i].data.ptr);
+              ws_conn_t *c = s->io_ctl.events[i].data.ptr;
+              s->on_ws_drain(c);
+              ev.data.ptr = c;
+              ev.events = EPOLLIN | EPOLLRDHUP;
+              if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev) == -1) {
+                int err = errno;
+                s->on_ws_err(s, err);
+              };
             }
           } else if (s->io_ctl.events[i].events & EPOLLIN) {
             ws_conn_t *c = s->io_ctl.events[i].data.ptr;
@@ -603,11 +610,12 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
                        conn->fmsg_end - conn->read_buf.rpos, conn->fmsg_bin);
           buf_consume(&conn->read_buf, conn->fmsg_end - conn->read_buf.rpos);
 
-          while (buf_len(&conn->read_buf) >= conn->rlo_watermark){
+          while (buf_len(&conn->read_buf) >= conn->rlo_watermark) {
             int ret = handle_ws(s, conn);
-            if (ret == -1) break;
+            if (ret == -1)
+              break;
           }
-          
+
           return;
         } else {
           conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
@@ -844,7 +852,7 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd, int err,
 }
 
 int conn_drain_write_buf(struct ws_conn_t *conn) {
-  size_t to_write = buf_len(&conn->read_buf);
+  size_t to_write = buf_len(&conn->write_buf);
   ssize_t n = 0;
 
   n = buf_send(&conn->write_buf, conn->fd, 0);
