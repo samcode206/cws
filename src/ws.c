@@ -571,6 +571,7 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
     }
 
     if ((opcode == OP_TXT) | (opcode == OP_BIN) | (opcode == OP_CONT)) {
+      conn->rlo_watermark = 2;
       msg_unmask(buf + mask_offset + 4, msg_len);
       printf("%.*s\n", (int)msg_len, buf + mask_offset + 4);
       memmove(buf, buf + mask_offset + 4, rbuf_len - mask_offset - 4);
@@ -601,6 +602,12 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
           s->on_ws_msg(conn, buf_peek(&conn->read_buf),
                        conn->fmsg_end - conn->read_buf.rpos, conn->fmsg_bin);
           buf_consume(&conn->read_buf, conn->fmsg_end - conn->read_buf.rpos);
+
+          while (buf_len(&conn->read_buf) >= conn->rlo_watermark){
+            int ret = handle_ws(s, conn);
+            if (ret == -1) break;
+          }
+          
           return;
         } else {
           conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
@@ -619,7 +626,7 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
           conn_destroy(s, conn, epfd, WS_CLOSE_EPROTO, &s->io_ctl.ev);
           return; // TODO(sah): send a Close frame, & call close callback
         }
-
+        conn->rlo_watermark = 2;
         msg_unmask(buf + mask_offset + 4, msg_len);
         if (opcode == OP_PING) {
           s->on_ws_ping(conn, buf + mask_offset + 4, msg_len);
@@ -641,6 +648,7 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
       }
     } else if (opcode == OP_CLOSE) {
       // handle close stuff
+      conn->rlo_watermark = 2;
       uint16_t code =
           WS_CLOSE_NOSTAT; // pessimistically assume no code provided
       if (!msg_len) {
