@@ -436,7 +436,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
                 handle_http(s, c);
               } else {
                 if (c->fmsg) {
-                  handle_ws_fmsg(s, c);
+                  if (c->read_buf.wpos - c->fmsg_end >= c->rlo_watermark)
+                    handle_ws_fmsg(s, c);
                 } else {
                   while ((buf_len(&c->read_buf) >= c->rlo_watermark)) {
                     ret = handle_ws(s, c);
