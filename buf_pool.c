@@ -1,9 +1,9 @@
 #define _GNU_SOURCE
-#include <string.h>
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -88,8 +88,7 @@ void *buf_pool_alloc(struct buf_pool *p) {
   }
 }
 
-
-void buf_pool_free(struct buf_pool *p){
+void buf_pool_free(struct buf_pool *p) {
   assert(munmap(p->base, (p->buf_sz * p->nmemb) * 2) == 0);
   assert(close(p->fd) == 0);
   free(p);
@@ -133,24 +132,26 @@ int main() {
   assert(((uintptr_t)b4 - (uintptr_t)b3) == BUF_SIZE + BUF_SIZE);
 
   b1[0] = 'a';
-  b1[BUF_SIZE+1] = 'b';
+  b1[BUF_SIZE + 1] = 'b';
 
   b2[0] = 'c';
-  b2[BUF_SIZE+1] = 'd';
+  b2[BUF_SIZE + 1] = 'd';
+
+  b3[BUF_SIZE] = 'e';
+  b3[BUF_SIZE + 1] = 'f';
+
+  b4[BUF_SIZE] = 'g';
+  b4[BUF_SIZE + 1] = 'h';
 
   assert(!strcmp((const char *)b1, "ab"));
   assert(!strcmp((const char *)b2, "cd"));
-
-
-
+  assert(!strcmp((const char *)b3, "ef"));
+  assert(!strcmp((const char *)b4, "gh"));
   buf_pool_free_buf(p, b4);
-
 
   assert(b4 == buf_pool_alloc(p));
 
-
   assert(buf_pool_alloc(p) == NULL);
-  
 
   buf_pool_free(p);
 
