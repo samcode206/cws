@@ -42,7 +42,7 @@ struct buf_pool *buf_pool_init(int nmemb, size_t buf_sz) {
     return NULL;
   }
 
-  size_t i;
+  int i;
 
   uint8_t *pos = pool->base;
   size_t offset = 0;
