@@ -311,7 +311,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   // socket config
   int on = 1;
-  *ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(int));
+  *ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on, sizeof(int));
   if (*ret < 0) {
     *ret = WS_ESYS;
     free(s);
@@ -573,8 +573,8 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
     mask_offset = frame_get_mask_offset(msg_len);
     flen = msg_len + mask_offset + 4;
 
-    printf("wpos=%zu rpos=%zu fmsg_read_idx=%zu buf_size=%zu\n",
-           conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end, rbuf_len);
+    // printf("wpos=%zu rpos=%zu fmsg_read_idx=%zu buf_size=%zu\n",
+    //        conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end, rbuf_len);
 
     // check to see if the full frame is available
     // it not stop, adjust and adjust the read watermark
@@ -586,20 +586,20 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
     if ((opcode == OP_TXT) | (opcode == OP_BIN) | (opcode == OP_CONT)) {
       conn->rlo_watermark = 2;
       msg_unmask(buf + mask_offset + 4, msg_len);
-      printf("%.*s\n", (int)msg_len, buf + mask_offset + 4);
+      // printf("%.*s\n", (int)msg_len, buf + mask_offset + 4);
       memmove(buf, buf + mask_offset + 4, rbuf_len - mask_offset - 4);
       rbuf_len = conn->read_buf.wpos - flen - conn->fmsg_end;
 
       conn->fmsg_end += msg_len;
       conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
       buf = buf_peek_at(&conn->read_buf, conn->fmsg_end);
-      printf("flen = %zu\n", flen);
-      printf("read fragmented msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
-             "buf_size=%zu\n",
-             conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end,
-             rbuf_len);
-      printf("opcode= %d fin=%d\n", opcode, fin);
-      printf("-----------------------------------------\n");
+      // printf("flen = %zu\n", flen);
+      // printf("read fragmented msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
+      //        "buf_size=%zu\n",
+      //        conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end,
+      //        rbuf_len);
+      // printf("opcode= %d fin=%d\n", opcode, fin);
+      // printf("-----------------------------------------\n");
       if (fin) {
         if (opcode == OP_CONT) {
           conn->fmsg = 0;
@@ -650,15 +650,15 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
         memmove(conn->read_buf.buf + conn->fmsg_end, buf + flen,
                 rbuf_len - flen);
         rbuf_len = conn->read_buf.wpos - conn->fmsg_end - flen;
-        printf("wpos before: %zu\n", conn->read_buf.wpos);
+        // printf("wpos before: %zu\n", conn->read_buf.wpos);
         conn->read_buf.wpos = conn->read_buf.wpos - flen;
 
-        printf("flen = %zu\n", flen);
-        printf("read ctl msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
-               "buf_size=%zu\n",
-               conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end,
-               rbuf_len);
-        printf("-----------------------------------------\n");
+        // printf("flen = %zu\n", flen);
+        // printf("read ctl msg: wpos=%zu rpos=%zu fmsg_read_idx=%zu "
+        //        "buf_size=%zu\n",
+        //        conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end,
+        //        rbuf_len);
+        // printf("-----------------------------------------\n");
       }
     } else if (opcode == OP_CLOSE) {
       // handle close stuff
@@ -704,7 +704,7 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
     }
   }
 
-  printf("done\n");
+  // printf("done\n");
   return;
 }
 

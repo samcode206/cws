@@ -1,6 +1,9 @@
 #include "ws.h"
 
 
+#include <stdio.h>
+#include <unistd.h>
+
 void on_open(ws_conn_t *c) {}
 
 void on_ping(ws_conn_t *c, void *msg, size_t n) {
@@ -39,19 +42,18 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   }
 }
 
-
-
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d reason: %s\n", code, (char *)reason);
   if ((code == WS_CLOSE_ABNORM) | (code == WS_CLOSE_NOSTAT)) {
-    ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason, 0, WS_CLOSE_NORMAL);
+    ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason, 0,
+                  WS_CLOSE_NORMAL);
   } else {
     ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason, 0, code);
   }
 }
 
 void on_disconnect(ws_conn_t *ws_conn, int err) {
-  printf("on_disconnect %d\n", err);
+  // printf("on_disconnect %d\n", err);
 }
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
@@ -60,7 +62,7 @@ void on_server_err(ws_server_t *s, int err) {
   fprintf(stderr, "on_server_err: %s\n", strerror(err));
 }
 
-int main(void) {
+void *start_server() {
   const size_t max_events = 1024;
   const uint16_t port = 9919;
   const int backlog = 1024;
@@ -88,5 +90,30 @@ int main(void) {
 
   ret = ws_server_start(s, backlog);
 
-  exit(ret);
+  return NULL;
+}
+
+#define NUM_THREADS 1
+int main(void) {
+  printf("%d\n", getpid());
+  start_server();
+  // pthread_t threads[NUM_THREADS];
+  //   int rc;
+  //   long t;
+  //   for (t = 0; t < NUM_THREADS; t++) {
+  //       printf("In main: creating thread %ld\n", t);
+  //       rc = pthread_create(&threads[t], NULL, start_server, (void *)t);
+  //       if (rc) {
+  //           printf("ERROR; return code from pthread_create() is %d\n", rc);
+  //           exit(-1);
+  //       }
+  //   }
+
+  //   // Wait for all threads to complete
+  //   for (t = 0; t < NUM_THREADS; t++) {
+  //       pthread_join(threads[t], NULL);
+  //   }
+
+  //   printf("Main: program exiting.\n");
+  //   pthread_exit(NULL);
 }
