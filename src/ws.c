@@ -351,7 +351,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_disconnect = params->on_ws_disconnect;
   s->on_ws_err = params->on_ws_err;
 
-  s->buffer_pool = buf_pool_init(params->max_events, 1024 * 8);
+  s->buffer_pool = buf_pool_init(params->max_events * 2, 1024 * 12);
   
   assert(s->buffer_pool != NULL);
   // server resources all ready
@@ -719,7 +719,7 @@ int handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
   }
 
   size_t rbuf_len = buf_len(&conn->read_buf);
-  printf("%zu\n", rbuf_len);
+  // printf("%zu\n", rbuf_len);
   uint8_t fin = frame_get_fin(buf);
   uint8_t opcode = frame_get_opcode(buf);
   if (!fin || conn->fmsg) {
@@ -854,6 +854,8 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd, int err,
                               // on data associated with this connection
   }
 
+  buf_pool_free(s->buffer_pool, conn->write_buf.buf);
+  buf_pool_free(s->buffer_pool, conn->read_buf.buf);
   free(conn);
 }
 
