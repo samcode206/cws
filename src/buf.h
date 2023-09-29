@@ -26,6 +26,7 @@
 #ifndef __X_BUFF_LIB_14
 #define __X_BUFF_LIB_14
 
+#include "pool.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -36,53 +37,24 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define RBUF_SIZE 1024 * 1024 * 32
+
 
 typedef struct {
   size_t rpos;
   size_t wpos;
-  int fd;
+  size_t buf_sz;
   uint8_t *buf;
 } buf_t;
 
-static inline int buf_init(buf_t *r) {
-  if (memset(r, 0, sizeof *r) == NULL) {
-    return -1;
-  };
-
-  r->fd = memfd_create("buf", 0);
-  if (r->fd == -1) {
+static inline int buf_init(struct buf_pool *p, buf_t *r) {
+   
+  r->buf = (uint8_t*)buf_pool_alloc(p);
+  if (r->buf == NULL){
     return -1;
   }
 
-  if (ftruncate(r->fd, RBUF_SIZE) == -1) {
-    return -1;
-  };
-
-  void *base =
-      mmap(NULL, RBUF_SIZE * 2, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (base == MAP_FAILED) {
-    return -1;
-  }
-  r->buf = (uint8_t *)base;
-
-  if ((base = mmap(r->buf, RBUF_SIZE, PROT_READ | PROT_WRITE,
-                   MAP_SHARED | MAP_FIXED, r->fd, 0)) == MAP_FAILED) {
-    return -1;
-  };
-
-  if (base != r->buf) {
-    return -1;
-  }
-
-  if ((base = mmap(r->buf + RBUF_SIZE, RBUF_SIZE, PROT_READ | PROT_WRITE,
-                   MAP_SHARED | MAP_FIXED, r->fd, 0)) == MAP_FAILED) {
-    return -1;
-  };
-
-  if (base != r->buf + RBUF_SIZE) {
-    return -1;
-  }
+  memset(r, 0, sizeof (buf_t) - offsetof(buf_t, buf_sz));
+  r->buf_sz = p->buf_sz;
 
   return 0;
 }
@@ -90,7 +62,7 @@ static inline int buf_init(buf_t *r) {
 static inline size_t buf_len(buf_t *r) { return r->wpos - r->rpos; }
 
 static inline size_t buf_space(buf_t *r) {
-  return RBUF_SIZE - (r->wpos - r->rpos);
+  return r->buf_sz - (r->wpos - r->rpos);
 }
 
 static inline int buf_put(buf_t *r, const void *data, size_t n) {
@@ -125,9 +97,9 @@ static inline int buf_consume(buf_t *r, size_t n) {
   }
 
   r->rpos += n;
-  int ovf = r->rpos > RBUF_SIZE;
-  r->rpos -= ovf * RBUF_SIZE;
-  r->wpos -= ovf * RBUF_SIZE;
+  int ovf = r->rpos > r->buf_sz;
+  r->rpos -= ovf * r->buf_sz;
+  r->wpos -= ovf * r->buf_sz;
   return 0;
 }
 
@@ -141,9 +113,9 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
   r->rpos += (n > 0) * n;
   
-  int ovf = r->rpos > RBUF_SIZE;
-  r->rpos -= ovf * RBUF_SIZE;
-  r->wpos -= ovf * RBUF_SIZE;
+  int ovf = r->rpos > r->buf_sz;
+  r->rpos -= ovf * r->buf_sz;
+  r->wpos -= ovf * r->buf_sz;
 
   return n;
 }

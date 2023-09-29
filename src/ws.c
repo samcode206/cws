@@ -24,8 +24,8 @@
 */
 
 #define _GNU_SOURCE
-#include "ws.h"
 #include "buf.h"
+#include "ws.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -39,6 +39,7 @@
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+#include "pool.h"
 
 struct ws_conn_t {
   int fd;
@@ -66,6 +67,7 @@ typedef struct server {
   int fd;            // server file descriptor
   int resv;          // unused
   size_t open_conns; // open websocket connections
+  struct buf_pool *buffer_pool;
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
   ws_ping_cb_t on_ws_ping;
@@ -348,6 +350,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_close = params->on_ws_close;
   s->on_ws_disconnect = params->on_ws_disconnect;
   s->on_ws_err = params->on_ws_err;
+
+  s->buffer_pool = buf_pool_init(params->max_events, 1024 * 8);
+  
+  assert(s->buffer_pool != NULL);
   // server resources all ready
   return s;
 }
@@ -408,8 +414,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
               2; // start at 2 bytes, works even before upgrade
           ev.data.ptr = conn;
 
-          assert(buf_init(&conn->read_buf) == 0);
-          assert(buf_init(&conn->write_buf) == 0);
+          assert(buf_init(s->buffer_pool,&conn->read_buf) == 0);
+          assert(buf_init(s->buffer_pool, &conn->write_buf) == 0);
 
           if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
             int err = errno;
@@ -545,7 +551,7 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
 
     buf = buf_peek_at(&conn->read_buf, conn->fmsg_end);
 
-    assert(rbuf_len < RBUF_SIZE); // no wrap around test
+    assert(rbuf_len < conn->read_buf.buf_sz); // no wrap around test
     masked = frame_is_masked(buf);
     // if mask bit isn't set close the connection
     if ((masked == 0) | (frame_has_reserved_bits_set(buf) == 1)) {
