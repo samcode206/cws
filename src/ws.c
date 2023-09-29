@@ -24,8 +24,9 @@
 */
 
 #define _GNU_SOURCE
-#include "buf.h"
 #include "ws.h"
+#include "buf.h"
+#include "pool.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -39,7 +40,6 @@
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
-#include "pool.h"
 
 struct ws_conn_t {
   int fd;
@@ -55,8 +55,6 @@ struct ws_conn_t {
   buf_t read_buf;
   buf_t write_buf;
 };
-
-
 
 typedef struct server {
   int fd;            // server file descriptor
@@ -140,6 +138,7 @@ static inline size_t frame_get_mask_offset(size_t n) {
 //     src[i] = src[i] ^ mask[i & 3];
 //   }
 // }
+
 
 void msg_unmask(uint8_t *src, size_t n) {
   uint8_t *mask = (uint8_t *)(src - 4);
@@ -309,7 +308,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   // socket config
   int on = 1;
-  *ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on, sizeof(int));
+  *ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
+                    sizeof(int));
   if (*ret < 0) {
     *ret = WS_ESYS;
     free(s);
@@ -350,7 +350,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_err = params->on_ws_err;
 
   s->buffer_pool = buf_pool_init(params->max_events * 2, 1024 * 12);
-  
+
   assert(s->buffer_pool != NULL);
   // server resources all ready
   return s;
@@ -412,7 +412,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
               2; // start at 2 bytes, works even before upgrade
           ev.data.ptr = conn;
 
-          assert(buf_init(s->buffer_pool,&conn->read_buf) == 0);
+          assert(buf_init(s->buffer_pool, &conn->read_buf) == 0);
           assert(buf_init(s->buffer_pool, &conn->write_buf) == 0);
 
           if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
@@ -423,8 +423,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
       } else {
         if (s->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
-          conn_destroy(s, s->events[i].data.ptr, epfd, WS_CLOSE_ABNORM,
-                       &ev);
+          conn_destroy(s, s->events[i].data.ptr, epfd, WS_CLOSE_ABNORM, &ev);
           s->events[i].data.ptr = NULL;
         } else {
           if (s->events[i].events & EPOLLOUT) {
@@ -455,6 +454,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                     if (ret == -1)
                       break;
                   }
+                  if (buf_len(&c->write_buf))conn_drain_write_buf(c);
                 }
               }
             }
@@ -572,7 +572,8 @@ void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn) {
     flen = msg_len + mask_offset + 4;
 
     // printf("wpos=%zu rpos=%zu fmsg_read_idx=%zu buf_size=%zu\n",
-    //        conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end, rbuf_len);
+    //        conn->read_buf.wpos, conn->read_buf.rpos, conn->fmsg_end,
+    //        rbuf_len);
 
     // check to see if the full frame is available
     // it not stop, adjust and adjust the read watermark
@@ -854,6 +855,8 @@ void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd, int err,
 
   buf_pool_free(s->buffer_pool, conn->write_buf.buf);
   buf_pool_free(s->buffer_pool, conn->read_buf.buf);
+  conn->write_buf.wpos = 0;
+  conn->write_buf.rpos = 0;
   free(conn);
 }
 
@@ -867,14 +870,14 @@ int conn_drain_write_buf(struct ws_conn_t *conn) {
       return 0;
     } else {
       ws_server_t *s = ws_conn_server(conn);
-      conn_destroy(ws_conn_server(conn), conn, s->epoll_fd,
-                   WS_CLOSE_ABNORM, &s->ev);
+      conn_destroy(ws_conn_server(conn), conn, s->epoll_fd, WS_CLOSE_ABNORM,
+                   &s->ev);
       return -1;
     }
   } else if (n == 0) {
     ws_server_t *s = ws_conn_server(conn);
-    conn_destroy(ws_conn_server(conn), conn, s->epoll_fd,
-                 WS_CLOSE_ABNORM, &s->ev);
+    conn_destroy(ws_conn_server(conn), conn, s->epoll_fd, WS_CLOSE_ABNORM,
+                 &s->ev);
     return -1;
   }
 
@@ -1019,64 +1022,93 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
   ssize_t n = 0;
   size_t hlen = frame_get_mask_offset(len);
   size_t flen = len + hlen;
-
-  if ((conn->writeable == 1) & (buf_space(&conn->write_buf) > flen)) {
-    uint8_t hbuf[hlen];
-    memset(hbuf, 0, hlen);
-    struct iovec iovs[2];
-    hbuf[0] = FIN | op; // Set FIN bit and opcode
+  if (buf_space(&conn->write_buf) > flen) {
+    uint8_t *buf = conn->write_buf.buf + conn->write_buf.wpos;
+    memset(buf, 0, 2);
+    buf[0] = FIN | op; // Set FIN bit and opcode
     if (hlen == 2) {
-      hbuf[1] = (uint8_t)len;
+      buf[1] = (uint8_t)len;
     } else if (hlen == 4) {
-      hbuf[1] = PAYLOAD_LEN_16;
-      hbuf[2] = (len >> 8) & 0xFF;
-      hbuf[3] = len & 0xFF;
+      buf[1] = PAYLOAD_LEN_16;
+      buf[2] = (len >> 8) & 0xFF;
+      buf[3] = len & 0xFF;
     } else {
-      hbuf[1] = PAYLOAD_LEN_64;
-      hbuf[2] = (len >> 56) & 0xFF;
-      hbuf[3] = (len >> 48) & 0xFF;
-      hbuf[4] = (len >> 40) & 0xFF;
-      hbuf[5] = (len >> 32) & 0xFF;
-      hbuf[6] = (len >> 24) & 0xFF;
-      hbuf[7] = (len >> 16) & 0xFF;
-      hbuf[8] = (len >> 8) & 0xFF;
-      hbuf[9] = len & 0xFF;
+      buf[1] = PAYLOAD_LEN_64;
+      buf[2] = (len >> 56) & 0xFF;
+      buf[3] = (len >> 48) & 0xFF;
+      buf[4] = (len >> 40) & 0xFF;
+      buf[5] = (len >> 32) & 0xFF;
+      buf[6] = (len >> 24) & 0xFF;
+      buf[7] = (len >> 16) & 0xFF;
+      buf[8] = (len >> 8) & 0xFF;
+      buf[9] = len & 0xFF;
     }
 
-    iovs[0].iov_len = hlen;
-    iovs[0].iov_base = hbuf;
-    iovs[1].iov_len = len;
-    iovs[1].iov_base = data;
-
-    n = writev(conn->fd, iovs, 2);
-    if (n == 0) {
-      return -1;
-    } else if (n == -1) {
-      if (!((errno == EAGAIN) | (errno == EWOULDBLOCK))) {
-        return -1;
-      }
-      n = 0;
-    }
-
-    if (n < flen) {
-      conn->writeable = 0;
-      if (n > hlen) {
-        assert(buf_put(&conn->write_buf, (uint8_t *)data + (n - hlen),
-                       flen - n) == 0);
-      } else {
-        assert(buf_put(&conn->write_buf, hbuf + n, hlen - n) == 0);
-        assert(buf_put(&conn->write_buf, data, len) == 0);
-      }
-
-      s->ev.events = EPOLLOUT | EPOLLRDHUP;
-      s->ev.data.ptr = conn;
-      if (epoll_ctl(s->epoll_fd, EPOLL_CTL_MOD, conn->fd,
-                    &s->ev) == -1) {
-        return -1;
-      };
-      return 0;
-    }
+    conn->write_buf.wpos += hlen;
+    buf_put(&conn->write_buf, data, len);
   }
+
+  // ssize_t n = 0;
+  // size_t hlen = frame_get_mask_offset(len);
+  // size_t flen = len + hlen;
+
+  // if ((conn->writeable == 1) & (buf_space(&conn->write_buf) > flen)) {
+  //   uint8_t hbuf[hlen];
+  //   memset(hbuf, 0, hlen);
+  //   struct iovec iovs[2];
+  //   hbuf[0] = FIN | op; // Set FIN bit and opcode
+  //   if (hlen == 2) {
+  //     hbuf[1] = (uint8_t)len;
+  //   } else if (hlen == 4) {
+  //     hbuf[1] = PAYLOAD_LEN_16;
+  //     hbuf[2] = (len >> 8) & 0xFF;
+  //     hbuf[3] = len & 0xFF;
+  //   } else {
+  //     hbuf[1] = PAYLOAD_LEN_64;
+  //     hbuf[2] = (len >> 56) & 0xFF;
+  //     hbuf[3] = (len >> 48) & 0xFF;
+  //     hbuf[4] = (len >> 40) & 0xFF;
+  //     hbuf[5] = (len >> 32) & 0xFF;
+  //     hbuf[6] = (len >> 24) & 0xFF;
+  //     hbuf[7] = (len >> 16) & 0xFF;
+  //     hbuf[8] = (len >> 8) & 0xFF;
+  //     hbuf[9] = len & 0xFF;
+  //   }
+
+  //   iovs[0].iov_len = hlen;
+  //   iovs[0].iov_base = hbuf;
+  //   iovs[1].iov_len = len;
+  //   iovs[1].iov_base = data;
+
+  //   n = writev(conn->fd, iovs, 2);
+  //   if (n == 0) {
+  //     return -1;
+  //   } else if (n == -1) {
+  //     if (!((errno == EAGAIN) | (errno == EWOULDBLOCK))) {
+  //       return -1;
+  //     }
+  //     n = 0;
+  //   }
+
+  //   if (n < flen) {
+  //     conn->writeable = 0;
+  //     if (n > hlen) {
+  //       assert(buf_put(&conn->write_buf, (uint8_t *)data + (n - hlen),
+  //                      flen - n) == 0);
+  //     } else {
+  //       assert(buf_put(&conn->write_buf, hbuf + n, hlen - n) == 0);
+  //       assert(buf_put(&conn->write_buf, data, len) == 0);
+  //     }
+
+  //     s->ev.events = EPOLLOUT | EPOLLRDHUP;
+  //     s->ev.data.ptr = conn;
+  //     if (epoll_ctl(s->epoll_fd, EPOLL_CTL_MOD, conn->fd,
+  //                   &s->ev) == -1) {
+  //       return -1;
+  //     };
+  //     return 0;
+  //   }
+  // }
 
   return n == flen;
 }
@@ -1100,8 +1132,7 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
       s->ev.data.ptr = conn;
       conn->writeable = 0;
       assert(buf_put(&conn->write_buf, (uint8_t *)data + n, len - n) == 0);
-      if (epoll_ctl(s->epoll_fd, EPOLL_CTL_MOD, conn->fd,
-                    &s->ev) == -1) {
+      if (epoll_ctl(s->epoll_fd, EPOLL_CTL_MOD, conn->fd, &s->ev) == -1) {
         return -1;
       };
 

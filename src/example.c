@@ -34,12 +34,12 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
     stat = ws_conn_send_txt(ws_conn_server(c), c, msg, n);
   }
 
-  if (stat == 1) {
-    // printf("msg sent\n");
-  } else {
-    printf("partial send or an error occurred waiting for <on_ws_drain | "
-           "on_ws_disconnect>\n");
-  }
+  // if (stat == 1) {
+  //   // printf("msg sent\n");
+  // } else {
+  //   printf("partial send or an error occurred waiting for <on_ws_drain | "
+  //          "on_ws_disconnect>\n");
+  // }
 }
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
