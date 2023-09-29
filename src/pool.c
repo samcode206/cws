@@ -56,14 +56,14 @@ struct buf_pool *buf_pool_init(uint32_t nmemb, size_t buf_sz) {
   size_t offset = 0;
 
   for (i = 0; i < nmemb; ++i) {
-    if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED | MAP_POPULATE,
+    if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
              pool->fd, offset) == MAP_FAILED) {
       close(pool->fd);
       return NULL;
     };
 
     if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
-             MAP_SHARED | MAP_FIXED | MAP_POPULATE, pool->fd, offset) == MAP_FAILED) {
+             MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
       close(pool->fd);
       return NULL;
     };
