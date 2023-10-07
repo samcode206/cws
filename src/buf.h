@@ -37,8 +37,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-
-
 typedef struct {
   size_t rpos;
   size_t wpos;
@@ -47,13 +45,13 @@ typedef struct {
 } buf_t;
 
 static inline int buf_init(struct buf_pool *p, buf_t *r) {
-   
-  r->buf = (uint8_t*)buf_pool_alloc(p);
-  if (r->buf == NULL){
+
+  r->buf = (uint8_t *)buf_pool_alloc(p);
+  if (r->buf == NULL) {
     return -1;
   }
 
-  memset(r, 0, sizeof (buf_t) - offsetof(buf_t, buf_sz));
+  memset(r, 0, sizeof(buf_t) - offsetof(buf_t, buf_sz));
   r->buf_sz = p->buf_sz;
 
   return 0;
@@ -74,14 +72,9 @@ static inline int buf_put(buf_t *r, const void *data, size_t n) {
   return 0;
 }
 
+static inline uint8_t *buf_peek(buf_t *r) { return r->buf + r->rpos; }
 
-static inline uint8_t *buf_peek(buf_t *r) { 
-  return r->buf + r->rpos; 
-}
-
-static inline uint8_t *buf_peek_at(buf_t *r, size_t at){
-  return r->buf + at;
-}
+static inline uint8_t *buf_peek_at(buf_t *r, size_t at) { return r->buf + at; }
 
 static inline uint8_t *buf_peekn(buf_t *r, size_t n) {
   if (buf_len(r) < n) {
@@ -103,6 +96,11 @@ static inline int buf_consume(buf_t *r, size_t n) {
   return 0;
 }
 
+static inline void buf_move(buf_t *src_b, buf_t *dst_b, size_t n) {
+  buf_put(dst_b, src_b->buf + src_b->rpos, n);
+  buf_consume(src_b, n);
+}
+
 static inline ssize_t buf_recv(buf_t *r, int fd, int flags) {
   ssize_t n = recv(fd, r->buf + r->wpos, buf_space(r), flags);
   r->wpos += (n > 0) * n;
@@ -112,7 +110,7 @@ static inline ssize_t buf_recv(buf_t *r, int fd, int flags) {
 static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
   r->rpos += (n > 0) * n;
-  
+
   int ovf = r->rpos > r->buf_sz;
   r->rpos -= ovf * r->buf_sz;
   r->wpos -= ovf * r->buf_sz;
