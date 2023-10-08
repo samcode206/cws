@@ -173,20 +173,20 @@ static inline void rotateMask(unsigned int offset, char *mask) {
 //   }
 // }
 
-static inline void msg_unmask32(uint8_t *src, size_t n) {
-  uint8_t mask_bz[4] = {src[-4], src[-3], src[-2], src[-1]};
-  uint32_t mask32;
-  memcpy(&mask32, mask_bz, 4);
+// static inline void msg_unmask32(uint8_t *src, size_t n) {
+//   uint8_t mask_bz[4] = {src[-4], src[-3], src[-2], src[-1]};
+//   uint32_t mask32;
+//   memcpy(&mask32, mask_bz, 4);
 
-  size_t i = 0;
+//   size_t i = 0;
 
-  for (; i < n; i += 4) {
-    uint32_t data;
-    memcpy(&data, src + i, 4);
-    data ^= mask32;
-    memcpy(src + i, &data, 4);
-  }
-}
+//   for (; i < n; i += 4) {
+//     uint32_t data;
+//     memcpy(&data, src + i, 4);
+//     data ^= mask32;
+//     memcpy(src + i, &data, 4);
+//   }
+// }
 
 void msg_unmask(uint8_t *src, size_t n) {
 
