@@ -90,9 +90,17 @@ static inline int buf_consume(buf_t *r, size_t n) {
   }
 
   r->rpos += n;
-  int ovf = r->rpos > r->buf_sz;
-  r->rpos -= ovf * r->buf_sz;
-  r->wpos -= ovf * r->buf_sz;
+
+  int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+  r->rpos -= ovf;
+  r->wpos -= ovf;
+
+  // pre mature page fault prevention
+  if (r->wpos == r->rpos) {
+    r->rpos = 0;
+    r->wpos = 0;
+  }
+
   return 0;
 }
 
@@ -111,9 +119,15 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
   r->rpos += (n > 0) * n;
 
-  int ovf = r->rpos > r->buf_sz;
-  r->rpos -= ovf * r->buf_sz;
-  r->wpos -= ovf * r->buf_sz;
+  int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+  r->rpos -= ovf;
+  r->wpos -= ovf;
+
+  // pre mature page fault prevention
+  if (r->wpos == r->rpos) {
+    r->rpos = 0;
+    r->wpos = 0;
+  }
 
   return n;
 }
