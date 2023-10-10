@@ -113,9 +113,8 @@ typedef void (*ws_err_cb_t)(ws_server_t *s,
                             int err); /* called if an internal error occurs */
 
 struct ws_server_params {
-  in_addr_t addr;
+  const char* addr;
   uint16_t port;
-  size_t max_events; // defaults to 1024
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
   ws_ping_cb_t on_ws_ping;

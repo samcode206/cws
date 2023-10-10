@@ -1,6 +1,5 @@
 #include "ws.h"
 
-
 #include <stdio.h>
 #include <unistd.h>
 
@@ -63,12 +62,10 @@ void on_server_err(ws_server_t *s, int err) {
 }
 
 void *start_server() {
-  const size_t max_events = 1024;
   const uint16_t port = 9919;
   const int backlog = 1024;
-  struct ws_server_params sp = {.addr = INADDR_ANY,
+  struct ws_server_params sp = {.addr = "::",
                                 .port = port,
-                                .max_events = max_events,
                                 .on_ws_open = on_open,
                                 .on_ws_msg = on_msg,
                                 .on_ws_ping = on_ping,

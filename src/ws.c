@@ -27,6 +27,7 @@
 #include "ws.h"
 #include "buf.h"
 #include "pool.h"
+#include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -81,11 +82,10 @@ typedef struct server {
   ws_disconnect_cb_t on_ws_disconnect;
   ws_err_cb_t on_ws_err;
   int epoll_fd;
-  size_t ev_cap;
   buf_t shared_recv_buffer;
   buf_t shared_send_buffer;
   struct epoll_event ev;
-  struct epoll_event events[];
+  struct epoll_event events[1024];
 } ws_server_t;
 
 // Frame Utils
@@ -322,30 +322,17 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   ws_server_t *s;
 
-  if (params->max_events <= 0) {
-    params->max_events = 1024;
-  }
-
   // allocate memory for server and events for epoll
-  s = (ws_server_t *)malloc((sizeof *s) +
-                            (sizeof(struct epoll_event) * params->max_events));
+  s = (ws_server_t *)calloc(1, (sizeof *s));
   if (s == NULL) {
     *ret = WS_ESYS;
     return NULL;
   }
 
-  if (memset(s, 0, (sizeof(struct epoll_event) * params->max_events)) == NULL) {
-    *ret = WS_ESYS;
-    free(s);
-    return NULL;
-  };
-
-  s->ev_cap = params->max_events;
-
   // socket init
-  struct sockaddr_in srv_addr;
+  struct sockaddr_in6 srv_addr;
 
-  s->fd = socket(PF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  s->fd = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
   if (s->fd < 0) {
     *ret = WS_ESYS;
     free(s);
@@ -362,14 +349,23 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     return NULL;
   }
 
+  int off = 0;
+  *ret = setsockopt(s->fd, SOL_IPV6, IPV6_V6ONLY, &off,
+                    sizeof(int));
+  if (*ret < 0) {
+    *ret = WS_ESYS;
+    free(s);
+    return NULL;
+  }
+
   // fill in addr info
   memset(&srv_addr, 0, sizeof(srv_addr));
-  srv_addr.sin_family = AF_INET;
-  srv_addr.sin_port = htons(params->port);
-  srv_addr.sin_addr.s_addr = htons(params->addr);
+  srv_addr.sin6_family = AF_INET6;
+  srv_addr.sin6_port = htons(params->port);
+  inet_pton(AF_INET6, params->addr, &srv_addr.sin6_addr);
 
   // bind server socket
-  *ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+  *ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof (srv_addr));
   if (*ret < 0) {
     *ret = WS_ESYS;
     close(s->fd);
@@ -395,7 +391,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_disconnect = params->on_ws_disconnect;
   s->on_ws_err = params->on_ws_err;
 
-  s->buffer_pool = buf_pool_init(params->max_events * 2, 1024 * 12);
+  s->buffer_pool = buf_pool_init(1024 * 2, 1024 * 12);
 
   buf_init(s->buffer_pool, &s->shared_recv_buffer);
   buf_init(s->buffer_pool, &s->shared_send_buffer);
@@ -414,7 +410,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   }
   int fd = s->fd;
   int epfd = s->epoll_fd;
-  size_t max_events = s->ev_cap;
+
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
@@ -429,9 +425,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
     s->on_ws_err(s, err);
     return -1;
   };
+  int one = 1;
 
   for (;;) {
-    int n_evs = epoll_wait(epfd, s->events, max_events, -1);
+    int n_evs = epoll_wait(epfd, s->events, 1024, -1);
     if (n_evs < 0) {
       int err = errno;
       s->on_ws_err(s, err);
@@ -442,8 +439,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
     for (int i = 0; i < n_evs; ++i) {
       if (s->events[i].data.ptr == s) {
         for (;;) {
-          int client_fd = accept4(fd, (struct sockaddr *)&client_sockaddr,
-                                  &client_socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+          int client_fd =
+              accept4(fd, (struct sockaddr *)&client_sockaddr, &client_socklen,
+                      SOCK_NONBLOCK | SOCK_CLOEXEC);
 
           if ((client_fd < 0)) {
             if (!(errno == EAGAIN)) {
@@ -452,6 +450,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
             }
             break;
           }
+
+          assert(setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &one,
+                            sizeof(one)) == 0);
 
           ev.events = EPOLLIN | EPOLLRDHUP;
           struct ws_conn_t *conn = calloc(1, sizeof(struct ws_conn_t));
@@ -470,10 +471,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
             int err = errno;
             s->on_ws_err(s, err);
           };
-
-          int one = 1;
-
-          setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &one, sizeof(one));
         }
 
       } else {
