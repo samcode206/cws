@@ -31,6 +31,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -344,7 +345,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   // socket init
   struct sockaddr_in srv_addr;
 
-  s->fd = socket(PF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+  s->fd = socket(PF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   if (s->fd < 0) {
     *ret = WS_ESYS;
     free(s);
@@ -442,7 +443,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
       if (s->events[i].data.ptr == s) {
         for (;;) {
           int client_fd = accept4(fd, (struct sockaddr *)&client_sockaddr,
-                                  &client_socklen, O_NONBLOCK);
+                                  &client_socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
 
           if ((client_fd < 0)) {
             if (!(errno == EAGAIN)) {
@@ -469,6 +470,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
             int err = errno;
             s->on_ws_err(s, err);
           };
+
+          int one = 1;
+
+          setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &one, sizeof(one));
         }
 
       } else {
