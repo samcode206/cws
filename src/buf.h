@@ -84,6 +84,12 @@ static inline uint8_t *buf_peekn(buf_t *r, size_t n) {
   return r->buf + r->rpos;
 }
 
+// static inline void buf_reset(buf_t *r) {
+//   size_t eq_mask = -((r->rpos ^ r->wpos) == 0);
+//   r->rpos &= ~eq_mask;
+//   r->wpos &= ~eq_mask;
+// }
+
 static inline int buf_consume(buf_t *r, size_t n) {
   if (buf_len(r) < n) {
     return -1;
@@ -91,10 +97,14 @@ static inline int buf_consume(buf_t *r, size_t n) {
 
   r->rpos += n;
 
-  int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
-  r->rpos -= ovf;
-  r->wpos -= ovf;
-
+  if (r->rpos == r->wpos) {
+    r->rpos = 0;
+    r->wpos = 0;
+  } else {
+    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    r->rpos -= ovf;
+    r->wpos -= ovf;
+  }
 
   return 0;
 }
@@ -114,9 +124,15 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
   r->rpos += (n > 0) * n;
 
-  int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
-  r->rpos -= ovf;
-  r->wpos -= ovf;
+    if (r->rpos == r->wpos) {
+    r->rpos = 0;
+    r->wpos = 0;
+  } else {
+    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    r->rpos -= ovf;
+    r->wpos -= ovf;
+  }
+
 
 
   return n;
