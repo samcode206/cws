@@ -95,11 +95,6 @@ static inline int buf_consume(buf_t *r, size_t n) {
   r->rpos -= ovf;
   r->wpos -= ovf;
 
-  // pre mature page fault prevention
-  if (r->wpos == r->rpos) {
-    r->rpos = 0;
-    r->wpos = 0;
-  }
 
   return 0;
 }
@@ -123,11 +118,6 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   r->rpos -= ovf;
   r->wpos -= ovf;
 
-  // pre mature page fault prevention
-  if (r->wpos == r->rpos) {
-    r->rpos = 0;
-    r->wpos = 0;
-  }
 
   return n;
 }
