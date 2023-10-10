@@ -191,7 +191,6 @@ void msg_unmask(uint8_t *src, size_t n) {
     src[i] = src[i] ^ mask[i & 3];
   }
 
-  // kind of like sentinel
   uint8_t *end = src + n;
 
   while (src < end) {
