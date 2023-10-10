@@ -151,13 +151,6 @@ static inline size_t frame_get_mask_offset(size_t n) {
 //   }
 // }
 
-static inline void rotateMask(unsigned int offset, char *mask) {
-  char originalMask[4] = {mask[0], mask[1], mask[2], mask[3]};
-  mask[(0 + offset) % 4] = originalMask[0];
-  mask[(1 + offset) % 4] = originalMask[1];
-  mask[(2 + offset) % 4] = originalMask[2];
-  mask[(3 + offset) % 4] = originalMask[3];
-}
 
 // static inline void msg_unmask64(uint8_t *src, size_t n) {
 //   uint8_t mask_bz[8] = {src[-4], src[-3], src[-2], src[-1], src[-4], src[-3],
@@ -201,7 +194,7 @@ void msg_unmask(uint8_t *src, size_t n) {
   // kind of like sentinel
   uint8_t *end = src + n;
 
-  while (src < end) {
+  while (src != end) {
     src[i] = src[i] ^ mask[i & 3];
     src[i + 1] = src[i + 1] ^ mask[(i + 1) & 3];
     src[i + 2] = src[i + 2] ^ mask[(i + 2) & 3];
