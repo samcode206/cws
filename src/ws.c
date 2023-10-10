@@ -151,7 +151,6 @@ static inline size_t frame_get_mask_offset(size_t n) {
 //   }
 // }
 
-
 // static inline void msg_unmask64(uint8_t *src, size_t n) {
 //   uint8_t mask_bz[8] = {src[-4], src[-3], src[-2], src[-1], src[-4], src[-3],
 //   src[-2], src[-1]}; uint64_t mask64; memcpy(&mask64, mask_bz, 8);
@@ -199,9 +198,8 @@ void msg_unmask(uint8_t *src, size_t n) {
     src[i + 1] = src[i + 1] ^ mask[(i + 1) & 3];
     src[i + 2] = src[i + 2] ^ mask[(i + 2) & 3];
     src[i + 3] = src[i + 3] ^ mask[(i + 3) & 3];
-    src +=4;
+    src += 4;
   }
-
 }
 
 // HTTP & Handshake Utils
@@ -477,27 +475,25 @@ int ws_server_start(ws_server_t *s, int backlog) {
         if (s->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
           conn_destroy(s, s->events[i].data.ptr, epfd, WS_CLOSE_ABNORM, &ev);
           s->events[i].data.ptr = NULL;
-        } else {
-          if (s->events[i].events & EPOLLOUT) {
+        } else if (s->events[i].events & EPOLLOUT) {
+          ws_conn_t *c = s->events[i].data.ptr;
+          int ret = conn_drain_write_buf(c, &c->write_buf);
+          if (ret == 1) {
             ws_conn_t *c = s->events[i].data.ptr;
-            int ret = conn_drain_write_buf(c, &c->write_buf);
-            if (ret == 1) {
-              ws_conn_t *c = s->events[i].data.ptr;
-              s->on_ws_drain(c);
-              ev.data.ptr = c;
-              ev.events = EPOLLIN | EPOLLRDHUP;
-              if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev) == -1) {
-                int err = errno;
-                s->on_ws_err(s, err);
-              };
-            }
-          } else if (s->events[i].events & EPOLLIN) {
-            ws_conn_t *c = s->events[i].data.ptr;
-            if (!c->state) {
-              handle_http(s, c);
-            } else {
-              handle_ws(s, c);
-            }
+            s->on_ws_drain(c);
+            ev.data.ptr = c;
+            ev.events = EPOLLIN | EPOLLRDHUP;
+            if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev) == -1) {
+              int err = errno;
+              s->on_ws_err(s, err);
+            };
+          }
+        } else if (s->events[i].events & EPOLLIN) {
+          ws_conn_t *c = s->events[i].data.ptr;
+          if (!c->state) {
+            handle_http(s, c);
+          } else {
+            handle_ws(s, c);
           }
         }
       }
