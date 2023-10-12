@@ -950,7 +950,6 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
     buf = &s->shared_recv_buffer;
   }
 
-
   if (conn_read(s, conn, buf) == 0) {
     while (state_check_needed_bytes(&conn->state, buf)) {
       uint8_t *frame_buf = state_get_header_start(&conn->state, buf);
@@ -1066,8 +1065,27 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
         }
         break;
       case OP_PING:
+        s->on_ws_ping(conn, msg, payload_len);
+        if (conn->state.fragmented_size) {
+          memmove(frame_buf, frame_buf - full_frame_len,
+                  conn->read_buf.wpos - conn->read_buf.rpos - full_frame_len);
+          conn->read_buf.wpos -= full_frame_len;
+          conn->state.needed_bytes = 2;
+        } else {
+          buf_consume(buf, full_frame_len);
+        }
+
         break;
       case OP_PONG:
+        s->on_ws_pong(conn, msg, payload_len);
+        if (conn->state.fragmented_size) {
+          memmove(frame_buf, frame_buf - full_frame_len,
+                  conn->read_buf.wpos - conn->read_buf.rpos - full_frame_len);
+          conn->read_buf.wpos -= full_frame_len;
+          conn->state.needed_bytes = 2;
+        } else {
+          buf_consume(buf, full_frame_len);
+        }
         break;
       case OP_CLOSE:
         break;
@@ -1077,7 +1095,11 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       }
     }
 
-    conn_drain_write_buf(conn, &s->shared_send_buffer);
+    if (buf_len(&s->shared_send_buffer)) {
+      conn_drain_write_buf(conn, &s->shared_send_buffer);
+    } else {
+      conn_drain_write_buf(conn, &conn->write_buf);
+    }
 
     size_t rem = buf_len(buf);
     if ((buf == &s->shared_recv_buffer) & (rem > 0)) {
