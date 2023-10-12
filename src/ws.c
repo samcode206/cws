@@ -104,6 +104,7 @@ static inline bool state_check_needed_bytes(ws_state_t *conn_state,
 
 static inline uint8_t *state_get_header_start(ws_state_t *conn_state,
                                               buf_t *buf) {
+  printf("buf start: %zu\n", buf->rpos + conn_state->fragmented_size);
   return buf_peek_at(buf, buf->rpos + conn_state->fragmented_size);
 }
 
@@ -164,6 +165,7 @@ static inline size_t frame_get_mask_offset(size_t n) {
 }
 
 void msg_unmask(uint8_t *src, uint8_t *mask, size_t n) {
+
   size_t i = 0;
   size_t left_over = n & 3;
 
@@ -171,15 +173,15 @@ void msg_unmask(uint8_t *src, uint8_t *mask, size_t n) {
     src[i] = src[i] ^ mask[i & 3];
   }
 
-  uint8_t *end = src + n;
 
-  while (src < end) {
+  while (i < n) {
     src[i] = src[i] ^ mask[i & 3];
     src[i + 1] = src[i + 1] ^ mask[(i + 1) & 3];
     src[i + 2] = src[i + 2] ^ mask[(i + 2) & 3];
     src[i + 3] = src[i + 3] ^ mask[(i + 3) & 3];
-    src += 4;
+    i += 4;
   }
+
 }
 
 // HTTP & Handshake Utils
@@ -499,7 +501,7 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
 static int conn_read(ws_server_t *s, struct ws_conn_t *conn, buf_t *buf) {
   ssize_t n = buf_recv(buf, conn->fd, 0);
   int epfd = s->epoll_fd;
-
+  printf("read %zi\n", n);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
       return 0;
@@ -955,12 +957,19 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       uint8_t *frame_buf = state_get_header_start(&conn->state, buf);
       uint8_t fin = frame_get_fin(frame_buf);
       uint8_t opcode = frame_get_opcode(frame_buf);
-
+      printf("fragments=%zu\n", conn->state.fragmented_size);
       // run general validation checks on the header
       if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
           (frame_has_reserved_bits_set(frame_buf) == 1) |
           (frame_is_masked(frame_buf) == 0)) {
         printf("invalid frame closing\n");
+        printf("opcode=%d\n", opcode);
+        printf("fin=%d\n", fin);
+        printf("fragments=%zu\n", conn->state.fragmented_size);
+        printf("%.*s\n", buf->wpos - buf->rpos - conn->state.fragmented_size,
+               frame_buf);
+        assert(s->shared_recv_buffer.rpos == 0 &&
+               s->shared_recv_buffer.wpos == 0);
         conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
         return;
       }
@@ -1011,6 +1020,7 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
         // fin and never fragmented
         if (fin & (conn->state.fragmented_size == 0)) {
+          printf("here\n");
           s->on_ws_msg(conn, msg, payload_len, conn->state.bin);
           buf_consume(buf, full_frame_len);
           conn->state.bin = 0;
@@ -1037,23 +1047,27 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           full_frame_len = buf->wpos - buf->rpos - conn->state.fragmented_size;
           frame_buf = state_get_header_start(&conn->state, buf);
         } else {
+          printf("%.*s\n", payload_len, msg);
+          printf("memmoved payloadSize %zu frame size %zu moving %zu\n",
+                 payload_len, full_frame_len, frame_buf_len - mask_offset - 4);
+          buf_debug(buf, "before");
 
-          printf("memmoved fragment %zu\n", frame_buf_len - mask_offset - 4);
-          memmove(buf->buf + buf->rpos + conn->state.fragmented_size, msg,
-                  frame_buf_len - mask_offset - 4);
+          if (frame_buf_len - mask_offset - 4 == 9) {
+            printf("opcode legit %d\n", frame_get_opcode(msg));
+          }
+
+          memmove(frame_buf, msg, frame_buf_len - mask_offset - 4);
 
           conn->state.fragmented_size += payload_len;
           // roll back write index by header size
           conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
           full_frame_len = buf->wpos - buf->rpos - conn->state.fragmented_size;
           conn->state.needed_bytes = 2;
+          buf_debug(buf, "after");
         }
 
         if (fin) {
 
-          printf("fin %zu\n", conn->state.fragmented_size);
-
-          printf("rpos=%zu wpos=%zu", buf->rpos, buf->wpos);
           s->on_ws_msg(conn, buf_peek(&conn->read_buf),
                        conn->state.fragmented_size, conn->state.bin);
           buf_consume(buf, conn->state.fragmented_size);
@@ -1061,17 +1075,24 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           conn->state.fragmented_size = 0;
           conn->state.needed_bytes = 2;
           conn->state.bin = 0;
-          printf("fin %zu\n", conn->state.fragmented_size);
         }
         break;
       case OP_PING:
         s->on_ws_ping(conn, msg, payload_len);
         if (conn->state.fragmented_size) {
-          memmove(frame_buf, frame_buf - full_frame_len,
-                  conn->read_buf.wpos - conn->read_buf.rpos - full_frame_len);
+          buf_debug(buf, "before ping");
+          printf("frame of ping %zu moving %zu \n", full_frame_len,
+                 conn->read_buf.wpos - conn->read_buf.rpos -
+                     conn->state.fragmented_size - full_frame_len);
+          assert(frame_buf == state_get_header_start(&conn->state, buf));
+          memmove(frame_buf, frame_buf + full_frame_len,
+                  conn->read_buf.wpos - conn->read_buf.rpos -
+                      conn->state.fragmented_size - full_frame_len);
           conn->read_buf.wpos -= full_frame_len;
           conn->state.needed_bytes = 2;
+          buf_debug(buf, "after ping");
         } else {
+          printf("here\n");
           buf_consume(buf, full_frame_len);
         }
 
@@ -1079,15 +1100,54 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       case OP_PONG:
         s->on_ws_pong(conn, msg, payload_len);
         if (conn->state.fragmented_size) {
+          printf("here\n");
           memmove(frame_buf, frame_buf - full_frame_len,
-                  conn->read_buf.wpos - conn->read_buf.rpos - full_frame_len);
+                  frame_buf_len - full_frame_len);
           conn->read_buf.wpos -= full_frame_len;
           conn->state.needed_bytes = 2;
+          printf("done\n");
         } else {
           buf_consume(buf, full_frame_len);
         }
         break;
       case OP_CLOSE:
+        if (!payload_len) {
+          s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
+          return;
+        } else if (payload_len < 2) {
+          s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+          return;
+        }
+
+        else {
+          uint16_t code = WS_CLOSE_NOSTAT;
+          if (payload_len > 125) {
+            // close frames can be more but this is the most that will be
+            // supported for various reasons close frames generally should
+            // contain just the 16bit code and a short string for the reason at
+            // most
+            conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
+            return;
+          }
+
+          if (!utf8_is_valid(msg + 2, payload_len - 2)) {
+            conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
+            return;
+          };
+
+          code = (msg[6] << 8) | msg[7];
+          if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
+              code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
+              code == 2999) {
+            s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+            return;
+          }
+
+          s->on_ws_close(conn, code, msg + 2);
+
+          return;
+        }
+
         break;
       default:
         conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
