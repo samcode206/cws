@@ -43,7 +43,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define BUFFER_SIZE 1024 * 128
+#define BUFFER_SIZE 1024 * 1024 * 32
 
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
@@ -267,7 +267,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 // generic send function (used for upgrade)
 int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
-void handle_ws(ws_server_t *s, struct ws_conn_t *conn);
+static void handle_ws(ws_server_t *s, struct ws_conn_t *conn);
 
 void handle_ws_fmsg(ws_server_t *s, struct ws_conn_t *conn);
 
@@ -947,7 +947,7 @@ int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
 //   return 0;
 // }
 
-inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
+static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
   buf_t *buf;
 
   if (buf_len(&conn->read_buf)) {
@@ -1009,26 +1009,26 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
       switch (opcode) {
       case OP_TXT:
-        // here we wanna fallthrough after doing UTF validation
-        if (!utf8_is_valid(msg, payload_len)) {
-          printf("failed validation\n");
-          conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
-          return; // TODO(sah): send a Close frame, & call close callback
-        }
-
-      case OP_BIN: // IMPORTANT, OP_TXT falls through here, only utf-8
-                   // validation is done above
+      case OP_BIN:
         conn->state.bin =
             opcode == OP_BIN; // still wanna compare here due to fallthrough
 
         // fin and never fragmented
         if (fin & (conn->state.fragmented_size == 0)) {
+          if (!conn->state.bin && !utf8_is_valid(msg, payload_len)) {
+            printf("failed validation\n");
+            conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
+            return; // TODO(sah): send a Close frame, & call close callback
+          }
           s->on_ws_msg(conn, msg, payload_len, conn->state.bin);
           buf_consume(buf, full_frame_len);
           conn->state.bin = 0;
           conn->state.needed_bytes = 2;
 
           break; /* OP_BIN don't fall through to fragmented msg */
+        } else if (fin & (conn->state.fragmented_size > 0)) {
+          conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
+          return;
         }
       case OP_CONT:
         // accumulate bytes and increase fragmented_size
@@ -1036,6 +1036,11 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
         // move bytes over
         // call the callback
         // reset
+        // can't send cont as first fragment
+        if ((opcode == OP_CONT) & (conn->state.fragmented_size == 0)) {
+          conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
+          return;
+        }
 
         if (buf != &conn->read_buf) {
           // trim off the header
@@ -1049,16 +1054,6 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           full_frame_len = buf->wpos - buf->rpos - conn->state.fragmented_size;
           frame_buf = state_get_header_start(&conn->state, buf);
         } else {
-          // printf("%.*s\n", payload_len, msg);
-          // printf("memmoved payloadSize %zu frame size %zu moving %zu\n",
-          //        payload_len, full_frame_len, frame_buf_len - mask_offset -
-          //        4);
-          // buf_debug(buf, "before");
-
-          if (frame_buf_len - mask_offset - 4 == 9) {
-            printf("opcode legit %d\n", frame_get_opcode(msg));
-          }
-
           memmove(frame_buf, msg, frame_buf_len - mask_offset - 4);
 
           conn->state.fragmented_size += payload_len;
@@ -1066,11 +1061,15 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
           full_frame_len = buf->wpos - buf->rpos - conn->state.fragmented_size;
           conn->state.needed_bytes = 2;
-          // buf_debug(buf, "after");
         }
 
         if (fin) {
-
+          if (!conn->state.bin && !utf8_is_valid(buf_peek(&conn->read_buf),
+                                                 conn->state.fragmented_size)) {
+            printf("failed validation\n");
+            conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
+            return; // TODO(sah): send a Close frame, & call close callback
+          }
           s->on_ws_msg(conn, buf_peek(&conn->read_buf),
                        conn->state.fragmented_size, conn->state.bin);
           buf_consume(buf, conn->state.fragmented_size);
