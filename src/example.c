@@ -42,7 +42,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
 }
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
-  printf("on_close, code: %d reason: %s\n", code, (char *)reason);
+  printf("on_close, code: %d \n", code);
   if ((code == WS_CLOSE_ABNORM) | (code == WS_CLOSE_NOSTAT)) {
     ws_conn_close(ws_conn_server(ws_conn), ws_conn, (void *)reason, 0,
                   WS_CLOSE_NORMAL);

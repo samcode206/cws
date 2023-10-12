@@ -43,6 +43,8 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
+#define BUFFER_SIZE 1024 * 128
+
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
 #define STATE_PARSING_MSG 2
@@ -104,7 +106,6 @@ static inline bool state_check_needed_bytes(ws_state_t *conn_state,
 
 static inline uint8_t *state_get_header_start(ws_state_t *conn_state,
                                               buf_t *buf) {
-  printf("buf start: %zu\n", buf->rpos + conn_state->fragmented_size);
   return buf_peek_at(buf, buf->rpos + conn_state->fragmented_size);
 }
 
@@ -173,7 +174,6 @@ void msg_unmask(uint8_t *src, uint8_t *mask, size_t n) {
     src[i] = src[i] ^ mask[i & 3];
   }
 
-
   while (i < n) {
     src[i] = src[i] ^ mask[i & 3];
     src[i + 1] = src[i + 1] ^ mask[(i + 1) & 3];
@@ -181,7 +181,6 @@ void msg_unmask(uint8_t *src, uint8_t *mask, size_t n) {
     src[i + 3] = src[i + 3] ^ mask[(i + 3) & 3];
     i += 4;
   }
-
 }
 
 // HTTP & Handshake Utils
@@ -372,7 +371,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_disconnect = params->on_ws_disconnect;
   s->on_ws_err = params->on_ws_err;
 
-  s->buffer_pool = buf_pool_init(1024 * 2, 1024 * 12);
+  s->buffer_pool = buf_pool_init(1024 * 2, BUFFER_SIZE);
 
   buf_init(s->buffer_pool, &s->shared_recv_buffer);
   buf_init(s->buffer_pool, &s->shared_send_buffer);
@@ -501,7 +500,6 @@ ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
 static int conn_read(ws_server_t *s, struct ws_conn_t *conn, buf_t *buf) {
   ssize_t n = buf_recv(buf, conn->fd, 0);
   int epfd = s->epoll_fd;
-  printf("read %zi\n", n);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
       return 0;
@@ -517,16 +515,22 @@ static int conn_read(ws_server_t *s, struct ws_conn_t *conn, buf_t *buf) {
 }
 
 int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
+  buf_t *buf;
+  if (buf_len(&conn->read_buf)) {
+    buf = &conn->read_buf;
+  } else {
+    buf = &s->shared_recv_buffer;
+  }
 
-  if (conn_read(s, conn, &s->shared_recv_buffer) == -1) {
+  if (conn_read(s, conn, buf) == -1) {
     return -1;
   };
 
-  uint8_t *buf = buf_peek(&s->shared_recv_buffer);
-  size_t rbuf_len = buf_len(&s->shared_recv_buffer);
-  if (!strncmp((char *)buf, GET_RQ, sizeof GET_RQ - 1)) {
+  uint8_t *headers = buf_peek(buf);
+  size_t rbuf_len = buf_len(buf);
+  if (!strncmp((char *)headers, GET_RQ, sizeof GET_RQ - 1)) {
     char res_hdrs[1024] = {0};
-    ssize_t ret = handle_upgrade((char *)buf, res_hdrs, sizeof res_hdrs);
+    ssize_t ret = handle_upgrade((char *)headers, res_hdrs, sizeof res_hdrs);
 
     int n = conn_send(s, conn, res_hdrs, ret - 1);
     if (n == ret - 1) {
@@ -540,7 +544,7 @@ int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
     }
     // printf("Res --------------------------------\n");
     // printf("%s\n", res_hdrs);
-    buf_consume(&s->shared_recv_buffer, rbuf_len);
+    buf_consume(buf, rbuf_len);
     conn->state.upgraded = 1;
     conn->state.needed_bytes = 2;
     return 0;
@@ -957,7 +961,7 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       uint8_t *frame_buf = state_get_header_start(&conn->state, buf);
       uint8_t fin = frame_get_fin(frame_buf);
       uint8_t opcode = frame_get_opcode(frame_buf);
-      printf("fragments=%zu\n", conn->state.fragmented_size);
+      // printf("fragments=%zu\n", conn->state.fragmented_size);
       // run general validation checks on the header
       if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
           (frame_has_reserved_bits_set(frame_buf) == 1) |
@@ -965,11 +969,10 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
         printf("invalid frame closing\n");
         printf("opcode=%d\n", opcode);
         printf("fin=%d\n", fin);
-        printf("fragments=%zu\n", conn->state.fragmented_size);
-        printf("%.*s\n", buf->wpos - buf->rpos - conn->state.fragmented_size,
-               frame_buf);
-        assert(s->shared_recv_buffer.rpos == 0 &&
-               s->shared_recv_buffer.wpos == 0);
+        // printf("fragments=%zu\n", conn->state.fragmented_size);
+        // printf("%.*s\n", buf->wpos - buf->rpos - conn->state.fragmented_size,
+        //        frame_buf);
+
         conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
         return;
       }
@@ -1020,7 +1023,6 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
         // fin and never fragmented
         if (fin & (conn->state.fragmented_size == 0)) {
-          printf("here\n");
           s->on_ws_msg(conn, msg, payload_len, conn->state.bin);
           buf_consume(buf, full_frame_len);
           conn->state.bin = 0;
@@ -1040,17 +1042,18 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           buf_consume(buf, mask_offset + 4);
           buf_move(buf, &conn->read_buf, buf_len(buf));
           conn->state.fragmented_size += payload_len;
-          printf("moved fragment %zu\n", conn->state.fragmented_size);
+          // printf("moved fragment %zu\n", conn->state.fragmented_size);
           conn->state.needed_bytes = 2;
           buf = &conn->read_buf;
           // switching buffers related data refreshes
           full_frame_len = buf->wpos - buf->rpos - conn->state.fragmented_size;
           frame_buf = state_get_header_start(&conn->state, buf);
         } else {
-          printf("%.*s\n", payload_len, msg);
-          printf("memmoved payloadSize %zu frame size %zu moving %zu\n",
-                 payload_len, full_frame_len, frame_buf_len - mask_offset - 4);
-          buf_debug(buf, "before");
+          // printf("%.*s\n", payload_len, msg);
+          // printf("memmoved payloadSize %zu frame size %zu moving %zu\n",
+          //        payload_len, full_frame_len, frame_buf_len - mask_offset -
+          //        4);
+          // buf_debug(buf, "before");
 
           if (frame_buf_len - mask_offset - 4 == 9) {
             printf("opcode legit %d\n", frame_get_opcode(msg));
@@ -1063,7 +1066,7 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
           full_frame_len = buf->wpos - buf->rpos - conn->state.fragmented_size;
           conn->state.needed_bytes = 2;
-          buf_debug(buf, "after");
+          // buf_debug(buf, "after");
         }
 
         if (fin) {
@@ -1078,36 +1081,45 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
         }
         break;
       case OP_PING:
+        if (payload_len > 125) {
+          conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
+          return;
+        }
         s->on_ws_ping(conn, msg, payload_len);
         if (conn->state.fragmented_size) {
-          buf_debug(buf, "before ping");
-          printf("frame of ping %zu moving %zu \n", full_frame_len,
-                 conn->read_buf.wpos - conn->read_buf.rpos -
-                     conn->state.fragmented_size - full_frame_len);
-          assert(frame_buf == state_get_header_start(&conn->state, buf));
+          // buf_debug(buf, "before ping");
+          // printf("frame of ping %zu moving %zu \n", full_frame_len,
+          //        conn->read_buf.wpos - conn->read_buf.rpos -
+          //            conn->state.fragmented_size - full_frame_len);
+          // assert(frame_buf == state_get_header_start(&conn->state, buf));
           memmove(frame_buf, frame_buf + full_frame_len,
                   conn->read_buf.wpos - conn->read_buf.rpos -
                       conn->state.fragmented_size - full_frame_len);
           conn->read_buf.wpos -= full_frame_len;
           conn->state.needed_bytes = 2;
-          buf_debug(buf, "after ping");
+          // buf_debug(buf, "after ping");
         } else {
-          printf("here\n");
+          // printf("here\n");
           buf_consume(buf, full_frame_len);
+          conn->state.needed_bytes = 2;
         }
 
         break;
       case OP_PONG:
+        if (payload_len > 125) {
+          conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
+          return;
+        }
         s->on_ws_pong(conn, msg, payload_len);
         if (conn->state.fragmented_size) {
-          printf("here\n");
-          memmove(frame_buf, frame_buf - full_frame_len,
-                  frame_buf_len - full_frame_len);
+          memmove(frame_buf, frame_buf + full_frame_len,
+                  conn->read_buf.wpos - conn->read_buf.rpos -
+                      conn->state.fragmented_size - full_frame_len);
           conn->read_buf.wpos -= full_frame_len;
           conn->state.needed_bytes = 2;
-          printf("done\n");
         } else {
           buf_consume(buf, full_frame_len);
+          conn->state.needed_bytes = 2;
         }
         break;
       case OP_CLOSE:
@@ -1135,7 +1147,7 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
             return;
           };
 
-          code = (msg[6] << 8) | msg[7];
+          code = (msg[0] << 8) | msg[1];
           if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
               code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
               code == 2999) {
@@ -1162,9 +1174,9 @@ inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
     }
 
     size_t rem = buf_len(buf);
-    if ((buf == &s->shared_recv_buffer) & (rem > 0)) {
+    if ((buf == &s->shared_recv_buffer) && (rem > 0)) {
       // move to connection specific buffer
-      printf("moving: %zu\n", rem);
+      printf("moving from shared to socket buffer: %zu\n", rem);
       buf_move(buf, &conn->read_buf, rem);
     }
   }
@@ -1464,8 +1476,7 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
 int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
   ssize_t n = 0;
 
-  if ((conn->state.writeable == 1) &
-      (buf_space(&s->shared_send_buffer) > len)) {
+  if ((conn->state.writeable == 1) & (buf_space(&conn->write_buf) > len)) {
     n = send(conn->fd, data, len, 0);
     if (n == 0) {
       return -1;
@@ -1480,8 +1491,7 @@ int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
       s->ev.events = EPOLLOUT | EPOLLRDHUP;
       s->ev.data.ptr = conn;
       conn->state.writeable = 0;
-      assert(buf_put(&s->shared_send_buffer, (uint8_t *)data + n, len - n) ==
-             0);
+      assert(buf_put(&conn->write_buf, (uint8_t *)data + n, len - n) == 0);
       if (epoll_ctl(s->epoll_fd, EPOLL_CTL_MOD, conn->fd, &s->ev) == -1) {
         return -1;
       };
