@@ -165,7 +165,7 @@ static inline size_t frame_get_mask_offset(size_t n) {
   return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
-void msg_unmask(uint8_t *src, uint8_t *mask, size_t n) {
+static void msg_unmask(uint8_t *src, uint8_t *mask, size_t n) {
 
   size_t i = 0;
   size_t left_over = n & 3;
