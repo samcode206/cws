@@ -265,7 +265,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 }
 
 // generic send function (used for upgrade)
-int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
+static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
 
 static void handle_ws(ws_server_t *s, struct ws_conn_t *conn);
 
@@ -986,7 +986,7 @@ start sending more data
 
     -1 an error occurred connection should be closed, check errno
 */
-int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
+static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
                      uint8_t op) {
 
   ssize_t n = 0;
@@ -1084,7 +1084,7 @@ int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
   return n == flen;
 }
 
-int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
+static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
   ssize_t n = 0;
 
   if ((conn->state.writeable == 1) & (buf_space(&conn->write_buf) > len)) {
