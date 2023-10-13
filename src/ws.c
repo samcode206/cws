@@ -265,7 +265,8 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 }
 
 // generic send function (used for upgrade)
-static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t n);
+static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data,
+                     size_t n);
 
 static void handle_ws(ws_server_t *s, struct ws_conn_t *conn);
 
@@ -589,6 +590,12 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       if (missing_header_len) {
         // wait for atleast remaining of the header
         conn->state.needed_bytes = missing_header_len;
+        size_t rem = buf_len(buf);
+        if ((buf == &s->shared_recv_buffer) && (rem > 0)) {
+          // move to connection specific buffer
+          printf("moving from shared to socket buffer: %zu\n", rem);
+          buf_move(buf, &conn->read_buf, rem);
+        }
         return;
       }
 
@@ -603,6 +610,12 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       // set needed_bytes and exit waiting for more reads from the socket
       if (frame_buf_len < full_frame_len) {
         conn->state.needed_bytes = full_frame_len;
+        size_t rem = buf_len(buf);
+        if ((buf == &s->shared_recv_buffer) && (rem > 0)) {
+          // move to connection specific buffer
+          printf("moving from shared to socket buffer: %zu\n", rem);
+          buf_move(buf, &conn->read_buf, rem);
+        }
         return;
       }
 
@@ -986,8 +999,8 @@ start sending more data
 
     -1 an error occurred connection should be closed, check errno
 */
-static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t len,
-                     uint8_t op) {
+static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
+                            size_t len, uint8_t op) {
 
   ssize_t n = 0;
   size_t hlen = frame_get_mask_offset(len);
@@ -1084,7 +1097,8 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data, size_t 
   return n == flen;
 }
 
-static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data, size_t len) {
+static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data,
+                     size_t len) {
   ssize_t n = 0;
 
   if ((conn->state.writeable == 1) & (buf_space(&conn->write_buf) > len)) {
