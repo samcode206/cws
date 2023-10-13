@@ -153,7 +153,7 @@ int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len, size_t *res) {
   return 0;
 }
 
-static inline int frame_has_reserved_bits_set(uint8_t *buf) {
+static inline int frame_has_reserved_bits_set(uint8_t const *buf) {
   return (buf[0] & 0x70) != 0;
 }
 
@@ -161,11 +161,11 @@ static inline uint32_t frame_is_masked(const unsigned char *buf) {
   return (buf[1] >> 7) & 0x01;
 }
 
-static inline size_t frame_get_mask_offset(size_t n) {
+static inline size_t frame_get_mask_offset(size_t const n) {
   return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
-static void msg_unmask(uint8_t *src, uint8_t *mask, size_t n) {
+static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
 
   size_t i = 0;
   size_t left_over = n & 3;
