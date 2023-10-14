@@ -554,12 +554,11 @@ static inline buf_t *ws_conn_choose_read_buf(struct ws_conn_t *conn) {
   }
 }
 
-static inline bool ws_conn_readable(ws_conn_t *conn, buf_t *buf) {
+static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
   if (buf != &conn->read_buf) {
-    return buf->wpos - buf->rpos >= conn->state.needed_bytes;
+    return buf->wpos - buf->rpos;
   } else {
-    return buf->wpos - buf->rpos - conn->state.fragments_len >=
-           conn->state.needed_bytes;
+    return buf->wpos - buf->rpos - conn->state.fragments_len;
   }
 }
 
@@ -575,12 +574,11 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
   size_t total_trimmed = 0;
 
   if (conn_read(s, conn, buf) == 0) {
-    while (ws_conn_readable(conn, buf)) {
+    while (ws_conn_readable_len(conn, buf) - total_trimmed >= conn->state.needed_bytes) {
       // payload start
-      uint8_t *frame_buf = buf_peek_at(buf, buf->rpos +
-                                                (buf == &conn->read_buf) *
-                                                    conn->state.fragments_len +
-                                                frame_gap);
+      uint8_t *frame_buf = buf_peek_at(
+          buf, buf->rpos + (buf == &conn->read_buf) *
+                               (conn->state.fragments_len + frame_gap));
 
       uint8_t fin = frame_get_fin(frame_buf);
       uint8_t opcode = frame_get_opcode(frame_buf);
@@ -695,6 +693,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
           conn->state.fragments_len += payload_len;
           total_trimmed += frame_gap;
           conn->state.needed_bytes = 2;
+          printf("memmoved fragment %zu\n", conn->state.fragments_len);
           // printf("memmoved %zu\n",
           //        buf->wpos - buf->rpos - conn->state.fragments_len);
           // conn->state.fragments_len += payload_len;
@@ -727,16 +726,9 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
         }
         s->on_ws_ping(conn, msg, payload_len);
         if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
-          // buf_debug(buf, "before ping");
-          // printf("frame of ping %zu moving %zu \n", full_frame_len,
-          //        conn->read_buf.wpos - conn->read_buf.rpos -
-          //            conn->state.fragments_len - full_frame_len);
-          // assert(frame_buf == state_get_header_start(&conn->state, buf));
-          memmove(frame_buf - frame_gap, msg,payload_len);
-           frame_gap = mask_offset + 4;
+          frame_gap = full_frame_len;
           total_trimmed += frame_gap;
           conn->state.needed_bytes = 2;
-          // buf_debug(buf, "after ping");
         } else {
           // printf("here\n");
           buf_consume(buf, full_frame_len);
@@ -751,11 +743,10 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
         }
         s->on_ws_pong(conn, msg, payload_len);
         if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
-          memmove(frame_buf - frame_gap, msg,payload_len);
-           frame_gap = mask_offset + 4;
+          frame_gap = full_frame_len;
           total_trimmed += frame_gap;
           conn->state.needed_bytes = 2;
-        }else {
+        } else {
           buf_consume(buf, full_frame_len);
           conn->state.needed_bytes = 2;
         }
