@@ -26,11 +26,10 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // printf("on_msg: ");
   // fwrite(msg, sizeof(char), n, stdout);
   // fwrite("\n", 1, 1, stdout);
-  int stat;
   if (bin) {
-    stat = ws_conn_send(ws_conn_server(c), c, msg, n);
+    ws_conn_send(ws_conn_server(c), c, msg, n);
   } else {
-    stat = ws_conn_send_txt(ws_conn_server(c), c, msg, n);
+    ws_conn_send_txt(ws_conn_server(c), c, msg, n);
   }
 
   // if (stat == 1) {

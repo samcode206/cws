@@ -43,7 +43,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define BUFFER_SIZE 1024 * 12
+#define BUFFER_SIZE 1024 * 16
 
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
@@ -55,12 +55,12 @@
 typedef int (*ws_handler)(ws_server_t *s, struct ws_conn_t *conn);
 
 typedef struct {
-  size_t fragmented_size; // size of the data portion of the frames across
-                          // fragmentation
+  bool bin;             // is binary message?
+  bool writeable;       // can we write to the socket?
+  bool upgraded;        // are we even upgraded?
+  size_t fragments_len; // size of the data portion of the frames across
+                        // fragmentation
   size_t needed_bytes; // bytes needed before we can do something with the frame
-  bool bin;            // is binary message?
-  bool writeable;      // can we write to the socket?
-  bool upgraded;       // are we even upgraded?
 } ws_state_t;
 
 struct ws_conn_t {
@@ -96,17 +96,6 @@ static inline size_t min(size_t a, size_t b) {
   size_t diff = a - b;
   size_t mask = (diff >> (sizeof(size_t) * 8 - 1));
   return a + diff * mask;
-}
-
-static inline bool state_check_needed_bytes(ws_state_t *conn_state,
-                                            buf_t *buf) {
-  return buf->wpos - buf->rpos - conn_state->fragmented_size >=
-         conn_state->needed_bytes;
-}
-
-static inline uint8_t *state_get_header_start(ws_state_t *conn_state,
-                                              buf_t *buf) {
-  return buf_peek_at(buf, buf->rpos + conn_state->fragmented_size);
 }
 
 // Frame Utils
@@ -268,7 +257,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data,
                      size_t n);
 
-static void handle_ws(ws_server_t *s, struct ws_conn_t *conn);
+static void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn);
 
 static int handle_http(ws_server_t *s, struct ws_conn_t *conn);
 
@@ -471,7 +460,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           if (!c->state.upgraded) {
             handle_http(s, c);
           } else {
-            handle_ws(s, c);
+            ws_conn_handle(s, c);
           }
         }
       }
@@ -551,30 +540,61 @@ static int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
   return -1;
 }
 
-static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
-  buf_t *buf;
+static inline buf_t *ws_conn_choose_read_buf(struct ws_conn_t *conn) {
 
-  if (buf_len(&conn->read_buf)) {
-    buf = &conn->read_buf;
+  if ((buf_len(&conn->read_buf) != 0) &&
+      !(conn->state.fragments_len + conn->read_buf.rpos ==
+        conn->read_buf.wpos)) {
+    buf_debug(&conn->read_buf, "conn buffer chosen");
+    printf("fragments_len=%zu\n", conn->state.fragments_len);
+    return &conn->read_buf;
   } else {
-    buf = &s->shared_recv_buffer;
+    buf_debug(&conn->base->shared_recv_buffer, "shared buffer chosen");
+    return &conn->base->shared_recv_buffer;
   }
+}
+
+static inline bool ws_conn_readable(ws_conn_t *conn, buf_t *buf) {
+  if (buf != &conn->read_buf) {
+    return buf->wpos - buf->rpos >= conn->state.needed_bytes;
+  } else {
+    return buf->wpos - buf->rpos - conn->state.fragments_len >=
+           conn->state.needed_bytes;
+  }
+}
+
+static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
+  buf_t *buf = ws_conn_choose_read_buf(conn);
+
+  // when forced to memmove fragmented frame payloads
+  // there will naturally be a gap where we overwrote the header with the data
+  // and the next frame in the buffer we want to hold the size of this gap so it
+  // can be filled by the next fragment
+  size_t frame_gap = 0;
+  // total frame header bytes trimmed
+  size_t total_trimmed = 0;
 
   if (conn_read(s, conn, buf) == 0) {
-    while (state_check_needed_bytes(&conn->state, buf)) {
-      uint8_t *frame_buf = state_get_header_start(&conn->state, buf);
+    while (ws_conn_readable(conn, buf)) {
+      // payload start
+      uint8_t *frame_buf = buf_peek_at(buf, buf->rpos +
+                                                (buf == &conn->read_buf) *
+                                                    conn->state.fragments_len +
+                                                frame_gap);
+
       uint8_t fin = frame_get_fin(frame_buf);
       uint8_t opcode = frame_get_opcode(frame_buf);
-      // printf("fragments=%zu\n", conn->state.fragmented_size);
+      // printf("fragments=%zu\n", conn->state.fragments_len);
       // run general validation checks on the header
-      if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
-          (frame_has_reserved_bits_set(frame_buf) == 1) |
+      if (((fin == 0) && ((opcode > 2) && (opcode != OP_CONT))) ||
+          (frame_has_reserved_bits_set(frame_buf) == 1) ||
           (frame_is_masked(frame_buf) == 0)) {
         printf("invalid frame closing\n");
         printf("opcode=%d\n", opcode);
         printf("fin=%d\n", fin);
-        // printf("fragments=%zu\n", conn->state.fragmented_size);
-        // printf("%.*s\n", buf->wpos - buf->rpos - conn->state.fragmented_size,
+        // printf("resv=%d", frame_has_reserved_bits_set(frame_buf));
+        // printf("fragments=%zu\n", conn->state.fragments_len);
+        // printf("%.*s\n", buf->wpos - buf->rpos - conn->state.fragments_len,
         //        frame_buf);
         conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
         return;
@@ -582,21 +602,18 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
       // make sure we can get the full msg
       size_t payload_len = 0;
-      size_t frame_buf_len =
-          buf->wpos - buf->rpos - conn->state.fragmented_size;
+      size_t frames_buffer_len = buf->wpos - buf->rpos;
+      if (&conn->read_buf == buf) {
+        printf("using conn buffer\n");
+        frames_buffer_len -= conn->state.fragments_len;
+      }
       // check if we need to do more reads to get the msg length
       int missing_header_len =
-          frame_decode_payload_len(frame_buf, frame_buf_len, &payload_len);
+          frame_decode_payload_len(frame_buf, frames_buffer_len, &payload_len);
       if (missing_header_len) {
         // wait for atleast remaining of the header
         conn->state.needed_bytes = missing_header_len;
-        size_t rem = buf_len(buf);
-        if ((buf == &s->shared_recv_buffer) && (rem > 0)) {
-          // move to connection specific buffer
-          printf("moving from shared to socket buffer: %zu\n", rem);
-          buf_move(buf, &conn->read_buf, rem);
-        }
-        return;
+        goto clean_up_buffer;
       }
 
       // Todo(sah): add validation to payload_len
@@ -608,28 +625,24 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
 
       // check that we have atleast the whole frame, otherwise
       // set needed_bytes and exit waiting for more reads from the socket
-      if (frame_buf_len < full_frame_len) {
+      if (frames_buffer_len < full_frame_len) {
         conn->state.needed_bytes = full_frame_len;
-        size_t rem = buf_len(buf);
-        if ((buf == &s->shared_recv_buffer) && (rem > 0)) {
-          // move to connection specific buffer
-          printf("moving from shared to socket buffer: %zu\n", rem);
-          buf_move(buf, &conn->read_buf, rem);
-        }
-        return;
+        goto clean_up_buffer;
       }
 
       uint8_t *msg = frame_buf + mask_offset + 4;
       msg_unmask(msg, frame_buf + mask_offset, payload_len);
+      printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n", frames_buffer_len,
+             full_frame_len, opcode, fin);
+
+      conn->state.bin = opcode == OP_BIN;
 
       switch (opcode) {
       case OP_TXT:
       case OP_BIN:
-        conn->state.bin =
-            opcode == OP_BIN; // still wanna compare here due to fallthrough
-
         // fin and never fragmented
-        if (fin & (conn->state.fragmented_size == 0)) {
+        // this handles both text and binary hence the fallthrough
+        if (fin & (conn->state.fragments_len == 0)) {
           if (!conn->state.bin && !utf8_is_valid(msg, payload_len)) {
             printf("failed validation\n");
             conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
@@ -641,55 +654,68 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           conn->state.needed_bytes = 2;
 
           break; /* OP_BIN don't fall through to fragmented msg */
-        } else if (fin & (conn->state.fragmented_size > 0)) {
+        } else if (fin & (conn->state.fragments_len > 0)) {
+          // this is invalid because we expect continuation not text or binary
+          // opcode
           conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
           return;
         }
+
       case OP_CONT:
-        // accumulate bytes and increase fragmented_size
+        // accumulate bytes and increase fragments_len
 
         // move bytes over
         // call the callback
         // reset
+
         // can't send cont as first fragment
-        if ((opcode == OP_CONT) & (conn->state.fragmented_size == 0)) {
+        if ((opcode == OP_CONT) & (conn->state.fragments_len == 0)) {
           conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
           return;
         }
 
+        // we are using the shared buffer
         if (buf != &conn->read_buf) {
           // trim off the header
+          buf_debug(buf, "before moving");
           buf_consume(buf, mask_offset + 4);
-          buf_move(buf, &conn->read_buf, buf_len(buf));
-          conn->state.fragmented_size += payload_len;
-          // printf("moved fragment %zu\n", conn->state.fragmented_size);
+          buf_move(buf, &conn->read_buf, payload_len);
+          conn->state.fragments_len += payload_len;
+          printf("moved fragment %zu\n", conn->state.fragments_len);
           conn->state.needed_bytes = 2;
-          buf = &conn->read_buf;
-          // switching buffers related data refreshes
-          full_frame_len = buf->wpos - buf->rpos - conn->state.fragmented_size;
-          frame_buf = state_get_header_start(&conn->state, buf);
+          buf_debug(buf, "after moving");
         } else {
-          memmove(frame_buf, msg, frame_buf_len - mask_offset - 4);
+          // place back at the frame_buf start which contains the header & mask
+          // we want to get rid of but ensure to subtract by the frame_gap to
+          // fill it if it isn't zero
+          memmove(frame_buf - frame_gap, msg, payload_len);
 
-          conn->state.fragmented_size += payload_len;
-          // roll back write index by header size
-          conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
-          full_frame_len = buf->wpos - buf->rpos - conn->state.fragmented_size;
+          frame_gap = mask_offset + 4; // header size + 4 byte mask is always
+                                       // the gap left between frames
+          conn->state.fragments_len += payload_len;
+          total_trimmed += frame_gap;
           conn->state.needed_bytes = 2;
+          // printf("memmoved %zu\n",
+          //        buf->wpos - buf->rpos - conn->state.fragments_len);
+          // conn->state.fragments_len += payload_len;
+          // // roll back write index by header size
+          // conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
+          // full_frame_len = buf->wpos - buf->rpos - conn->state.fragments_len;
+          // conn->state.needed_bytes = 2;
         }
 
         if (fin) {
           if (!conn->state.bin && !utf8_is_valid(buf_peek(&conn->read_buf),
-                                                 conn->state.fragmented_size)) {
+                                                 conn->state.fragments_len)) {
             printf("failed validation\n");
             conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
             return; // TODO(sah): send a Close frame, & call close callback
           }
           s->on_ws_msg(conn, buf_peek(&conn->read_buf),
-                       conn->state.fragmented_size, conn->state.bin);
-          buf_consume(buf, conn->state.fragmented_size);
+                       conn->state.fragments_len, conn->state.bin);
+          buf_consume(&conn->read_buf, conn->state.fragments_len);
 
-          conn->state.fragmented_size = 0;
+          conn->state.fragments_len = 0;
           conn->state.needed_bytes = 2;
           conn->state.bin = 0;
         }
@@ -700,16 +726,15 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           return;
         }
         s->on_ws_ping(conn, msg, payload_len);
-        if (conn->state.fragmented_size) {
+        if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
           // buf_debug(buf, "before ping");
           // printf("frame of ping %zu moving %zu \n", full_frame_len,
           //        conn->read_buf.wpos - conn->read_buf.rpos -
-          //            conn->state.fragmented_size - full_frame_len);
+          //            conn->state.fragments_len - full_frame_len);
           // assert(frame_buf == state_get_header_start(&conn->state, buf));
-          memmove(frame_buf, frame_buf + full_frame_len,
-                  conn->read_buf.wpos - conn->read_buf.rpos -
-                      conn->state.fragmented_size - full_frame_len);
-          conn->read_buf.wpos -= full_frame_len;
+          memmove(frame_buf - frame_gap, msg,payload_len);
+           frame_gap = mask_offset + 4;
+          total_trimmed += frame_gap;
           conn->state.needed_bytes = 2;
           // buf_debug(buf, "after ping");
         } else {
@@ -725,13 +750,12 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
           return;
         }
         s->on_ws_pong(conn, msg, payload_len);
-        if (conn->state.fragmented_size) {
-          memmove(frame_buf, frame_buf + full_frame_len,
-                  conn->read_buf.wpos - conn->read_buf.rpos -
-                      conn->state.fragmented_size - full_frame_len);
-          conn->read_buf.wpos -= full_frame_len;
+        if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
+          memmove(frame_buf - frame_gap, msg,payload_len);
+           frame_gap = mask_offset + 4;
+          total_trimmed += frame_gap;
           conn->state.needed_bytes = 2;
-        } else {
+        }else {
           buf_consume(buf, full_frame_len);
           conn->state.needed_bytes = 2;
         }
@@ -779,7 +803,7 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
         conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
         return;
       }
-    }
+    } /* loop end */
 
     if (buf_len(&s->shared_send_buffer)) {
       conn_drain_write_buf(conn, &s->shared_send_buffer);
@@ -787,11 +811,13 @@ static inline void handle_ws(ws_server_t *s, struct ws_conn_t *conn) {
       conn_drain_write_buf(conn, &conn->write_buf);
     }
 
-    size_t rem = buf_len(buf);
-    if ((buf == &s->shared_recv_buffer) && (rem > 0)) {
+  clean_up_buffer:
+    if ((buf == &s->shared_recv_buffer) && (buf_len(buf) > 0)) {
       // move to connection specific buffer
-      printf("moving from shared to socket buffer: %zu\n", rem);
-      buf_move(buf, &conn->read_buf, rem);
+      printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
+      buf_move(buf, &conn->read_buf, buf_len(buf));
+    } else {
+      buf->wpos -= total_trimmed;
     }
   }
 }
