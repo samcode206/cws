@@ -43,7 +43,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define BUFFER_SIZE 1024 * 16
+#define BUFFER_SIZE 1024 * 1024 * 32
 
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
@@ -546,7 +546,9 @@ static inline buf_t *ws_conn_choose_read_buf(struct ws_conn_t *conn) {
       !(conn->state.fragments_len + conn->read_buf.rpos ==
         conn->read_buf.wpos)) {
     buf_debug(&conn->read_buf, "conn buffer chosen");
-    printf("fragments_len=%zu\n", conn->state.fragments_len);
+    printf("fragments_len=%zu buffer length = %zu \n",
+           conn->state.fragments_len, buf_len(&conn->read_buf));
+
     return &conn->read_buf;
   } else {
     buf_debug(&conn->base->shared_recv_buffer, "shared buffer chosen");
@@ -565,20 +567,16 @@ static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
 static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
   buf_t *buf = ws_conn_choose_read_buf(conn);
 
-  // when forced to memmove fragmented frame payloads
-  // there will naturally be a gap where we overwrote the header with the data
-  // and the next frame in the buffer we want to hold the size of this gap so it
-  // can be filled by the next fragment
-  size_t frame_gap = 0;
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
 
   if (conn_read(s, conn, buf) == 0) {
-    while (ws_conn_readable_len(conn, buf) - total_trimmed >= conn->state.needed_bytes) {
+    while (ws_conn_readable_len(conn, buf) - total_trimmed >=
+           conn->state.needed_bytes) {
       // payload start
       uint8_t *frame_buf = buf_peek_at(
-          buf, buf->rpos + (buf == &conn->read_buf) *
-                               (conn->state.fragments_len + frame_gap));
+          buf, buf->rpos + ((buf == &conn->read_buf) *
+                            (conn->state.fragments_len + total_trimmed)));
 
       uint8_t fin = frame_get_fin(frame_buf);
       uint8_t opcode = frame_get_opcode(frame_buf);
@@ -590,20 +588,16 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
         printf("invalid frame closing\n");
         printf("opcode=%d\n", opcode);
         printf("fin=%d\n", fin);
-        // printf("resv=%d", frame_has_reserved_bits_set(frame_buf));
-        // printf("fragments=%zu\n", conn->state.fragments_len);
-        // printf("%.*s\n", buf->wpos - buf->rpos - conn->state.fragments_len,
-        //        frame_buf);
         conn_destroy(s, conn, s->epoll_fd, WS_CLOSE_EPROTO, &s->ev);
         return;
       }
 
       // make sure we can get the full msg
       size_t payload_len = 0;
-      size_t frames_buffer_len = buf->wpos - buf->rpos;
+      size_t frames_buffer_len = buf_len(buf);
       if (&conn->read_buf == buf) {
-        printf("using conn buffer\n");
-        frames_buffer_len -= conn->state.fragments_len;
+        frames_buffer_len =
+            frames_buffer_len - conn->state.fragments_len - total_trimmed;
       }
       // check if we need to do more reads to get the msg length
       int missing_header_len =
@@ -633,11 +627,10 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
       printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n", frames_buffer_len,
              full_frame_len, opcode, fin);
 
-      conn->state.bin = opcode == OP_BIN;
-
       switch (opcode) {
       case OP_TXT:
       case OP_BIN:
+        conn->state.bin = opcode == OP_BIN;
         // fin and never fragmented
         // this handles both text and binary hence the fallthrough
         if (fin & (conn->state.fragments_len == 0)) {
@@ -686,21 +679,10 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
           // place back at the frame_buf start which contains the header & mask
           // we want to get rid of but ensure to subtract by the frame_gap to
           // fill it if it isn't zero
-          memmove(frame_buf - frame_gap, msg, payload_len);
-
-          frame_gap = mask_offset + 4; // header size + 4 byte mask is always
-                                       // the gap left between frames
+          memmove(frame_buf - total_trimmed, msg, payload_len);
           conn->state.fragments_len += payload_len;
-          total_trimmed += frame_gap;
+          total_trimmed += mask_offset + 4;
           conn->state.needed_bytes = 2;
-          printf("memmoved fragment %zu\n", conn->state.fragments_len);
-          // printf("memmoved %zu\n",
-          //        buf->wpos - buf->rpos - conn->state.fragments_len);
-          // conn->state.fragments_len += payload_len;
-          // // roll back write index by header size
-          // conn->read_buf.wpos = conn->read_buf.wpos - mask_offset - 4;
-          // full_frame_len = buf->wpos - buf->rpos - conn->state.fragments_len;
-          // conn->state.needed_bytes = 2;
         }
 
         if (fin) {
@@ -726,8 +708,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
         }
         s->on_ws_ping(conn, msg, payload_len);
         if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
-          frame_gap = full_frame_len;
-          total_trimmed += frame_gap;
+          total_trimmed += full_frame_len;
           conn->state.needed_bytes = 2;
         } else {
           // printf("here\n");
@@ -743,8 +724,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
         }
         s->on_ws_pong(conn, msg, payload_len);
         if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
-          frame_gap = full_frame_len;
-          total_trimmed += frame_gap;
+          total_trimmed += total_trimmed;
           conn->state.needed_bytes = 2;
         } else {
           buf_consume(buf, full_frame_len);
@@ -808,7 +788,14 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
       printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
       buf_move(buf, &conn->read_buf, buf_len(buf));
     } else {
-      buf->wpos -= total_trimmed;
+
+      memmove(buf->buf + buf->rpos + conn->state.fragments_len,
+              buf->buf + buf->rpos + conn->state.fragments_len + total_trimmed,
+              buf->wpos - buf->rpos + conn->state.fragments_len +
+                  total_trimmed);
+      buf->wpos =
+          buf->rpos + conn->state.fragments_len +
+          (buf->wpos - buf->rpos - conn->state.fragments_len - total_trimmed);
     }
   }
 }

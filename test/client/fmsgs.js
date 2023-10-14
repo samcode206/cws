@@ -40,7 +40,7 @@ process.stdin.on("data", (chunk) => {
     if (data.includes('fin')){
       fin = 1;
     }
-    ws.send(data.replace('\n', ''), {
+    ws.send('*'.replace('\n', '').repeat(64), {
       fin: fin,
     }, (err) => {
       if (err) {
