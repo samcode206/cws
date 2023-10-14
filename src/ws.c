@@ -545,13 +545,10 @@ static inline buf_t *ws_conn_choose_read_buf(struct ws_conn_t *conn) {
   if ((buf_len(&conn->read_buf) != 0) &&
       !(conn->state.fragments_len + conn->read_buf.rpos ==
         conn->read_buf.wpos)) {
-    buf_debug(&conn->read_buf, "conn buffer chosen");
-    printf("fragments_len=%zu buffer length = %zu \n",
-           conn->state.fragments_len, buf_len(&conn->read_buf));
+    // buf_debug(&conn->read_buf, "conn buffer chosen");
 
     return &conn->read_buf;
   } else {
-    buf_debug(&conn->base->shared_recv_buffer, "shared buffer chosen");
     return &conn->base->shared_recv_buffer;
   }
 }
@@ -624,8 +621,8 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
 
       uint8_t *msg = frame_buf + mask_offset + 4;
       msg_unmask(msg, frame_buf + mask_offset, payload_len);
-      printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n", frames_buffer_len,
-             full_frame_len, opcode, fin);
+      // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n", frames_buffer_len,
+      //        full_frame_len, opcode, fin);
 
       switch (opcode) {
       case OP_TXT:
@@ -668,13 +665,10 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
         // we are using the shared buffer
         if (buf != &conn->read_buf) {
           // trim off the header
-          buf_debug(buf, "before moving");
           buf_consume(buf, mask_offset + 4);
           buf_move(buf, &conn->read_buf, payload_len);
           conn->state.fragments_len += payload_len;
-          printf("moved fragment %zu\n", conn->state.fragments_len);
           conn->state.needed_bytes = 2;
-          buf_debug(buf, "after moving");
         } else {
           // place back at the frame_buf start which contains the header & mask
           // we want to get rid of but ensure to subtract by the frame_gap to
@@ -785,7 +779,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
   clean_up_buffer:
     if ((buf == &s->shared_recv_buffer) && (buf_len(buf) > 0)) {
       // move to connection specific buffer
-      printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
+      // printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
       buf_move(buf, &conn->read_buf, buf_len(buf));
     } else {
 
