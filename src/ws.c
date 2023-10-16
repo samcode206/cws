@@ -43,7 +43,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define BUFFER_SIZE 1024 * 512
+#define BUFFER_SIZE 1024 * 1024 * 4
 
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
