@@ -1006,21 +1006,32 @@ start sending more data
 static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
                             size_t len, uint8_t op) {
 
+  buf_t *wbuf;
+
+  if (buf_len(&conn->write_buf)) {
+    wbuf = &conn->write_buf;
+  } else {
+    wbuf = &s->shared_send_buffer;
+  }
+
   ssize_t n = 0;
   size_t hlen = frame_get_mask_offset(len);
   size_t flen = len + hlen;
-  if (buf_space(&s->shared_send_buffer) > flen) {
-    uint8_t hbuf[hlen];
-    // uint8_t *buf = conn->write_buf.buf + conn->write_buf.wpos;
+  if (buf_space(wbuf) > flen) {
+    uint8_t *hbuf = wbuf->buf + wbuf->wpos;
     memset(hbuf, 0, 2);
     hbuf[0] = FIN | op; // Set FIN bit and opcode
-    if (hlen == 2) {
+    wbuf->wpos += hlen;
+    switch (hlen) {
+    case 2:
       hbuf[1] = (uint8_t)len;
-    } else if (hlen == 4) {
+      break;
+    case 4:
       hbuf[1] = PAYLOAD_LEN_16;
       hbuf[2] = (len >> 8) & 0xFF;
       hbuf[3] = len & 0xFF;
-    } else {
+      break;
+    case 10:
       hbuf[1] = PAYLOAD_LEN_64;
       hbuf[2] = (len >> 56) & 0xFF;
       hbuf[3] = (len >> 48) & 0xFF;
@@ -1030,10 +1041,10 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
       hbuf[7] = (len >> 16) & 0xFF;
       hbuf[8] = (len >> 8) & 0xFF;
       hbuf[9] = len & 0xFF;
+      break;
     }
 
-    buf_put(&s->shared_send_buffer, hbuf, hlen);
-    return buf_put(&s->shared_send_buffer, data, len) == 0;
+    return buf_put(wbuf, data, len) == 0;
   }
 
   // ssize_t n = 0;
