@@ -43,7 +43,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define BUFFER_SIZE 1024 * 1024 * 32
+#define BUFFER_SIZE 1024 * 512
 
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
@@ -621,7 +621,8 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
 
       uint8_t *msg = frame_buf + mask_offset + 4;
       msg_unmask(msg, frame_buf + mask_offset, payload_len);
-      // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n", frames_buffer_len,
+      // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n",
+      // frames_buffer_len,
       //        full_frame_len, opcode, fin);
 
       switch (opcode) {
@@ -832,7 +833,12 @@ static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf) {
     return 0;
   }
 
-  n = buf_send(wbuf, conn->fd, 0);
+  if (to_write < 65535) {
+    n = buf_send(wbuf, conn->fd, 0);
+  } else {
+    n = buf_sendfile(conn->base->buffer_pool, wbuf, conn->fd);
+  }
+
   if ((n == -1 && errno != EAGAIN) | (n == 0)) {
     ws_server_t *s = ws_conn_server(conn);
     conn_destroy(ws_conn_server(conn), conn, s->epoll_fd, WS_CLOSE_ABNORM,

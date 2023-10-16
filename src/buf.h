@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -114,7 +115,7 @@ static inline void buf_move(buf_t *src_b, buf_t *dst_b, size_t n) {
   buf_consume(src_b, n);
 }
 
-static inline void buf_debug(buf_t *r, const char *label){
+static inline void buf_debug(buf_t *r, const char *label) {
   printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
 }
 
@@ -128,7 +129,7 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
   r->rpos += (n > 0) * n;
 
-    if (r->rpos == r->wpos) {
+  if (r->rpos == r->wpos) {
     r->rpos = 0;
     r->wpos = 0;
   } else {
@@ -137,7 +138,23 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
     r->wpos -= ovf;
   }
 
+  return n;
+}
 
+static inline ssize_t buf_sendfile(struct buf_pool *p, buf_t *r, int fd) {
+  off_t off = buf_pool_file_offset(p, r->buf) + r->rpos;
+  
+  ssize_t n = sendfile(fd, p->fd, &off, buf_len(r));
+  r->rpos += (n > 0) * n;
+
+  if (r->rpos == r->wpos) {
+    r->rpos = 0;
+    r->wpos = 0;
+  } else {
+    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    r->rpos -= ovf;
+    r->wpos -= ovf;
+  }
 
   return n;
 }
