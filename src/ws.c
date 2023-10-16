@@ -1021,15 +1021,16 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
     uint8_t *hbuf = wbuf->buf + wbuf->wpos;
     memset(hbuf, 0, 2);
     hbuf[0] = FIN | op; // Set FIN bit and opcode
-    wbuf->wpos += hlen;
     switch (hlen) {
     case 2:
       hbuf[1] = (uint8_t)len;
+      wbuf->wpos += hlen;
       break;
     case 4:
       hbuf[1] = PAYLOAD_LEN_16;
       hbuf[2] = (len >> 8) & 0xFF;
       hbuf[3] = len & 0xFF;
+      wbuf->wpos += hlen;
       break;
     case 10:
       hbuf[1] = PAYLOAD_LEN_64;
@@ -1041,6 +1042,41 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
       hbuf[7] = (len >> 16) & 0xFF;
       hbuf[8] = (len >> 8) & 0xFF;
       hbuf[9] = len & 0xFF;
+      wbuf->wpos += hlen;
+      // if (!buf_len(wbuf)) {
+      //   struct iovec vecs[2] = {{
+      //                               .iov_base = hbuf,
+      //                               .iov_len = hlen,
+      //                           },
+      //                           {
+      //                               .iov_base = data,
+      //                               .iov_len = len,
+      //                           }};
+
+      //   ssize_t n = writev(conn->fd, vecs, 2);
+      //   if (n == 0 || n == -1) {
+      //     if (n == -1 && errno == EAGAIN) {
+      //       wbuf->wpos += hlen;
+      //       buf_put(wbuf, data, len);
+      //       return 0;
+      //     }
+      //     conn_destroy(conn->base, conn, conn->base->epoll_fd,
+      //     WS_CLOSE_ABNORM, &conn->base->ev); return -1;
+      //   }
+      //   if (n == flen) {
+      //     return 1;
+      //   } else if (n > hlen) {
+      //     buf_put(wbuf, (uint8_t *)vecs[1].iov_base + n - hlen,
+      //             flen - n - hlen);
+      //     return 0;
+      //   } else {
+      //     buf_put(wbuf, hbuf + n, hlen - n);
+      //     buf_put(wbuf, data, len);
+      //     return 0;
+      //   }
+      // } else {
+      //   wbuf->wpos += hlen;
+      // }
       break;
     }
 
