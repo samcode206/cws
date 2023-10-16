@@ -579,8 +579,8 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
       uint8_t opcode = frame_get_opcode(frame_buf);
       // printf("fragments=%zu\n", conn->state.fragments_len);
       // run general validation checks on the header
-      if (((fin == 0) && ((opcode > 2) && (opcode != OP_CONT))) ||
-          (frame_has_reserved_bits_set(frame_buf) == 1) ||
+      if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
+          (frame_has_reserved_bits_set(frame_buf) == 1) |
           (frame_is_masked(frame_buf) == 0)) {
         printf("invalid frame closing\n");
         printf("opcode=%d\n", opcode);
