@@ -833,12 +833,7 @@ static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf) {
     return 0;
   }
 
-  if (to_write < 65535) {
-    n = buf_send(wbuf, conn->fd, 0);
-  } else {
-    n = buf_sendfile(conn->base->buffer_pool, wbuf, conn->fd);
-  }
-
+  n = buf_send(wbuf, conn->fd, 0);
   if ((n == -1 && errno != EAGAIN) | (n == 0)) {
     ws_server_t *s = ws_conn_server(conn);
     conn_destroy(ws_conn_server(conn), conn, s->epoll_fd, WS_CLOSE_ABNORM,
@@ -1042,41 +1037,62 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
       hbuf[7] = (len >> 16) & 0xFF;
       hbuf[8] = (len >> 8) & 0xFF;
       hbuf[9] = len & 0xFF;
-      wbuf->wpos += hlen;
-      // if (!buf_len(wbuf)) {
-      //   struct iovec vecs[2] = {{
-      //                               .iov_base = hbuf,
-      //                               .iov_len = hlen,
-      //                           },
-      //                           {
-      //                               .iov_base = data,
-      //                               .iov_len = len,
-      //                           }};
+      // check to make sure we don't have a send already in progress
+      if ((buf_len(wbuf) == 0) & (conn->state.writeable == 1)) {
+        struct iovec vecs[2] = {{
+                                    .iov_base = hbuf,
+                                    .iov_len = hlen,
+                                },
+                                {
+                                    .iov_base = data,
+                                    .iov_len = len,
+                                }};
 
-      //   ssize_t n = writev(conn->fd, vecs, 2);
-      //   if (n == 0 || n == -1) {
-      //     if (n == -1 && errno == EAGAIN) {
-      //       wbuf->wpos += hlen;
-      //       buf_put(wbuf, data, len);
-      //       return 0;
-      //     }
-      //     conn_destroy(conn->base, conn, conn->base->epoll_fd,
-      //     WS_CLOSE_ABNORM, &conn->base->ev); return -1;
-      //   }
-      //   if (n == flen) {
-      //     return 1;
-      //   } else if (n > hlen) {
-      //     buf_put(wbuf, (uint8_t *)vecs[1].iov_base + n - hlen,
-      //             flen - n - hlen);
-      //     return 0;
-      //   } else {
-      //     buf_put(wbuf, hbuf + n, hlen - n);
-      //     buf_put(wbuf, data, len);
-      //     return 0;
-      //   }
-      // } else {
-      //   wbuf->wpos += hlen;
-      // }
+        ssize_t n = writev(conn->fd, vecs, 2);
+        if (n == flen) {
+          // we wrote everything needed
+          return 1;
+        } else if (n == 0 || n == -1) {
+          // send buffer is full right now
+          // note: we wanna place this in the connection buffer right away
+          if (n == -1 && errno == EAGAIN) {
+            wbuf->wpos += hlen;
+            conn->state.writeable = 0;
+            buf_put(wbuf, data, len);
+
+            conn->state.writeable = 0;
+            conn->base->ev.data.ptr = conn;
+            conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
+            n = epoll_ctl(conn->base->epoll_fd, EPOLL_CTL_MOD, conn->fd,
+                          &conn->base->ev);
+            if (n == -1) {
+              int err = errno;
+              conn->base->on_ws_err(conn->base, err);
+              // might wanna close the socket?
+            }
+
+            return 0;
+          } else {
+            conn_destroy(conn->base, conn, conn->base->epoll_fd,
+                         WS_CLOSE_ABNORM, &conn->base->ev);
+            return -1;
+          }
+
+        } else if (n > hlen) {
+          // we wrote the header but only parts of the payload
+          buf_put(wbuf, (uint8_t *)vecs[1].iov_base + n - hlen,
+                  flen - n - hlen);
+          return 0;
+        } else {
+          // we wrote some of the header and no payload
+          buf_put(wbuf, hbuf + n, hlen - n);
+          buf_put(wbuf, data, len);
+          return 0;
+        }
+      } else {
+        // otherwise we must copy
+        wbuf->wpos += hlen;
+      }
       break;
     }
 

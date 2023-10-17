@@ -141,22 +141,26 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   return n;
 }
 
-static inline ssize_t buf_sendfile(struct buf_pool *p, buf_t *r, int fd) {
-  off_t off = buf_pool_file_offset(p, r->buf) + r->rpos;
+
+
+
+
+// static inline ssize_t buf_sendfile(struct buf_pool *p, buf_t *r, int fd) {
+//   off_t off = buf_pool_file_offset(p, r->buf) + r->rpos;
   
-  ssize_t n = sendfile(fd, p->fd, &off, buf_len(r));
-  r->rpos += (n > 0) * n;
+//   ssize_t n = sendfile(fd, p->fd, &off, buf_len(r));
+//   r->rpos += (n > 0) * n;
 
-  if (r->rpos == r->wpos) {
-    r->rpos = 0;
-    r->wpos = 0;
-  } else {
-    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
-    r->rpos -= ovf;
-    r->wpos -= ovf;
-  }
+//   if (r->rpos == r->wpos) {
+//     r->rpos = 0;
+//     r->wpos = 0;
+//   } else {
+//     int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+//     r->rpos -= ovf;
+//     r->wpos -= ovf;
+//   }
 
-  return n;
-}
+//   return n;
+// }
 
 #endif
