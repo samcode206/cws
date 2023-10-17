@@ -775,9 +775,8 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
     } /* loop end */
 
     int ret;
-    if (buf_len(&s->shared_send_buffer)) {
-      ret = conn_drain_write_buf(conn, &s->shared_send_buffer);
-    } else {
+    ret = conn_drain_write_buf(conn, &s->shared_send_buffer);
+    if (ret != -1) {
       ret = conn_drain_write_buf(conn, &conn->write_buf);
     }
 
@@ -1016,6 +1015,8 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
 
   if ((buf_len(&conn->write_buf) != 0) | (conn->state.writeable == 0) |
       (hlen == 10)) {
+    buf_move(&s->shared_send_buffer, &conn->write_buf,
+             buf_len(&s->shared_send_buffer));
     wbuf = &conn->write_buf;
   } else {
     wbuf = &s->shared_send_buffer;
@@ -1090,7 +1091,7 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
           ws_conn_notify_writeable(conn);
           return 1;
         }
-        
+
       }
       // connection is not writeable
       else {
