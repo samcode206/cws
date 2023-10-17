@@ -454,6 +454,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
               int err = errno;
               s->on_ws_err(s, err);
             };
+          } else if (ret == -1) {
+            ws_server_t *s = ws_conn_server(c);
+            conn_destroy(s, c, s->epoll_fd, WS_CLOSE_ABNORM, &s->ev);
           }
         } else if (s->events[i].events & EPOLLIN) {
           ws_conn_t *c = s->events[i].data.ptr;
@@ -771,10 +774,17 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
       }
     } /* loop end */
 
+    int ret;
     if (buf_len(&s->shared_send_buffer)) {
-      conn_drain_write_buf(conn, &s->shared_send_buffer);
+      ret = conn_drain_write_buf(conn, &s->shared_send_buffer);
     } else {
-      conn_drain_write_buf(conn, &conn->write_buf);
+      ret = conn_drain_write_buf(conn, &conn->write_buf);
+    }
+
+    if (ret == -1) {
+      conn_destroy(ws_conn_server(conn), conn, s->epoll_fd, WS_CLOSE_ABNORM,
+                   &s->ev);
+      return;
     }
 
   clean_up_buffer:
@@ -825,6 +835,18 @@ static void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
   free(conn);
 }
 
+static void ws_conn_notify_writeable(struct ws_conn_t *conn) {
+  conn->state.writeable = 0;
+  conn->base->ev.data.ptr = conn;
+  conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
+  if (epoll_ctl(conn->base->epoll_fd, EPOLL_CTL_MOD, conn->fd,
+                &conn->base->ev) == -1) {
+    int err = errno;
+    conn->base->on_ws_err(conn->base, err);
+    // might wanna close the socket?
+  }
+}
+
 static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf) {
   size_t to_write = buf_len(wbuf);
   ssize_t n = 0;
@@ -835,9 +857,6 @@ static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf) {
 
   n = buf_send(wbuf, conn->fd, 0);
   if ((n == -1 && errno != EAGAIN) | (n == 0)) {
-    ws_server_t *s = ws_conn_server(conn);
-    conn_destroy(ws_conn_server(conn), conn, s->epoll_fd, WS_CLOSE_ABNORM,
-                 &s->ev);
     return -1;
   }
 
@@ -850,16 +869,7 @@ static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf) {
       buf_move(&conn->base->shared_send_buffer, &conn->write_buf,
                buf_len(&conn->base->shared_send_buffer));
     }
-    conn->state.writeable = 0;
-    conn->base->ev.data.ptr = conn;
-    conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
-    n = epoll_ctl(conn->base->epoll_fd, EPOLL_CTL_MOD, conn->fd,
-                  &conn->base->ev);
-    if (n == -1) {
-      int err = errno;
-      conn->base->on_ws_err(conn->base, err);
-      // might wanna close the socket?
-    }
+    ws_conn_notify_writeable(conn);
   }
 
   return 0;
@@ -1001,33 +1011,36 @@ start sending more data
 static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
                             size_t len, uint8_t op) {
 
+  size_t hlen = frame_get_mask_offset(len);
   buf_t *wbuf;
 
-  if (buf_len(&conn->write_buf)) {
+  if ((buf_len(&conn->write_buf) != 0) | (conn->state.writeable == 0) |
+      (hlen == 10)) {
     wbuf = &conn->write_buf;
   } else {
     wbuf = &s->shared_send_buffer;
   }
 
-  ssize_t n = 0;
-  size_t hlen = frame_get_mask_offset(len);
   size_t flen = len + hlen;
   if (buf_space(wbuf) > flen) {
-    uint8_t *hbuf = wbuf->buf + wbuf->wpos;
-    memset(hbuf, 0, 2);
-    hbuf[0] = FIN | op; // Set FIN bit and opcode
-    switch (hlen) {
-    case 2:
+    if (hlen == 2) {
+      uint8_t *hbuf = wbuf->buf + wbuf->wpos;
+      memset(hbuf, 0, 2);
+      hbuf[0] = FIN | op; // Set FIN bit and opcode
       hbuf[1] = (uint8_t)len;
       wbuf->wpos += hlen;
-      break;
-    case 4:
+    } else if (hlen == 4) {
+      uint8_t *hbuf = wbuf->buf + wbuf->wpos;
+      memset(hbuf, 0, 2);
+      hbuf[0] = FIN | op; // Set FIN bit and opcode
       hbuf[1] = PAYLOAD_LEN_16;
       hbuf[2] = (len >> 8) & 0xFF;
       hbuf[3] = len & 0xFF;
       wbuf->wpos += hlen;
-      break;
-    case 10:
+    } else {
+      uint8_t hbuf[hlen];
+      memset(hbuf, 0, 2);
+      hbuf[0] = FIN | op; // Set FIN bit and opcode
       hbuf[1] = PAYLOAD_LEN_64;
       hbuf[2] = (len >> 56) & 0xFF;
       hbuf[3] = (len >> 48) & 0xFF;
@@ -1037,131 +1050,63 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
       hbuf[7] = (len >> 16) & 0xFF;
       hbuf[8] = (len >> 8) & 0xFF;
       hbuf[9] = len & 0xFF;
-      // check to make sure we don't have a send already in progress
-      if ((buf_len(wbuf) == 0) & (conn->state.writeable == 1)) {
-        struct iovec vecs[2] = {{
-                                    .iov_base = hbuf,
-                                    .iov_len = hlen,
-                                },
-                                {
-                                    .iov_base = data,
-                                    .iov_len = len,
-                                }};
 
-        ssize_t n = writev(conn->fd, vecs, 2);
-        if (n == flen) {
-          // we wrote everything needed
-          return 1;
-        } else if (n == 0 || n == -1) {
-          // send buffer is full right now
-          // note: we wanna place this in the connection buffer right away
-          if (n == -1 && errno == EAGAIN) {
-            wbuf->wpos += hlen;
-            conn->state.writeable = 0;
-            buf_put(wbuf, data, len);
+      // if connection is in a writeable state
+      if (conn->state.writeable) {
+        ssize_t n;
+        size_t total_write;
+        // no writes need to go ahead
+        if (!buf_len(wbuf)) {
+          struct iovec vecs[2];
+          vecs[0].iov_base = hbuf;
+          vecs[0].iov_len = hlen;
+          vecs[1].iov_base = data;
+          vecs[1].iov_len = len;
+          total_write = flen;
+          n = buf_write2v(wbuf, conn->fd, vecs, flen);
 
-            conn->state.writeable = 0;
-            conn->base->ev.data.ptr = conn;
-            conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
-            n = epoll_ctl(conn->base->epoll_fd, EPOLL_CTL_MOD, conn->fd,
-                          &conn->base->ev);
-            if (n == -1) {
-              int err = errno;
-              conn->base->on_ws_err(conn->base, err);
-              // might wanna close the socket?
-            }
-
-            return 0;
-          } else {
-            conn_destroy(conn->base, conn, conn->base->epoll_fd,
-                         WS_CLOSE_ABNORM, &conn->base->ev);
-            return -1;
-          }
-
-        } else if (n > hlen) {
-          // we wrote the header but only parts of the payload
-          buf_put(wbuf, (uint8_t *)vecs[1].iov_base + n - hlen,
-                  flen - n - hlen);
-          return 0;
-        } else {
-          // we wrote some of the header and no payload
-          buf_put(wbuf, hbuf + n, hlen - n);
-          buf_put(wbuf, data, len);
-          return 0;
         }
-      } else {
-        // otherwise we must copy
-        wbuf->wpos += hlen;
+        // here we must use 3 io vecs one to drain whatever we had before
+        // and then the rest go to the new frame
+        else {
+          struct iovec vecs[3];
+          vecs[0].iov_len = buf_len(wbuf);
+          vecs[0].iov_base = wbuf->buf + wbuf->rpos;
+          vecs[1].iov_base = hbuf;
+          vecs[1].iov_len = hlen;
+          vecs[2].iov_base = data;
+          vecs[2].iov_len = len;
+          total_write = flen + vecs[0].iov_len;
+          n = buf_drain_write2v(wbuf, conn->fd, vecs, total_write);
+
+          return 1;
+        }
+
+        if (n == total_write) {
+          return 1;
+        } else if (n == 0) {
+          return -1;
+        } else if (n == -1 && errno != EAGAIN) {
+          return n;
+        } else if (n == -1 && errno == EAGAIN) {
+          ws_conn_notify_writeable(conn);
+          return 1;
+        }
+
       }
-      break;
+      // connection is not writeable
+      else {
+        buf_put(wbuf, hbuf, hlen);
+        buf_put(wbuf, data, len);
+      }
+
+      return 0; // todo
     }
 
     return buf_put(wbuf, data, len) == 0;
+  } else {
+    return 0;
   }
-
-  // ssize_t n = 0;
-  // size_t hlen = frame_get_mask_offset(len);
-  // size_t flen = len + hlen;
-
-  // if ((conn->writeable == 1) & (buf_space(&conn->write_buf) > flen)) {
-  //   uint8_t hbuf[hlen];
-  //   memset(hbuf, 0, hlen);
-  //   struct iovec iovs[2];
-  //   hbuf[0] = FIN | op; // Set FIN bit and opcode
-  //   if (hlen == 2) {
-  //     hbuf[1] = (uint8_t)len;
-  //   } else if (hlen == 4) {
-  //     hbuf[1] = PAYLOAD_LEN_16;
-  //     hbuf[2] = (len >> 8) & 0xFF;
-  //     hbuf[3] = len & 0xFF;
-  //   } else {
-  //     hbuf[1] = PAYLOAD_LEN_64;
-  //     hbuf[2] = (len >> 56) & 0xFF;
-  //     hbuf[3] = (len >> 48) & 0xFF;
-  //     hbuf[4] = (len >> 40) & 0xFF;
-  //     hbuf[5] = (len >> 32) & 0xFF;
-  //     hbuf[6] = (len >> 24) & 0xFF;
-  //     hbuf[7] = (len >> 16) & 0xFF;
-  //     hbuf[8] = (len >> 8) & 0xFF;
-  //     hbuf[9] = len & 0xFF;
-  //   }
-
-  //   iovs[0].iov_len = hlen;
-  //   iovs[0].iov_base = hbuf;
-  //   iovs[1].iov_len = len;
-  //   iovs[1].iov_base = data;
-
-  //   n = writev(conn->fd, iovs, 2);
-  //   if (n == 0) {
-  //     return -1;
-  //   } else if (n == -1) {
-  //     if (!((errno == EAGAIN) | (errno == EWOULDBLOCK))) {
-  //       return -1;
-  //     }
-  //     n = 0;
-  //   }
-
-  //   if (n < flen) {
-  //     conn->writeable = 0;
-  //     if (n > hlen) {
-  //       assert(buf_put(&conn->write_buf, (uint8_t *)data + (n - hlen),
-  //                      flen - n) == 0);
-  //     } else {
-  //       assert(buf_put(&conn->write_buf, hbuf + n, hlen - n) == 0);
-  //       assert(buf_put(&conn->write_buf, data, len) == 0);
-  //     }
-
-  //     s->ev.events = EPOLLOUT | EPOLLRDHUP;
-  //     s->ev.data.ptr = conn;
-  //     if (epoll_ctl(s->epoll_fd, EPOLL_CTL_MOD, conn->fd,
-  //                   &s->ev) == -1) {
-  //       return -1;
-  //     };
-  //     return 0;
-  //   }
-  // }
-
-  return n == flen;
 }
 
 static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data,

@@ -27,6 +27,7 @@
 #define __X_BUFF_LIB_14
 
 #include "pool.h"
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -36,8 +37,8 @@
 #include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <unistd.h>
-
 typedef struct {
   size_t rpos;
   size_t wpos;
@@ -141,13 +142,86 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   return n;
 }
 
+/*
+ * writes two io vectors first is a header and the second is a payload
+ * returns total written and copies any leftover if we didn't drain the buffer
+ */
+static inline ssize_t buf_write2v(buf_t *r, int fd, struct iovec const *iovs,
+                                  size_t const total) {
+  ssize_t n = writev(fd, iovs, 2);
+  // everything was written
+  if (n == total) {
+    return n;
+    // some error happened
+  } else if (n == 0 || n == -1) {
+    // if temporary error do a copy
+    if (n == -1 && errno == EAGAIN) {
+      buf_put(r, iovs[0].iov_base, iovs[0].iov_len);
+      buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
+    }
 
+    return n;
+    // less than the header was written
+  } else if (n < iovs[0].iov_len) {
+    buf_put(r, (uint8_t *)iovs[0].iov_base + n, iovs[0].iov_len - n);
+    buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
+    return n;
+  } else {
+    // header was written but only part of the payload
+    size_t leftover = n - iovs[0].iov_len;
+    buf_put(r, (uint8_t *)iovs[1].iov_base + leftover,
+            iovs[1].iov_len - leftover);
+    return n;
+  }
+}
 
+static inline ssize_t buf_drain_write2v(buf_t *r, int fd,
+                                        struct iovec const *iovs,
+                                        size_t const total) {
+  ssize_t n = writev(fd, iovs, 3);
+  // everything was written
+  if (n == total) {
+    // consume what we drained from the buffer
+    buf_consume(r, iovs[0].iov_len);
+    return n;
+    // some error happened
+  } else if (n == 0 || n == -1) {
+    // if temporary error do a copy
+    if (n == -1 && errno == EAGAIN) {
+      // copy both header and payload first iov already in the buffer
+      buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
+      buf_put(r, iovs[2].iov_base, iovs[2].iov_len);
+    }
+    return n;
+    // couldn't drain the buffer copy the header and payload
+  } else if (n < iovs[0].iov_len) {
+    buf_consume(r, n);
+    buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
+    buf_put(r, iovs[2].iov_base, iovs[2].iov_len);
+  }
+  // drained the buffer but only wrote parts of the new frame
+  else if (n > iovs[0].iov_len) {
+    ssize_t wrote = n - iovs[0].iov_len;
+    buf_consume(r, iovs[0].iov_len);
 
+    // less than header was written
+    if (wrote < iovs[1].iov_len) {
+      buf_put(r, (uint8_t *)iovs[1].iov_base + wrote, iovs[1].iov_len - wrote);
+      buf_put(r, iovs[2].iov_base, iovs[2].iov_len);
+    } else {
+      // parts of payload were written
+      size_t leftover = wrote - iovs[1].iov_len;
+      buf_put(r, (uint8_t *)iovs[2].iov_base + leftover,
+              iovs[2].iov_len - leftover);
+    }
+  }
+
+  return n;
+}
 
 // static inline ssize_t buf_sendfile(struct buf_pool *p, buf_t *r, int fd) {
 //   off_t off = buf_pool_file_offset(p, r->buf) + r->rpos;
-  
+
 //   ssize_t n = sendfile(fd, p->fd, &off, buf_len(r));
 //   r->rpos += (n > 0) * n;
 
