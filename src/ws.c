@@ -1078,8 +1078,6 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
           vecs[2].iov_len = len;
           total_write = flen + vecs[0].iov_len;
           n = buf_drain_write2v(wbuf, conn->fd, vecs, total_write);
-
-          return 1;
         }
 
         if (n == total_write) {
@@ -1092,7 +1090,7 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
           ws_conn_notify_writeable(conn);
           return 1;
         }
-
+        
       }
       // connection is not writeable
       else {
@@ -1100,7 +1098,7 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
         buf_put(wbuf, data, len);
       }
 
-      return 0; // todo
+      return 1;
     }
 
     return buf_put(wbuf, data, len) == 0;
