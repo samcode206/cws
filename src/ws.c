@@ -545,7 +545,7 @@ static int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
 
 static inline buf_t *ws_conn_choose_read_buf(struct ws_conn_t *conn) {
 
-  if ((buf_len(&conn->read_buf) != 0) &&
+  if ((buf_len(&conn->read_buf) != 0) &
       !(conn->state.fragments_len + conn->read_buf.rpos ==
         conn->read_buf.wpos)) {
     // buf_debug(&conn->read_buf, "conn buffer chosen");
