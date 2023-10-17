@@ -33,8 +33,9 @@ void buf_pool_free(struct buf_pool *p, void *buf);
 
 void buf_pool_destroy(struct buf_pool *p);
 
-static inline size_t buf_pool_file_offset(struct buf_pool const *p, void const *buf) {
-  return (uintptr_t)buf - (uintptr_t)p->base - p->buf_sz;
+static inline size_t buf_pool_file_offset(struct buf_pool const *p,
+                                          void const *buf) {
+  return ((uintptr_t)buf - (uintptr_t)p->base) / (p->buf_sz + p->buf_sz) * p->buf_sz;
 }
 
 #endif // __X_BUFFPOOL_LIB_14
