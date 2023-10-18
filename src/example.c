@@ -19,7 +19,9 @@ void on_ping(ws_conn_t *c, void *msg, size_t n) {
 }
 
 void on_pong(ws_conn_t *c, void *msg, size_t n) {
-  printf("on_pong: %s\n", (char *)msg);
+  printf("on_pong:");
+  fwrite(msg, sizeof(char), n, stdout);
+  fwrite("\n", 1, 1, stdout);
 }
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {

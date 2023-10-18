@@ -86,6 +86,7 @@ typedef struct server {
   ws_disconnect_cb_t on_ws_disconnect;
   ws_err_cb_t on_ws_err;
   int epoll_fd;
+  int shared_send_buffer_owner;
   buf_t shared_recv_buffer;
   buf_t shared_send_buffer;
   struct epoll_event ev;
@@ -364,6 +365,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   buf_init(s->buffer_pool, &s->shared_recv_buffer);
   buf_init(s->buffer_pool, &s->shared_send_buffer);
 
+  s->shared_send_buffer_owner = -1;
   assert(s->buffer_pool != NULL);
   // server resources all ready
   return s;
@@ -460,11 +462,16 @@ int ws_server_start(ws_server_t *s, int backlog) {
           }
         } else if (s->events[i].events & EPOLLIN) {
           ws_conn_t *c = s->events[i].data.ptr;
+          s->shared_send_buffer_owner = c->fd;
+
           if (!c->state.upgraded) {
             handle_http(s, c);
           } else {
             ws_conn_handle(s, c);
           }
+
+          assert(buf_len(&s->shared_send_buffer) == 0);
+          s->shared_send_buffer_owner = -1;
         }
       }
     }
@@ -829,8 +836,13 @@ static void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
   conn->write_buf.rpos = 0;
   s->shared_recv_buffer.rpos = 0;
   s->shared_recv_buffer.wpos = 0;
-  s->shared_send_buffer.rpos = 0;
-  s->shared_send_buffer.wpos = 0;
+
+  if (s->shared_send_buffer_owner == conn->fd) {
+    s->shared_send_buffer.rpos = 0;
+    s->shared_send_buffer.wpos = 0;
+    s->shared_send_buffer_owner = -1;
+  }
+
   free(conn);
 }
 
@@ -1013,10 +1025,11 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
   size_t hlen = frame_get_mask_offset(len);
   buf_t *wbuf;
 
-  if ((buf_len(&conn->write_buf) != 0) | (conn->state.writeable == 0) |
-      (hlen == 10)) {
-    buf_move(&s->shared_send_buffer, &conn->write_buf,
-             buf_len(&s->shared_send_buffer));
+  bool shared_buf_needs_drain = s->shared_send_buffer_owner == conn->fd &&
+                                buf_len(&s->shared_send_buffer) != 0;
+
+  if ((s->shared_send_buffer_owner != conn->fd) | (hlen == 10) |
+      (buf_len(&conn->write_buf) != 0) | (conn->state.writeable == 0)) {
     wbuf = &conn->write_buf;
   } else {
     wbuf = &s->shared_send_buffer;
@@ -1056,8 +1069,28 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
       if (conn->state.writeable) {
         ssize_t n;
         size_t total_write;
+
+        // we have to drain from shared buffer so make it first iovec entry
+        if (shared_buf_needs_drain) {
+          assert(buf_len(wbuf) == 0); // TODO: remove
+
+          struct iovec vecs[3];
+          vecs[0].iov_len = buf_len(&s->shared_send_buffer);
+          vecs[0].iov_base =
+              s->shared_send_buffer.buf + s->shared_send_buffer.rpos;
+          vecs[1].iov_base = hbuf;
+          vecs[1].iov_len = hlen;
+          vecs[2].iov_base = data;
+          vecs[2].iov_len = len;
+          total_write = flen + vecs[0].iov_len;
+
+          n = buf_drain_write2v(&s->shared_send_buffer, vecs, total_write, wbuf,
+                                conn->fd);
+
+          
+        }
         // no writes need to go ahead
-        if (!buf_len(wbuf)) {
+        else if (!buf_len(wbuf)) {
           struct iovec vecs[2];
           vecs[0].iov_base = hbuf;
           vecs[0].iov_len = hlen;
@@ -1067,8 +1100,8 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
           n = buf_write2v(wbuf, conn->fd, vecs, flen);
 
         }
-        // here we must use 3 io vecs one to drain whatever we had before
-        // and then the rest go to the new frame
+        // here we must use 3 io vecs one to drain whatever we had before 
+        // in the connection buffer and then the rest go to the new frame
         else {
           struct iovec vecs[3];
           vecs[0].iov_len = buf_len(wbuf);
@@ -1078,7 +1111,7 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
           vecs[2].iov_base = data;
           vecs[2].iov_len = len;
           total_write = flen + vecs[0].iov_len;
-          n = buf_drain_write2v(wbuf, conn->fd, vecs, total_write);
+          n = buf_drain_write2v(wbuf, vecs, total_write, NULL, conn->fd);
         }
 
         if (n == total_write) {

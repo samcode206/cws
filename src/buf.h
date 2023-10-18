@@ -175,9 +175,17 @@ static inline ssize_t buf_write2v(buf_t *r, int fd, struct iovec const *iovs,
   }
 }
 
-static inline ssize_t buf_drain_write2v(buf_t *r, int fd,
-                                        struct iovec const *iovs,
-                                        size_t const total) {
+static inline ssize_t buf_drain_write2v(buf_t *r, struct iovec const *iovs,
+                                        size_t const total, buf_t *rem_dst,
+                                        int fd) {
+
+  buf_t *dst;
+  if (rem_dst) {
+    dst = rem_dst;
+  } else {
+    dst = r;
+  }
+
   ssize_t n = writev(fd, iovs, 3);
   // everything was written
   if (n == total) {
@@ -189,15 +197,19 @@ static inline ssize_t buf_drain_write2v(buf_t *r, int fd,
     // if temporary error do a copy
     if (n == -1 && errno == EAGAIN) {
       // copy both header and payload first iov already in the buffer
-      buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
-      buf_put(r, iovs[2].iov_base, iovs[2].iov_len);
+      buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
+      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
     }
     return n;
     // couldn't drain the buffer copy the header and payload
   } else if (n < iovs[0].iov_len) {
     buf_consume(r, n);
-    buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
-    buf_put(r, iovs[2].iov_base, iovs[2].iov_len);
+    if (rem_dst) {
+      buf_move(r, dst, buf_len(r));
+    }
+
+    buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
+    buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
   }
   // drained the buffer but only wrote parts of the new frame
   else if (n > iovs[0].iov_len) {
@@ -206,12 +218,13 @@ static inline ssize_t buf_drain_write2v(buf_t *r, int fd,
 
     // less than header was written
     if (wrote < iovs[1].iov_len) {
-      buf_put(r, (uint8_t *)iovs[1].iov_base + wrote, iovs[1].iov_len - wrote);
-      buf_put(r, iovs[2].iov_base, iovs[2].iov_len);
+      buf_put(dst, (uint8_t *)iovs[1].iov_base + wrote,
+              iovs[1].iov_len - wrote);
+      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
     } else {
       // parts of payload were written
       size_t leftover = wrote - iovs[1].iov_len;
-      buf_put(r, (uint8_t *)iovs[2].iov_base + leftover,
+      buf_put(dst, (uint8_t *)iovs[2].iov_base + leftover,
               iovs[2].iov_len - leftover);
     }
   }
