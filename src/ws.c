@@ -289,12 +289,14 @@ static void server_append_writeable_conn(ws_conn_t *c) {
   // a connection must not already be queued for writing 
   // a connection must not be queued for closing
   if (!c->state.write_queued && !c->state.close_queue) {
-
+    // can we append without growing the list?
     if (c->base->writeable_conn_list.len + 1 <
         c->base->writeable_conn_list.cap) {
       c->base->writeable_conn_list.conns[c->base->writeable_conn_list.len++] =
           c;
-    } else {
+    } 
+    // if not we have to realloc...
+    else {
       // expand the list by twice the current cap
       void *new_list = realloc(c->base->writeable_conn_list.conns,
                                c->base->writeable_conn_list.cap +
