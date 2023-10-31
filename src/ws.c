@@ -93,11 +93,6 @@ typedef struct server {
   struct epoll_event events[1024];
 } ws_server_t;
 
-static inline size_t min(size_t a, size_t b) {
-  size_t diff = a - b;
-  size_t mask = (diff >> (sizeof(size_t) * 8 - 1));
-  return a + diff * mask;
-}
 
 // Frame Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
