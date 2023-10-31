@@ -58,6 +58,8 @@ typedef struct {
   bool bin;             // is binary message?
   bool writeable;       // can we write to the socket?
   bool upgraded;        // are we even upgraded?
+  bool write_queued;    // do we currently have some data that is queued for
+                        // writing (in s->writeable_conn_list)
   size_t fragments_len; // size of the data portion of the frames across
                         // fragmentation
   size_t needed_bytes; // bytes needed before we can do something with the frame
@@ -70,6 +72,12 @@ struct ws_conn_t {
   void *ctx; // user data ptr
   buf_t read_buf;
   buf_t write_buf;
+};
+
+struct writeable_conns {
+  size_t len;
+  size_t cap;
+  ws_conn_t **conns;
 };
 
 typedef struct server {
@@ -91,8 +99,8 @@ typedef struct server {
   buf_t shared_send_buffer;
   struct epoll_event ev;
   struct epoll_event events[1024];
+  struct writeable_conns writeable_conn_list;
 } ws_server_t;
-
 
 // Frame Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
@@ -267,6 +275,41 @@ static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf);
 static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
                             size_t len, uint8_t op);
 
+// appends connection to the write list if not already queued
+// crashes if we needed to grow the list and failed to reallocate memory
+static void server_append_writeable_conn(ws_conn_t *c) {
+  if (!c->state.write_queued) {
+    if (c->base->writeable_conn_list.len + 1 <
+        c->base->writeable_conn_list.cap) {
+      c->base->writeable_conn_list.conns[c->base->writeable_conn_list.len++] =
+          c;
+    } else {
+      // expand the list by twice the current cap
+      void *new_list = realloc(c->base->writeable_conn_list.conns,
+                               c->base->writeable_conn_list.cap +
+                                   c->base->writeable_conn_list.cap);
+      if (new_list == NULL) {
+        // there really isn't another viable option but to crash in this case
+        // what else are we gonna do??? silently failing isn't a great option
+        // might consider making this a fixed size array and never growing it if
+        // we can find out what the max amount of writeable connections there
+        // ever can be in the list it should be the max number of connections
+        // that we are willing to accept since duplicates aren't allowed but
+        // that is currently unbounded (which is also bad, there is always a
+        // limit to everything...)
+        fprintf(stderr, "failed to grow writeable_conn_list, last cap = %zu\n",
+                c->base->writeable_conn_list.cap);
+        exit(1);
+      }
+      c->base->writeable_conn_list.conns = new_list;
+      c->base->writeable_conn_list.cap =
+          c->base->writeable_conn_list.cap + c->base->writeable_conn_list.cap;
+      c->base->writeable_conn_list.conns[c->base->writeable_conn_list.len++] =
+          c;
+    }
+  }
+}
+
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
     return NULL;
@@ -292,6 +335,13 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     *ret = WS_ESYS;
     return NULL;
   }
+
+  // allocate the list (dynamic array of pointers to ws_conn_t) to track
+  // writeable connections
+  s->writeable_conn_list.conns =
+      calloc(512, sizeof s->writeable_conn_list.conns);
+  s->writeable_conn_list.len = 0;
+  s->writeable_conn_list.cap = 512;
 
   // socket init
   struct sockaddr_in6 srv_addr;
@@ -1021,11 +1071,12 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
   * Todo(sah):
     in the common cases where there is a need to send data to a socket
     that has no event triggered that would cause us to drain the write buffer
-    we need a way to "remember" draining all socket buffers which have data 
+    we need a way to "remember" draining all socket buffers which have data
     at the end of each loop iteration
-    we should also keep in mind that sockets can be closed in the meantime and 
-    carefully manage connection & buffer lifetimes, this also includes changing how
-    connection closing is handled at the moment to avoid serious memory/state problems
+    we should also keep in mind that sockets can be closed in the meantime and
+    carefully manage connection & buffer lifetimes, this also includes changing
+  how connection closing is handled at the moment to avoid serious memory/state
+  problems
   */
 
   size_t hlen = frame_get_mask_offset(len);
