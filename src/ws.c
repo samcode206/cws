@@ -1022,6 +1022,17 @@ start sending more data
 static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
                             size_t len, uint8_t op) {
 
+  /**
+  * Todo(sah):
+    in the common cases where there is a need to send data to a socket
+    that has no event triggered that would cause us to drain the write buffer
+    we need a way to "remember" draining all socket buffers which have data 
+    at the end of each loop iteration
+    we should also keep in mind that sockets can be closed in the meantime and 
+    carefully manage connection & buffer lifetimes, this also includes changing how
+    connection closing is handled at the moment to avoid serious memory/state problems
+  */
+
   size_t hlen = frame_get_mask_offset(len);
   buf_t *wbuf;
 
