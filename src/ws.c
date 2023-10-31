@@ -112,6 +112,7 @@ typedef struct server {
   struct epoll_event ev;
   struct epoll_event events[1024];
   struct conn_list writeable_conns;
+  struct conn_list closeable_conns;
 } ws_server_t;
 
 // Frame Utils
@@ -324,17 +325,28 @@ static void server_writeable_conns_append(ws_conn_t *c) {
   }
 }
 
+static void server_closeable_conns_append(ws_conn_t *c){
+  // to be added to the list:
+  // a connection must not already be queued for closing 
+  if (!c->state.close_queued){
+    conn_list_append(&c->base->closeable_conns, c);
+    c->state.close_queued = true;
+  }
+}
+
 static void server_writeable_conns_drain(ws_server_t *s){
     
     for (size_t i = 0; i < s->writeable_conns.len; ++i){
       struct ws_conn_t *c = s->writeable_conns.conns[i];
       if (!c->state.close_queued){
         if (conn_drain_write_buf(c, &c->write_buf) == -1){
-          // Todo(sah): append to close queue 
-          c->state.close_queued = 1;
+          server_closeable_conns_append(c);
         };
       }
     }
+
+    // looping from the back while decrementing len might be faster, just have to keep FIFO
+    s->writeable_conns.len = 0;
 }
 
 
