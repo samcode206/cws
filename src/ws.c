@@ -348,6 +348,13 @@ static void server_writeable_conns_drain(ws_server_t *s) {
   s->writeable_conns.len = 0;
 }
 
+static void server_closeable_conns_close(ws_server_t *s) {
+  while (s->closeable_conns.len--) {
+    struct ws_conn_t *c = s->writeable_conns.conns[s->closeable_conns.len];
+    // todo(sah): destroy the connection
+  }
+}
+
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
     return NULL;
