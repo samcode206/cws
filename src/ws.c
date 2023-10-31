@@ -25,9 +25,9 @@
 
 #include <stdbool.h>
 #define _GNU_SOURCE
-#include "ws.h"
 #include "buf.h"
 #include "pool.h"
+#include "ws.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
@@ -300,8 +300,9 @@ static void server_append_writeable_conn(ws_conn_t *c) {
     else {
       // expand the list by twice the current cap
       void *new_list = realloc(c->base->writeable_conn_list.conns,
-                               c->base->writeable_conn_list.cap +
-                                   c->base->writeable_conn_list.cap);
+                               sizeof c->base->writeable_conn_list.conns *
+                                   (c->base->writeable_conn_list.cap +
+                                    c->base->writeable_conn_list.cap));
       if (new_list == NULL) {
         // there really isn't another viable option but to crash in this case
         // what else are we gonna do??? silently failing isn't a great option
