@@ -286,7 +286,7 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
 // crashes if we needed to grow the list and failed to reallocate memory
 static void server_append_writeable_conn(ws_conn_t *c) {
   // to be added to the list:
-  // a connection must not already be queued for writing 
+  // a connection must not already be queued for writing
   // a connection must not be queued for closing
   if (!c->state.write_queued && !c->state.close_queue) {
     // can we append without growing the list?
@@ -294,7 +294,7 @@ static void server_append_writeable_conn(ws_conn_t *c) {
         c->base->writeable_conn_list.cap) {
       c->base->writeable_conn_list.conns[c->base->writeable_conn_list.len++] =
           c;
-    } 
+    }
     // if not we have to realloc...
     else {
       // expand the list by twice the current cap
@@ -314,6 +314,8 @@ static void server_append_writeable_conn(ws_conn_t *c) {
                 c->base->writeable_conn_list.cap);
         exit(1);
       }
+      // we reallocated, store the (potentially) new pointer to conns and store
+      // the update capacity (doubled)
       c->base->writeable_conn_list.conns = new_list;
       c->base->writeable_conn_list.cap =
           c->base->writeable_conn_list.cap + c->base->writeable_conn_list.cap;
