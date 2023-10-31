@@ -324,10 +324,14 @@ static void server_writeable_conns_append(ws_conn_t *c) {
   }
 }
 
-static void server_closeable_conns_append(ws_conn_t *c) {
-  // to be added to the list:
-  // a connection must not already be queued for closing
+static void conn_prep_close(ws_conn_t *c) {
   if (!c->state.close_queued) {
+    c->base->ev.data.ptr = c;
+    if (epoll_ctl(c->base->epoll_fd, EPOLL_CTL_DEL, c->fd, &c->base->ev) ==
+        -1) {
+      int err = errno;
+      c->base->on_ws_err(c->base, err);
+    };
     conn_list_append(&c->base->closeable_conns, c);
     c->state.close_queued = true;
   }
@@ -338,7 +342,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
     struct ws_conn_t *c = s->writeable_conns.conns[i];
     if (!c->state.close_queued) {
       if (conn_drain_write_buf(c, &c->write_buf) == -1) {
-        server_closeable_conns_append(c);
+        conn_prep_close(c);
       };
     }
   }
