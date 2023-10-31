@@ -316,9 +316,8 @@ static void conn_list_append(struct conn_list *cl, struct ws_conn_t *conn) {
 static void server_writeable_conns_append(ws_conn_t *c) {
   // to be added to the list:
   // a connection must not already be queued for writing
-  // a connection must not be queued for closing
   // a connection must be in a writeable state
-  if (c->state.writeable && !c->state.write_queued && !c->state.close_queued) {
+  if (c->state.writeable && !c->state.write_queued) {
     conn_list_append(&c->base->writeable_conns, c);
     c->state.write_queued = true;
   }
@@ -338,6 +337,7 @@ static void conn_prep_close(ws_conn_t *c) {
 }
 
 static void server_writeable_conns_drain(ws_server_t *s) {
+  printf("draining %zu connections\n", s->writeable_conns.len);
   for (size_t i = 0; i < s->writeable_conns.len; ++i) {
     struct ws_conn_t *c = s->writeable_conns.conns[i];
     if (!c->state.close_queued) {
@@ -353,8 +353,10 @@ static void server_writeable_conns_drain(ws_server_t *s) {
 }
 
 static void server_closeable_conns_close(ws_server_t *s) {
+  printf("closing %zu connections\n", s->writeable_conns.len);
   while (s->closeable_conns.len--) {
     struct ws_conn_t *c = s->writeable_conns.conns[s->closeable_conns.len];
+    printf("closing todo\n");
     // todo(sah): destroy the connection
   }
 }
@@ -568,6 +570,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
         }
       }
     }
+
+    server_writeable_conns_drain(s);
   }
 
   return 0;
@@ -1127,6 +1131,10 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
   problems
   */
 
+  if (conn->state.close_queued) {
+    return 0;
+  }
+
   size_t hlen = frame_get_mask_offset(len);
   buf_t *wbuf;
 
@@ -1265,7 +1273,9 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
     }
 
     // under 65kb case
-    return buf_put(wbuf, data, len) == 0;
+    buf_put(wbuf, data, len);
+    server_writeable_conns_append(conn);
+    return 1;
   } else {
     return 0;
   }
