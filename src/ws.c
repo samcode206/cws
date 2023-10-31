@@ -63,7 +63,7 @@ typedef struct {
   bool write_queued; // do we currently have some data that is queued for
                      // writing (in s->writeable_conns)
 
-  bool close_queue; // we are in the close list and should not attempt to do
+  bool close_queued; // we are in the close list and should not attempt to do
                     // any IO on this connection, it will soon be closed and all
                     // resources will be recycled/freed
 
@@ -318,11 +318,25 @@ static void server_writeable_conns_append(ws_conn_t *c) {
   // a connection must not already be queued for writing
   // a connection must not be queued for closing
   // a connection must be in a writeable state
-  if (c->state.writeable && !c->state.write_queued && !c->state.close_queue) {
+  if (c->state.writeable && !c->state.write_queued && !c->state.close_queued) {
     conn_list_append(&c->base->writeable_conns, c);
     c->state.write_queued = true;
   }
 }
+
+static void server_writeable_conns_drain(ws_server_t *s){
+    
+    for (size_t i = 0; i < s->writeable_conns.len; ++i){
+      struct ws_conn_t *c = s->writeable_conns.conns[i];
+      if (!c->state.close_queued){
+        if (conn_drain_write_buf(c, &c->write_buf) == -1){
+          // Todo(sah): append to close queue 
+          c->state.close_queued = 1;
+        };
+      }
+    }
+}
+
 
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
