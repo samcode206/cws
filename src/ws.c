@@ -23,6 +23,7 @@
    SOFTWARE.
 */
 
+#include <stdbool.h>
 #define _GNU_SOURCE
 #include "ws.h"
 #include "buf.h"
@@ -319,9 +320,13 @@ static void server_append_writeable_conn(ws_conn_t *c) {
       c->base->writeable_conn_list.conns = new_list;
       c->base->writeable_conn_list.cap =
           c->base->writeable_conn_list.cap + c->base->writeable_conn_list.cap;
+      // finally we append
       c->base->writeable_conn_list.conns[c->base->writeable_conn_list.len++] =
           c;
     }
+
+    // in either case don't forget to update connection state
+    c->state.write_queued = true;
   }
 }
 
