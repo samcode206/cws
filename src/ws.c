@@ -64,8 +64,8 @@ typedef struct {
                      // writing (in s->writeable_conns)
 
   bool close_queued; // we are in the close list and should not attempt to do
-                    // any IO on this connection, it will soon be closed and all
-                    // resources will be recycled/freed
+                     // any IO on this connection, it will soon be closed and
+                     // all resources will be recycled/freed
 
   size_t fragments_len; // size of the data portion of the frames across
                         // fragmentation
@@ -288,7 +288,6 @@ static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf);
 static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
                             size_t len, uint8_t op);
 
-
 static void conn_list_append(struct conn_list *cl, struct ws_conn_t *conn) {
   if (cl->len + 1 < cl->cap) {
     cl->conns[cl->len++] = conn;
@@ -325,30 +324,29 @@ static void server_writeable_conns_append(ws_conn_t *c) {
   }
 }
 
-static void server_closeable_conns_append(ws_conn_t *c){
+static void server_closeable_conns_append(ws_conn_t *c) {
   // to be added to the list:
-  // a connection must not already be queued for closing 
-  if (!c->state.close_queued){
+  // a connection must not already be queued for closing
+  if (!c->state.close_queued) {
     conn_list_append(&c->base->closeable_conns, c);
     c->state.close_queued = true;
   }
 }
 
-static void server_writeable_conns_drain(ws_server_t *s){
-    
-    for (size_t i = 0; i < s->writeable_conns.len; ++i){
-      struct ws_conn_t *c = s->writeable_conns.conns[i];
-      if (!c->state.close_queued){
-        if (conn_drain_write_buf(c, &c->write_buf) == -1){
-          server_closeable_conns_append(c);
-        };
-      }
+static void server_writeable_conns_drain(ws_server_t *s) {
+  for (size_t i = 0; i < s->writeable_conns.len; ++i) {
+    struct ws_conn_t *c = s->writeable_conns.conns[i];
+    if (!c->state.close_queued) {
+      if (conn_drain_write_buf(c, &c->write_buf) == -1) {
+        server_closeable_conns_append(c);
+      };
     }
+  }
 
-    // looping from the back while decrementing len might be faster, just have to keep FIFO
-    s->writeable_conns.len = 0;
+  // looping from the back while decrementing len might be faster, just have to
+  // keep FIFO
+  s->writeable_conns.len = 0;
 }
-
 
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
