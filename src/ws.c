@@ -61,7 +61,7 @@ typedef struct {
   bool upgraded;  // are we even upgraded?
 
   bool write_queued; // do we currently have some data that is queued for
-                     // writing (in s->writeable_conn_list)
+                     // writing (in s->writeable_conns)
 
   bool close_queue; // we are in the close list and should not attempt to do
                     // any IO on this connection, it will soon be closed and all
@@ -82,7 +82,11 @@ struct ws_conn_t {
   buf_t write_buf;
 };
 
-struct writeable_conns {
+// general purpose dynamic array
+// that is used to hold a list of connections
+// used for tracking connections that need closing
+// and connections that need writing
+struct conn_list {
   size_t len;
   size_t cap;
   ws_conn_t **conns;
@@ -107,7 +111,7 @@ typedef struct server {
   buf_t shared_send_buffer;
   struct epoll_event ev;
   struct epoll_event events[1024];
-  struct writeable_conns writeable_conn_list;
+  struct conn_list writeable_conns;
 } ws_server_t;
 
 // Frame Utils
@@ -283,50 +287,39 @@ static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf);
 static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
                             size_t len, uint8_t op);
 
-// appends connection to the write list if not already queued
-// crashes if we needed to grow the list and failed to reallocate memory
-static void server_append_writeable_conn(ws_conn_t *c) {
+
+static void conn_list_append(struct conn_list *cl, struct ws_conn_t *conn) {
+  if (cl->len + 1 < cl->cap) {
+    cl->conns[cl->len++] = conn;
+  } else {
+    void *new_list = realloc(cl->conns, sizeof cl->conns * (cl->cap + cl->cap));
+    if (new_list == NULL) {
+      // there really isn't another viable option but to crash in this case
+      // what else are we gonna do??? silently failing isn't a great option
+      // might consider making this a fixed size array and never growing it if
+      // we can find out what the max amount of writeable connections there
+      // ever can be in the list it should be the max number of connections
+      // that we are willing to accept since duplicates aren't allowed but
+      // that is currently unbounded (which is also bad, there is always a
+      // limit to everything...)
+      fprintf(stderr, "failed to grow connection list, last cap = %zu\n",
+              cl->cap);
+      exit(1);
+    }
+    cl->conns = new_list;
+    cl->cap = cl->cap + cl->cap;
+
+    cl->conns[cl->len++] = conn;
+  }
+}
+
+static void server_writeable_conns_append(ws_conn_t *c) {
   // to be added to the list:
   // a connection must not already be queued for writing
   // a connection must not be queued for closing
-  if (!c->state.write_queued && !c->state.close_queue) {
-    // can we append without growing the list?
-    if (c->base->writeable_conn_list.len + 1 <
-        c->base->writeable_conn_list.cap) {
-      c->base->writeable_conn_list.conns[c->base->writeable_conn_list.len++] =
-          c;
-    }
-    // if not we have to realloc...
-    else {
-      // expand the list by twice the current cap
-      void *new_list = realloc(c->base->writeable_conn_list.conns,
-                               sizeof c->base->writeable_conn_list.conns *
-                                   (c->base->writeable_conn_list.cap +
-                                    c->base->writeable_conn_list.cap));
-      if (new_list == NULL) {
-        // there really isn't another viable option but to crash in this case
-        // what else are we gonna do??? silently failing isn't a great option
-        // might consider making this a fixed size array and never growing it if
-        // we can find out what the max amount of writeable connections there
-        // ever can be in the list it should be the max number of connections
-        // that we are willing to accept since duplicates aren't allowed but
-        // that is currently unbounded (which is also bad, there is always a
-        // limit to everything...)
-        fprintf(stderr, "failed to grow writeable_conn_list, last cap = %zu\n",
-                c->base->writeable_conn_list.cap);
-        exit(1);
-      }
-      // we reallocated, store the (potentially) new pointer to conns and store
-      // the update capacity (doubled)
-      c->base->writeable_conn_list.conns = new_list;
-      c->base->writeable_conn_list.cap =
-          c->base->writeable_conn_list.cap + c->base->writeable_conn_list.cap;
-      // finally we append
-      c->base->writeable_conn_list.conns[c->base->writeable_conn_list.len++] =
-          c;
-    }
-
-    // in either case don't forget to update connection state
+  // a connection must be in a writeable state
+  if (c->state.writeable && !c->state.write_queued && !c->state.close_queue) {
+    conn_list_append(&c->base->writeable_conns, c);
     c->state.write_queued = true;
   }
 }
@@ -359,10 +352,9 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   // allocate the list (dynamic array of pointers to ws_conn_t) to track
   // writeable connections
-  s->writeable_conn_list.conns =
-      calloc(512, sizeof s->writeable_conn_list.conns);
-  s->writeable_conn_list.len = 0;
-  s->writeable_conn_list.cap = 512;
+  s->writeable_conns.conns = calloc(512, sizeof s->writeable_conns.conns);
+  s->writeable_conns.len = 0;
+  s->writeable_conns.cap = 512;
 
   // socket init
   struct sockaddr_in6 srv_addr;
