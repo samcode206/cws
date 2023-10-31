@@ -55,13 +55,20 @@
 typedef int (*ws_handler)(ws_server_t *s, struct ws_conn_t *conn);
 
 typedef struct {
-  bool bin;             // is binary message?
-  bool writeable;       // can we write to the socket?
-  bool upgraded;        // are we even upgraded?
-  bool write_queued;    // do we currently have some data that is queued for
-                        // writing (in s->writeable_conn_list)
+  bool bin;       // is binary message?
+  bool writeable; // can we write to the socket?
+  bool upgraded;  // are we even upgraded?
+
+  bool write_queued; // do we currently have some data that is queued for
+                     // writing (in s->writeable_conn_list)
+
+  bool close_queue; // we are in the close list and should not attempt to do
+                    // any IO on this connection, it will soon be closed and all
+                    // resources will be recycled/freed
+
   size_t fragments_len; // size of the data portion of the frames across
                         // fragmentation
+
   size_t needed_bytes; // bytes needed before we can do something with the frame
 } ws_state_t;
 
@@ -278,7 +285,11 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
 // appends connection to the write list if not already queued
 // crashes if we needed to grow the list and failed to reallocate memory
 static void server_append_writeable_conn(ws_conn_t *c) {
-  if (!c->state.write_queued) {
+  // to be added to the list:
+  // a connection must not already be queued for writing 
+  // a connection must not be queued for closing
+  if (!c->state.write_queued && !c->state.close_queue) {
+
     if (c->base->writeable_conn_list.len + 1 <
         c->base->writeable_conn_list.cap) {
       c->base->writeable_conn_list.conns[c->base->writeable_conn_list.len++] =
