@@ -23,7 +23,6 @@
    SOFTWARE.
 */
 
-#include <stdbool.h>
 #define _GNU_SOURCE
 #include "buf.h"
 #include "pool.h"
@@ -38,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/signal.h>
