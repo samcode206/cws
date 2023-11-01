@@ -44,7 +44,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define BUFFER_SIZE 1024 * 1024 * 4
+#define BUFFER_SIZE 1024 * 1024 * 32
 
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
@@ -362,8 +362,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
       buf_pool_free(s->buffer_pool, c->read_buf.buf);
 
       if (s->shared_send_buffer_owner == c->fd) {
-        s->shared_send_buffer.rpos = 0;
-        s->shared_send_buffer.wpos = 0;
+        buf_reset(&s->shared_send_buffer);
         s->shared_send_buffer_owner = -1;
       }
       free(c);
@@ -589,6 +588,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
             } else {
               ws_conn_handle(s, c);
             }
+
+            assert(buf_len(&s->shared_recv_buffer) == 0);
           }
         }
       }
@@ -715,6 +716,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
         printf("invalid frame closing\n");
         printf("opcode=%d\n", opcode);
         printf("fin=%d\n", fin);
+        buf_reset(&s->shared_recv_buffer);
         ws_conn_destroy(conn);
         return;
       }
@@ -765,6 +767,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
           if (!conn->state.bin && !utf8_is_valid(msg, payload_len)) {
             printf("failed validation\n");
             ws_conn_destroy(conn);
+            buf_reset(&s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
           }
           s->on_ws_msg(conn, msg, payload_len, conn->state.bin);
@@ -777,6 +780,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
           // this is invalid because we expect continuation not text or binary
           // opcode
           ws_conn_destroy(conn);
+          buf_reset(&s->shared_recv_buffer);
           return;
         }
 
@@ -790,6 +794,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
         // can't send cont as first fragment
         if ((opcode == OP_CONT) & (conn->state.fragments_len == 0)) {
           ws_conn_destroy(conn);
+          buf_reset(&s->shared_recv_buffer);
           return;
         }
 
@@ -815,6 +820,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
                                                  conn->state.fragments_len)) {
             printf("failed validation\n");
             ws_conn_destroy(conn);
+            buf_reset(&s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
           }
           s->on_ws_msg(conn, buf_peek(&conn->read_buf),
@@ -829,6 +835,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
       case OP_PING:
         if (payload_len > 125) {
           ws_conn_destroy(conn);
+          buf_reset(&s->shared_recv_buffer);
           return;
         }
         s->on_ws_ping(conn, msg, payload_len);
@@ -845,6 +852,7 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
       case OP_PONG:
         if (payload_len > 125) {
           ws_conn_destroy(conn);
+          buf_reset(&s->shared_recv_buffer);
           return;
         }
         s->on_ws_pong(conn, msg, payload_len);
@@ -859,9 +867,11 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
       case OP_CLOSE:
         if (!payload_len) {
           s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
+          buf_reset(&s->shared_recv_buffer);
           return;
         } else if (payload_len < 2) {
           s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+          buf_reset(&s->shared_recv_buffer);
           return;
         }
 
@@ -873,11 +883,13 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
             // contain just the 16bit code and a short string for the reason at
             // most
             ws_conn_destroy(conn);
+            buf_reset(&s->shared_recv_buffer);
             return;
           }
 
           if (!utf8_is_valid(msg + 2, payload_len - 2)) {
             ws_conn_destroy(conn);
+            buf_reset(&s->shared_recv_buffer);
             return;
           };
 
@@ -886,26 +898,28 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
               code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
               code == 2999) {
             s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+            buf_reset(&s->shared_recv_buffer);
             return;
           }
 
           s->on_ws_close(conn, code, msg + 2);
-
+          buf_reset(&s->shared_recv_buffer);
           return;
         }
 
         break;
       default:
         ws_conn_destroy(conn);
+        buf_reset(&s->shared_recv_buffer);
         return;
       }
     } /* loop end */
 
-
-  // if we own the shared buffer drain it right now to allow next conn to reuse it
-  if (s->shared_send_buffer_owner == conn->fd){
-    conn_drain_write_buf(conn, &s->shared_send_buffer);
-  }
+    // if we own the shared buffer drain it right now to allow next conn to
+    // reuse it
+    if (s->shared_send_buffer_owner == conn->fd) {
+      conn_drain_write_buf(conn, &s->shared_send_buffer);
+    }
 
   clean_up_buffer:
     if ((buf == &s->shared_recv_buffer) && (buf_len(buf) > 0)) {
@@ -923,39 +937,6 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
           (buf->wpos - buf->rpos - conn->state.fragments_len - total_trimmed);
     }
   }
-}
-
-static void conn_destroy(ws_server_t *s, struct ws_conn_t *conn, int epfd,
-                         int err, struct epoll_event *ev) {
-  int ret;
-  ev->data.ptr = conn;
-  ret = epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, ev);
-  if (ret == -1) {
-    int err = errno;
-    s->on_ws_err(s, err);
-  }
-  ret = close(conn->fd);
-  if (ret == -1) {
-    int err = errno;
-    s->on_ws_err(s, err);
-  } else {
-    s->on_ws_disconnect(conn,
-                        err); // call the user's callback to allow clean up
-                              // on data associated with this connection
-  }
-
-  buf_pool_free(s->buffer_pool, conn->write_buf.buf);
-  buf_pool_free(s->buffer_pool, conn->read_buf.buf);
-  conn->write_buf.wpos = 0;
-  conn->write_buf.rpos = 0;
-
-  if (s->shared_send_buffer_owner == conn->fd) {
-    s->shared_send_buffer.rpos = 0;
-    s->shared_send_buffer.wpos = 0;
-    s->shared_send_buffer_owner = -1;
-  }
-
-  free(conn);
 }
 
 static void ws_conn_notify_on_writeable(struct ws_conn_t *conn) {
@@ -1009,7 +990,7 @@ will be called
 inline int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(s, c, msg, n, OP_PONG);
   if (stat == -1) {
-    conn_destroy(s, c, s->epoll_fd, errno, &s->ev);
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1024,7 +1005,7 @@ will be called
 inline int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(s, c, msg, n, OP_PING);
   if (stat == -1) {
-    conn_destroy(s, c, s->epoll_fd, errno, &s->ev);
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1040,7 +1021,7 @@ will be called
 inline int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(s, c, msg, n, OP_BIN);
   if (stat == -1) {
-    conn_destroy(s, c, s->epoll_fd, errno, &s->ev);
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1056,7 +1037,7 @@ will be called
 inline int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(s, c, msg, n, OP_TXT);
   if (stat == -1) {
-    conn_destroy(s, c, s->epoll_fd, errno, &s->ev);
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1260,15 +1241,12 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
 
         if (n == total_write) {
           return 1;
-        } else if (n == 0) {
+        } else if (n == 0 || (n == -1 && errno != EAGAIN)) {
           return -1;
-        } else if (n == -1 && errno != EAGAIN) {
-          return n;
-        } else if (n == -1 && errno == EAGAIN) {
+        } else {
           ws_conn_notify_on_writeable(conn);
           return 1;
         }
-
       }
       // connection is not writeable
       else {

@@ -61,6 +61,11 @@ static inline int buf_init(struct buf_pool *p, buf_t *r) {
 
 static inline size_t buf_len(buf_t *r) { return r->wpos - r->rpos; }
 
+static inline void buf_reset(buf_t *r) {
+  // we can do this because indexes are in the beginning
+  memset(r, 0, sizeof(size_t) * 2);
+}
+
 static inline size_t buf_space(buf_t *r) {
   return r->buf_sz - (r->wpos - r->rpos);
 }
@@ -100,8 +105,7 @@ static inline int buf_consume(buf_t *r, size_t n) {
   r->rpos += n;
 
   if (r->rpos == r->wpos) {
-    r->rpos = 0;
-    r->wpos = 0;
+    buf_reset(r);
   } else {
     int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
     r->rpos -= ovf;
@@ -131,8 +135,7 @@ static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
   r->rpos += (n > 0) * n;
 
   if (r->rpos == r->wpos) {
-    r->rpos = 0;
-    r->wpos = 0;
+    buf_reset(r);
   } else {
     int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
     r->rpos -= ovf;
