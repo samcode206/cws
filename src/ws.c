@@ -697,7 +697,7 @@ static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
   }
 }
 
-static inline void ws_conn_handle(struct ws_conn_t *conn) {
+static inline void ws_conn_handle(ws_conn_t *conn) {
   buf_t *buf = ws_conn_choose_read_buf(conn);
   ws_server_t *s = conn->base;
 
