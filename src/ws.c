@@ -384,7 +384,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
       !params->on_ws_drain || !params->on_ws_disconnect ||
-      !params->on_ws_ping || !params->on_ws_pong || !params->on_ws_err) {
+      !params->on_ws_ping || !params->on_ws_err) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -468,7 +468,11 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   s->on_ws_open = params->on_ws_open;
   s->on_ws_ping = params->on_ws_ping;
-  s->on_ws_pong = params->on_ws_pong;
+  if (params->on_ws_pong) {
+    s->on_ws_pong = params->on_ws_pong;
+  } else {
+    s->on_ws_pong = NULL;
+  }
   s->on_ws_msg = params->on_ws_msg;
   s->on_ws_drain = params->on_ws_drain;
   s->on_ws_close = params->on_ws_close;
@@ -855,7 +859,12 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
           buf_reset(&s->shared_recv_buffer);
           return;
         }
-        s->on_ws_pong(conn, msg, payload_len);
+
+        if (s->on_ws_pong) {
+          // only call the callback if provided
+          s->on_ws_pong(conn, msg, payload_len);
+        }
+
         if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
           total_trimmed += total_trimmed;
           conn->state.needed_bytes = 2;
@@ -987,8 +996,8 @@ static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf) {
 start sending more data or an error occurred in which the corresponding callback
 will be called
 */
-inline int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(s, c, msg, n, OP_PONG);
+inline int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_frame(c->base, c, msg, n, OP_PONG);
   if (stat == -1) {
     ws_conn_destroy(c);
   }
@@ -1002,24 +1011,8 @@ inline int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
 start sending more data or an error occurred in which the corresponding callback
 will be called
 */
-inline int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(s, c, msg, n, OP_PING);
-  if (stat == -1) {
-    ws_conn_destroy(c);
-  }
-  return stat == 1;
-}
-
-/**
-* returns:
-     1 data was completely written
-
-     0 part of the data was written caller should wait for on_drain event to
-start sending more data or an error occurred in which the corresponding callback
-will be called
-*/
-inline int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(s, c, msg, n, OP_BIN);
+inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_frame(c->base, c, msg, n, OP_PING);
   if (stat == -1) {
     ws_conn_destroy(c);
   }
@@ -1034,8 +1027,24 @@ inline int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
 start sending more data or an error occurred in which the corresponding callback
 will be called
 */
-inline int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(s, c, msg, n, OP_TXT);
+inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_frame(c->base, c, msg, n, OP_BIN);
+  if (stat == -1) {
+    ws_conn_destroy(c);
+  }
+  return stat == 1;
+}
+
+/**
+* returns:
+     1 data was completely written
+
+     0 part of the data was written caller should wait for on_drain event to
+start sending more data or an error occurred in which the corresponding callback
+will be called
+*/
+inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_frame(c->base, c, msg, n, OP_TXT);
   if (stat == -1) {
     ws_conn_destroy(c);
   }

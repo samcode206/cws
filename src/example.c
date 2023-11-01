@@ -9,7 +9,7 @@ void on_ping(ws_conn_t *c, void *msg, size_t n) {
   printf("on_ping:");
   fwrite(msg, sizeof(char), n, stdout);
   fwrite("\n", 1, 1, stdout);
-  int stat = ws_conn_pong(ws_conn_server(c), c, msg, n);
+  int stat = ws_conn_pong(c, msg, n);
   if (stat == 1) {
     printf("pong sent\n");
   } else {
@@ -18,20 +18,15 @@ void on_ping(ws_conn_t *c, void *msg, size_t n) {
   }
 }
 
-void on_pong(ws_conn_t *c, void *msg, size_t n) {
-  printf("on_pong:");
-  fwrite(msg, sizeof(char), n, stdout);
-  fwrite("\n", 1, 1, stdout);
-}
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // printf("on_msg: ");
   // fwrite(msg, sizeof(char), n, stdout);
   // fwrite("\n", 1, 1, stdout);
   if (bin) {
-    ws_conn_send(ws_conn_server(c), c, msg, n);
+    ws_conn_send(c, msg, n);
   } else {
-    ws_conn_send_txt(ws_conn_server(c), c, msg, n);
+    ws_conn_send_txt(c, msg, n);
   }
 
   // if (stat == 1) {
@@ -45,8 +40,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d \n", code);
   if ((code == WS_CLOSE_ABNORM) | (code == WS_CLOSE_NOSTAT)) {
-    ws_conn_close(ws_conn, (void *)reason, 0,
-                  WS_CLOSE_NORMAL);
+    ws_conn_close(ws_conn, (void *)reason, 0, WS_CLOSE_NORMAL);
   } else {
     ws_conn_close(ws_conn, (void *)reason, 0, code);
   }
@@ -70,7 +64,7 @@ void *start_server() {
                                 .on_ws_open = on_open,
                                 .on_ws_msg = on_msg,
                                 .on_ws_ping = on_ping,
-                                .on_ws_pong = on_pong,
+                                .on_ws_pong = NULL,
                                 .on_ws_drain = on_drain,
                                 .on_ws_close = on_close,
                                 .on_ws_disconnect = on_disconnect,

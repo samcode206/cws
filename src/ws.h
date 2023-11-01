@@ -127,13 +127,13 @@ struct ws_server_params {
 
 int ws_conn_fd(ws_conn_t *c);
 
-int ws_conn_pong(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
-int ws_conn_ping(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
+int ws_conn_pong(ws_conn_t *c, void *msg, size_t n);
+int ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
 void ws_conn_close(ws_conn_t *c, void *msg, size_t n,
                   uint16_t code);
 void ws_conn_destroy(ws_conn_t *c);
-int ws_conn_send_txt(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
-int ws_conn_send(ws_server_t *s, ws_conn_t *c, void *msg, size_t n);
+int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n);
+int ws_conn_send(ws_conn_t *c, void *msg, size_t n);
 
 ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
