@@ -338,12 +338,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
   for (size_t i = 0; i < s->writeable_conns.len; ++i) {
     struct ws_conn_t *c = s->writeable_conns.conns[i];
     if (!c->state.close_queued) {
-      buf_t *wbuf = &c->write_buf;
-      if (s->shared_send_buffer_owner == c->fd) {
-        wbuf = &s->shared_send_buffer;
-      }
-
-      if (conn_drain_write_buf(c, wbuf) == -1) {
+      if (conn_drain_write_buf(c, &c->write_buf) == -1) {
         conn_prep_close(c);
       };
       c->state.write_queued = 0;
@@ -906,6 +901,12 @@ static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
       }
     } /* loop end */
 
+
+  // if we own the shared buffer drain it right now to allow next conn to reuse it
+  if (s->shared_send_buffer_owner == conn->fd){
+    conn_drain_write_buf(conn, &s->shared_send_buffer);
+  }
+
   clean_up_buffer:
     if ((buf == &s->shared_recv_buffer) && (buf_len(buf) > 0)) {
       // move to connection specific buffer
@@ -1281,8 +1282,10 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
     // under 65kb case
     buf_put(wbuf, data, len);
 
-    // queue it up for writing
-    server_writeable_conns_append(conn);
+    if (wbuf != &s->shared_send_buffer) {
+      // queue it up for writing
+      server_writeable_conns_append(conn);
+    }
     return 1;
   } else {
     return 0;
