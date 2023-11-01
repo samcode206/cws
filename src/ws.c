@@ -271,18 +271,18 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 }
 
 // generic send function (used for upgrade)
-static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data,
+static int conn_send(ws_conn_t *conn, const void *data,
                      size_t n);
 
-static void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn);
+static void ws_conn_handle(struct ws_conn_t *conn);
 
-static int handle_http(ws_server_t *s, struct ws_conn_t *conn);
+static int handle_http(struct ws_conn_t *conn);
 
-static inline int conn_read(ws_server_t *s, struct ws_conn_t *conn, buf_t *buf);
+static inline int conn_read(struct ws_conn_t *conn, buf_t *buf);
 
 static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf);
 
-static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
+static int conn_write_frame(ws_conn_t *conn, void *data,
                             size_t len, uint8_t op);
 
 static void conn_list_append(struct conn_list *cl, struct ws_conn_t *conn) {
@@ -588,9 +588,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
             }
 
             if (!c->state.upgraded) {
-              handle_http(s, c);
+              handle_http(c);
             } else {
-              ws_conn_handle(s, c);
+              ws_conn_handle(c);
             }
 
             assert(buf_len(&s->shared_recv_buffer) == 0);
@@ -619,7 +619,7 @@ static ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
   return ws_build_upgrade_headers(accept_key, len, res_hdrs);
 }
 
-static int conn_read(ws_server_t *s, struct ws_conn_t *conn, buf_t *buf) {
+static int conn_read(struct ws_conn_t *conn, buf_t *buf) {
   ssize_t n = buf_recv(buf, conn->fd, 0);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -635,7 +635,8 @@ static int conn_read(ws_server_t *s, struct ws_conn_t *conn, buf_t *buf) {
   return 0;
 }
 
-static int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
+static int handle_http(struct ws_conn_t *conn) {
+  ws_server_t *s = conn->base;
   buf_t *buf;
   if (buf_len(&conn->read_buf)) {
     buf = &conn->read_buf;
@@ -643,7 +644,7 @@ static int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
     buf = &s->shared_recv_buffer;
   }
 
-  if (conn_read(s, conn, buf) == -1) {
+  if (conn_read(conn, buf) == -1) {
     return -1;
   };
 
@@ -653,7 +654,7 @@ static int handle_http(ws_server_t *s, struct ws_conn_t *conn) {
     char res_hdrs[1024] = {0};
     ssize_t ret = handle_upgrade((char *)headers, res_hdrs, sizeof res_hdrs);
 
-    int n = conn_send(s, conn, res_hdrs, ret - 1);
+    int n = conn_send(conn, res_hdrs, ret - 1);
     if (n == ret - 1) {
       s->on_ws_open(conn); // websocket connection is upgraded
     } else {
@@ -696,13 +697,14 @@ static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
   }
 }
 
-static inline void ws_conn_handle(ws_server_t *s, struct ws_conn_t *conn) {
+static inline void ws_conn_handle(struct ws_conn_t *conn) {
   buf_t *buf = ws_conn_choose_read_buf(conn);
+  ws_server_t *s = conn->base;
 
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
 
-  if (conn_read(s, conn, buf) == 0) {
+  if (conn_read(conn, buf) == 0) {
     while (ws_conn_readable_len(conn, buf) - total_trimmed >=
            conn->state.needed_bytes) {
       // payload start
@@ -997,7 +999,7 @@ start sending more data or an error occurred in which the corresponding callback
 will be called
 */
 inline int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(c->base, c, msg, n, OP_PONG);
+  int stat = conn_write_frame(c, msg, n, OP_PONG);
   if (stat == -1) {
     ws_conn_destroy(c);
   }
@@ -1012,7 +1014,7 @@ start sending more data or an error occurred in which the corresponding callback
 will be called
 */
 inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(c->base, c, msg, n, OP_PING);
+  int stat = conn_write_frame(c, msg, n, OP_PING);
   if (stat == -1) {
     ws_conn_destroy(c);
   }
@@ -1028,7 +1030,7 @@ start sending more data or an error occurred in which the corresponding callback
 will be called
 */
 inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(c->base, c, msg, n, OP_BIN);
+  int stat = conn_write_frame(c, msg, n, OP_BIN);
   if (stat == -1) {
     ws_conn_destroy(c);
   }
@@ -1044,7 +1046,7 @@ start sending more data or an error occurred in which the corresponding callback
 will be called
 */
 inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(c->base, c, msg, n, OP_TXT);
+  int stat = conn_write_frame(c, msg, n, OP_TXT);
   if (stat == -1) {
     ws_conn_destroy(c);
   }
@@ -1112,7 +1114,7 @@ start sending more data
 
     -1 an error occurred connection should be closed, check errno
 */
-static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
+static int conn_write_frame(ws_conn_t *conn, void *data,
                             size_t len, uint8_t op) {
 
   /**
@@ -1132,6 +1134,7 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
     return 0;
   }
 
+  ws_server_t *s = conn->base;
   size_t hlen = frame_get_mask_offset(len);
   buf_t *wbuf;
 
@@ -1279,7 +1282,7 @@ static int conn_write_frame(ws_server_t *s, ws_conn_t *conn, void *data,
   }
 }
 
-static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data,
+static int conn_send(ws_conn_t *conn, const void *data,
                      size_t len) {
   // this function sucks, it's only used for the upgrade and should be reworked
   ssize_t n = 0;
@@ -1296,11 +1299,11 @@ static int conn_send(ws_server_t *s, ws_conn_t *conn, const void *data,
     }
 
     if (n < len) {
-      s->ev.events = EPOLLOUT | EPOLLRDHUP;
-      s->ev.data.ptr = conn;
+      conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
+      conn->base->ev.data.ptr = conn;
       conn->state.writeable = 0;
       assert(buf_put(&conn->write_buf, (uint8_t *)data + n, len - n) == 0);
-      if (epoll_ctl(s->epoll_fd, EPOLL_CTL_MOD, conn->fd, &s->ev) == -1) {
+      if (epoll_ctl(conn->base->epoll_fd, EPOLL_CTL_MOD, conn->fd, &conn->base->ev) == -1) {
         return -1;
       };
 
