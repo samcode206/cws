@@ -167,7 +167,7 @@ static inline uint32_t frame_is_masked(const unsigned char *buf) {
   return (buf[1] >> 7) & 0x01;
 }
 
-static inline size_t frame_get_mask_offset(size_t const n) {
+static inline size_t frame_get_header_len(size_t const n) {
   return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
 }
 
@@ -747,7 +747,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // ....
       // ....
 
-      size_t mask_offset = frame_get_mask_offset(payload_len);
+      size_t mask_offset = frame_get_header_len(payload_len);
       size_t full_frame_len = payload_len + 4 + mask_offset;
 
       // check that we have atleast the whole frame, otherwise
@@ -1135,7 +1135,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data,
   }
 
   ws_server_t *s = conn->base;
-  size_t hlen = frame_get_mask_offset(len);
+  size_t hlen = frame_get_header_len(len);
   buf_t *wbuf;
 
   // use the connection write buffer when
