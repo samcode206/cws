@@ -59,7 +59,7 @@ void on_server_err(ws_server_t *s, int err) {
 void *start_server() {
   const uint16_t port = 9919;
   const int backlog = 1024;
-  struct ws_server_params sp = {.addr = "::",
+  struct ws_server_params sp = {.addr = "::1",
                                 .port = port,
                                 .on_ws_open = on_open,
                                 .on_ws_msg = on_msg,
