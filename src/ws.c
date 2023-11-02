@@ -24,20 +24,20 @@
 */
 
 #define _GNU_SOURCE
+#include "ws.h"
 #include "buf.h"
 #include "pool.h"
-#include "ws.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/signal.h>
@@ -271,8 +271,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 }
 
 // generic send function (used for upgrade)
-static int conn_send(ws_conn_t *conn, const void *data,
-                     size_t n);
+static int conn_send(ws_conn_t *conn, const void *data, size_t n);
 
 static void ws_conn_handle(struct ws_conn_t *conn);
 
@@ -282,8 +281,8 @@ static inline int conn_read(struct ws_conn_t *conn, buf_t *buf);
 
 static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf);
 
-static int conn_write_frame(ws_conn_t *conn, void *data,
-                            size_t len, uint8_t op);
+static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
+                            uint8_t op);
 
 static void conn_list_append(struct conn_list *cl, struct ws_conn_t *conn) {
   if (cl->len + 1 < cl->cap) {
@@ -384,7 +383,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
       !params->on_ws_drain || !params->on_ws_disconnect ||
-      !params->on_ws_ping || !params->on_ws_err) {
+      !params->on_ws_ping) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -468,16 +467,18 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   s->on_ws_open = params->on_ws_open;
   s->on_ws_ping = params->on_ws_ping;
-  if (params->on_ws_pong) {
-    s->on_ws_pong = params->on_ws_pong;
-  } else {
-    s->on_ws_pong = NULL;
-  }
   s->on_ws_msg = params->on_ws_msg;
   s->on_ws_drain = params->on_ws_drain;
   s->on_ws_close = params->on_ws_close;
   s->on_ws_disconnect = params->on_ws_disconnect;
-  s->on_ws_err = params->on_ws_err;
+
+  if (params->on_ws_pong) {
+    s->on_ws_pong = params->on_ws_pong;
+  }
+
+  if (params->on_ws_err) {
+    s->on_ws_err = params->on_ws_err;
+  }
 
   s->buffer_pool = buf_pool_init(1024 * 2, BUFFER_SIZE);
 
@@ -508,8 +509,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
   ev.events = EPOLLIN;
 
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
-    int err = errno;
-    s->on_ws_err(s, err);
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+    } else {
+      perror("epoll_ctl");
+      exit(1);
+    }
     return -1;
   };
   int one = 1;
@@ -517,8 +523,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
     if (n_evs < 0) {
-      int err = errno;
-      s->on_ws_err(s, err);
+      if (s->on_ws_err) {
+        int err = errno;
+        s->on_ws_err(s, err);
+      } else {
+        perror("epoll_wait");
+        exit(1);
+      }
       return -1;
     }
 
@@ -533,8 +544,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
           if ((client_fd < 0)) {
             if (!(errno == EAGAIN)) {
-              int err = errno;
-              s->on_ws_err(s, err);
+              if (s->on_ws_err) {
+                int err = errno;
+                s->on_ws_err(s, err);
+              } else {
+                perror("accept4");
+                exit(1);
+              }
             }
             break;
           }
@@ -554,8 +570,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
           assert(buf_init(s->buffer_pool, &conn->read_buf) == 0);
           assert(buf_init(s->buffer_pool, &conn->write_buf) == 0);
           if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
-            int err = errno;
-            s->on_ws_err(s, err);
+            if (s->on_ws_err) {
+              int err = errno;
+              s->on_ws_err(s, err);
+            } else {
+              perror("epoll_ctl");
+              exit(1);
+            }
           };
         }
 
@@ -572,8 +593,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
               ev.data.ptr = c;
               ev.events = EPOLLIN | EPOLLRDHUP;
               if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev) == -1) {
-                int err = errno;
-                s->on_ws_err(s, err);
+                if (s->on_ws_err) {
+                  int err = errno;
+                  s->on_ws_err(s, err);
+                } else {
+                  perror("epoll_ctl");
+                  exit(1);
+                }
               };
             } else if (ret == -1) {
               ws_conn_destroy(s->events[i].data.ptr);
@@ -956,6 +982,13 @@ static void ws_conn_notify_on_writeable(struct ws_conn_t *conn) {
   conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
   if (epoll_ctl(conn->base->epoll_fd, EPOLL_CTL_MOD, conn->fd,
                 &conn->base->ev) == -1) {
+    if (conn->base->on_ws_err) {
+      int err = errno;
+      conn->base->on_ws_err(conn->base, err);
+    } else {
+      perror("epoll_ctl");
+      exit(1);
+    }
     int err = errno;
     conn->base->on_ws_err(conn->base, err);
     // might wanna close the socket?
@@ -1114,8 +1147,8 @@ start sending more data
 
     -1 an error occurred connection should be closed, check errno
 */
-static int conn_write_frame(ws_conn_t *conn, void *data,
-                            size_t len, uint8_t op) {
+static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
+                            uint8_t op) {
 
   /**
   * Todo(sah):
@@ -1282,8 +1315,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data,
   }
 }
 
-static int conn_send(ws_conn_t *conn, const void *data,
-                     size_t len) {
+static int conn_send(ws_conn_t *conn, const void *data, size_t len) {
   // this function sucks, it's only used for the upgrade and should be reworked
   ssize_t n = 0;
 
@@ -1303,7 +1335,8 @@ static int conn_send(ws_conn_t *conn, const void *data,
       conn->base->ev.data.ptr = conn;
       conn->state.writeable = 0;
       assert(buf_put(&conn->write_buf, (uint8_t *)data + n, len - n) == 0);
-      if (epoll_ctl(conn->base->epoll_fd, EPOLL_CTL_MOD, conn->fd, &conn->base->ev) == -1) {
+      if (epoll_ctl(conn->base->epoll_fd, EPOLL_CTL_MOD, conn->fd,
+                    &conn->base->ev) == -1) {
         return -1;
       };
 

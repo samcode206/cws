@@ -18,7 +18,6 @@ void on_ping(ws_conn_t *c, void *msg, size_t n) {
   }
 }
 
-
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // printf("on_msg: ");
   // fwrite(msg, sizeof(char), n, stdout);
@@ -59,16 +58,16 @@ void on_server_err(ws_server_t *s, int err) {
 void *start_server() {
   const uint16_t port = 9919;
   const int backlog = 1024;
-  struct ws_server_params sp = {.addr = "::1",
-                                .port = port,
-                                .on_ws_open = on_open,
-                                .on_ws_msg = on_msg,
-                                .on_ws_ping = on_ping,
-                                .on_ws_pong = NULL,
-                                .on_ws_drain = on_drain,
-                                .on_ws_close = on_close,
-                                .on_ws_disconnect = on_disconnect,
-                                .on_ws_err = on_server_err};
+  struct ws_server_params sp = {
+      .addr = "::1",
+      .port = port,
+      .on_ws_open = on_open,
+      .on_ws_msg = on_msg,
+      .on_ws_ping = on_ping,
+      .on_ws_drain = on_drain,
+      .on_ws_close = on_close,
+      .on_ws_disconnect = on_disconnect,
+  };
 
   int ret = 0;
   ws_server_t *s = ws_server_create(&sp, &ret);
