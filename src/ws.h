@@ -37,7 +37,6 @@
 #include <string.h>
 #include <unistd.h>
 
-
 #define FIN 0x80
 
 #define OP_CONT 0x0
@@ -50,12 +49,12 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-// errors 
+// errors
 #define ERR_HDR_NOT_FOUND -2
 #define ERR_HDR_MALFORMED -3
 #define ERR_HDR_TOO_LARGE -4
 
-#define WS_ESYS -5       // system error call should check errno
+#define WS_ESYS -5        // system error call should check errno
 #define WS_EINVAL_ARGS -6 // invalid argument/arguments provided
 
 #define WS_CREAT_EBAD_PORT -7
@@ -64,20 +63,32 @@
 #define WS_CLOSED -99
 
 // Standard WebSocket close status codes
-#define WS_CLOSE_NORMAL     1000  // Normal closure, meaning that the purpose for which the connection was established has been fulfilled.
-#define WS_CLOSE_GOAWAY     1001  // An endpoint is "going away," such as a server going down or a browser having navigated away from a page.
-#define WS_CLOSE_EPROTO     1002  // Protocol error.
-#define WS_CLOSE_UNSUPP     1003  // Unsupported data; for example, the client expects only text but server sends a binary message.
-#define WS_CLOSE_INVALID    1007  // Received data is inconsistent with the type of the message (e.g., a text message that contains invalid UTF-8).
-#define WS_CLOSE_POLVIO     1008  // Policy violation.
-#define WS_CLOSE_LG_MSG     1009  // A message is too big for its destination.
-#define WS_CLOSE_EXTNG      1010  // The client is terminating the connection because it expected the server to negotiate one or more extensions.
-#define WS_CLOSE_UNEXPCOND  1011  // An unexpected condition prevented the request from being fulfilled.
+#define WS_CLOSE_NORMAL                                                        \
+  1000 // Normal closure, meaning that the purpose for which the connection was
+       // established has been fulfilled.
+#define WS_CLOSE_GOAWAY                                                        \
+  1001 // An endpoint is "going away," such as a server going down or a browser
+       // having navigated away from a page.
+#define WS_CLOSE_EPROTO 1002 // Protocol error.
+#define WS_CLOSE_UNSUPP                                                        \
+  1003 // Unsupported data; for example, the client expects only text but server
+       // sends a binary message.
+#define WS_CLOSE_INVALID                                                       \
+  1007 // Received data is inconsistent with the type of the message (e.g., a
+       // text message that contains invalid UTF-8).
+#define WS_CLOSE_POLVIO 1008 // Policy violation.
+#define WS_CLOSE_LG_MSG 1009 // A message is too big for its destination.
+#define WS_CLOSE_EXTNG                                                         \
+  1010 // The client is terminating the connection because it expected the
+       // server to negotiate one or more extensions.
+#define WS_CLOSE_UNEXPCOND                                                     \
+  1011 // An unexpected condition prevented the request from being fulfilled.
 
 // Internal status codes for special situations
-#define WS_CLOSE_NOSTAT     1005  // Close frame did not contain a status code.
-#define WS_CLOSE_ABNORM     1006  // Connection closed abnormally (e.g., without sending or receiving a Close frame).
-
+#define WS_CLOSE_NOSTAT 1005 // Close frame did not contain a status code.
+#define WS_CLOSE_ABNORM                                                        \
+  1006 // Connection closed abnormally (e.g., without sending or receiving a
+       // Close frame).
 
 // server types
 typedef struct ws_conn_t ws_conn_t;
@@ -91,7 +102,6 @@ typedef void (*ws_msg_cb_t)(
     ws_conn_t *c, void *msg, size_t n,
     bool bin); /* called when a websocket msg is available */
 
-
 typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg,
                              size_t n); /* called when a client sends a PING */
 
@@ -99,7 +109,8 @@ typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg,
                              size_t n); /* called when a client sends a PONG */
 
 typedef void (*ws_close_cb_t)(
-    ws_conn_t *ws_conn, int code, const void *reason); /* called when a close frame is received */
+    ws_conn_t *ws_conn, int code,
+    const void *reason); /* called when a close frame is received */
 
 typedef void (*ws_disconnect_cb_t)(ws_conn_t *ws_conn,
                                    int err); /* called after the connection is
@@ -113,8 +124,12 @@ typedef void (*ws_err_cb_t)(ws_server_t *s,
                             int err); /* called if an internal error occurs */
 
 struct ws_server_params {
-  const char* addr;
+  const char *addr;
   uint16_t port;
+  uint64_t max_conns;        // max connections willing to accept, defaults to
+                             // getrlimit for RLIMIT_NOFILE
+  size_t max_buffered_bytes; // maximum buffered bytes, anything beyond this will
+                             // drop the connection defaults to 16000
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
   ws_ping_cb_t on_ws_ping;
@@ -129,8 +144,7 @@ int ws_conn_fd(ws_conn_t *c);
 
 int ws_conn_pong(ws_conn_t *c, void *msg, size_t n);
 int ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
-void ws_conn_close(ws_conn_t *c, void *msg, size_t n,
-                  uint16_t code);
+void ws_conn_close(ws_conn_t *c, void *msg, size_t n, uint16_t code);
 void ws_conn_destroy(ws_conn_t *c);
 int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n);
 int ws_conn_send(ws_conn_t *c, void *msg, size_t n);
@@ -139,15 +153,12 @@ ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
 void ws_conn_ctx_attach(ws_conn_t *c, void *ctx);
 
-
 ws_server_t *ws_server_create(struct ws_server_params *params,
                               int *ret); // allocates server resources
 
 int ws_server_start(ws_server_t *s, int backlog); // start serving connections
 
-
 // for text stuff
 int utf8_is_valid(uint8_t *s, size_t n);
-
 
 #endif /* WS_PROTOCOL_PARSING23_H */

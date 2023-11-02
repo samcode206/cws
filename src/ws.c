@@ -40,11 +40,10 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
-
-#define BUFFER_SIZE 1024 * 1024 * 32
 
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
@@ -93,9 +92,11 @@ struct conn_list {
 };
 
 typedef struct server {
-  int fd;            // server file descriptor
-  int resv;          // unused
-  size_t open_conns; // open websocket connections
+  int fd;             // server file descriptor
+  int resv;           // unused
+  size_t open_conns;  // open websocket connections
+  size_t max_conns;   // max connections allowed
+  size_t max_msg_len; // max allowed msg length
   struct buf_pool *buffer_pool;
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
@@ -365,6 +366,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
         s->shared_send_buffer_owner = -1;
       }
       free(c);
+      --s->open_conns;
     }
 
     s->closeable_conns.len = 0;
@@ -394,21 +396,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     *ret = WS_ESYS;
     return NULL;
   }
-
-  // allocate the list (dynamic array of pointers to ws_conn_t) to track
-  // writeable connections
-  s->writeable_conns.conns = calloc(512, sizeof s->writeable_conns.conns);
-  s->writeable_conns.len = 0;
-  s->writeable_conns.cap = 512;
-
-  // allocate the list (dynamic array of pointers to ws_conn_t) to track
-  // closeable connections
-  s->closeable_conns.conns = calloc(512, sizeof s->closeable_conns.conns);
-  s->closeable_conns.len = 0;
-  s->closeable_conns.cap = 512;
-
-  // make sure we got the mem needed
-  assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL);
 
   // socket init
   struct sockaddr_in6 srv_addr;
@@ -488,13 +475,60 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     s->on_ws_drain = params->on_ws_drain;
   }
 
-  s->buffer_pool = buf_pool_init(1024 * 2, BUFFER_SIZE);
+  size_t max_backpressure =
+      params->max_buffered_bytes ? params->max_buffered_bytes : 1000 * 16;
+  size_t page_size = getpagesize();
 
+  // account for an interleaved control msg during fragmentation
+  // since we never dynamically allocate more buffers
+  size_t buffer_size =
+      (max_backpressure + 132 + page_size - 1) & ~(page_size - 1);
+
+  printf("buffer size = %zu\n", buffer_size);
+  printf("max_backpressure = %zu\n", max_backpressure);
+
+  struct rlimit rlim = {0};
+  assert(getrlimit(RLIMIT_NOFILE, &rlim) == 0);
+
+  if (!params->max_conns) {
+    s->max_conns = rlim.rlim_cur;
+  } else {
+    if (params->max_conns < rlim.rlim_cur) {
+      s->max_conns = params->max_conns;
+    } else {
+      fprintf(stderr,
+              "[WARN] params->max_conns %zu is more than the current limit of "
+              "%zu max_conns will be set to the current limit\n",
+              params->max_conns, rlim.rlim_cur);
+      s->max_conns = rlim.rlim_cur;
+    }
+  }
+
+  printf("max_conns = %zu\n", s->max_conns);
+  s->buffer_pool = buf_pool_init(s->max_conns + s->max_conns + 2, buffer_size);
+  s->max_msg_len = max_backpressure;
   buf_init(s->buffer_pool, &s->shared_recv_buffer);
   buf_init(s->buffer_pool, &s->shared_send_buffer);
 
   s->shared_send_buffer_owner = -1;
   assert(s->buffer_pool != NULL);
+
+  // allocate the list (dynamic array of pointers to ws_conn_t) to track
+  // writeable connections
+  s->writeable_conns.conns =
+      calloc(s->max_conns, sizeof s->writeable_conns.conns);
+  s->writeable_conns.len = 0;
+  s->writeable_conns.cap = s->max_conns;
+
+  // allocate the list (dynamic array of pointers to ws_conn_t) to track
+  // closeable connections
+  s->closeable_conns.conns =
+      calloc(s->max_conns, sizeof s->closeable_conns.conns);
+  s->closeable_conns.len = 0;
+  s->closeable_conns.cap = s->max_conns;
+
+  // make sure we got the mem needed
+  assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL);
   // server resources all ready
   return s;
 }
@@ -544,7 +578,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
       if (s->events[i].data.ptr == s) {
-        int accepts = 1024; // accept upto 1024 connections per server event
+
+        int accepts = s->max_conns - s->open_conns;
         while (accepts--) {
           int client_fd =
               accept4(fd, (struct sockaddr *)&client_sockaddr, &client_socklen,
@@ -586,6 +621,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
               exit(1);
             }
           };
+
+          ++s->open_conns;
         }
 
       } else {
@@ -739,6 +776,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
+  size_t max_allowed_len = s->max_msg_len;
 
   if (conn_read(conn, buf) == 0) {
     while (ws_conn_readable_len(conn, buf) - total_trimmed >=
@@ -786,6 +824,12 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       size_t mask_offset = frame_get_header_len(payload_len);
       size_t full_frame_len = payload_len + 4 + mask_offset;
 
+      if (full_frame_len > max_allowed_len) {
+        // drop the connection
+        printf("max allowed length exceeded: drop the connections "
+               "[unimplemented]\n");
+      }
+
       // check that we have atleast the whole frame, otherwise
       // set needed_bytes and exit waiting for more reads from the socket
       if (frames_buffer_len < full_frame_len) {
@@ -827,6 +871,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         }
 
       case OP_CONT:
+        // todo: add msg size validation for fragmented msgs
         // accumulate bytes and increase fragments_len
 
         // move bytes over
