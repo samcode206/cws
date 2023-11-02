@@ -45,12 +45,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define STATE_UPGRADING 0
-#define STATE_PARSING_HDR 1
-#define STATE_PARSING_MSG 2
-#define STATE_PARSING_PING 3
-#define STATE_PARSING_PONG 4
-#define STATE_PARSING_CLOSE 5
+
 
 typedef int (*ws_handler)(ws_server_t *s, struct ws_conn_t *conn);
 
