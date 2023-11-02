@@ -8,14 +8,15 @@ ws.onopen = (ev) => {
   console.log("opened");
 };
 
-ws.onclose = (ev) => {
-  // console.log("close", ev);
-};
 
 ws.onerror = (err) => {
   console.log("err", err);
 };
 
+
+ws.on("close", (code, reason) => {
+  console.log('closed with code = ', code, 'reason=', reason.toString().length ? reason.toString() : null);
+})
 
 ws.on("message", (msg, bin) => {
   console.log(bin ? " binary": "text", "msg",  msg.toString());

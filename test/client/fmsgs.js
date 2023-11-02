@@ -8,14 +8,14 @@ ws.onopen = (ev) => {
   console.log("opened");
 };
 
-ws.onclose = (ev) => {
-  // console.log("close", ev);
-};
 
 ws.onerror = (err) => {
   console.log("err", err);
 };
 
+ws.on("close", (code, reason) => {
+  console.log('closed with code = ', code, 'reason=', reason.toString().length ? reason.toString() : null);
+})
 
 ws.on("message", (msg, bin) => {
   console.log(bin ? " binary": "text", "msg",  msg.toString());
@@ -33,6 +33,7 @@ ws.on("unexpected-response", (req, res) => {
   console.log(res);
 });
 
+let i = 1;
 process.stdin.on("data", (chunk) => {
   if (ws.OPEN) {
     const data = chunk.toString('ascii');
@@ -40,7 +41,7 @@ process.stdin.on("data", (chunk) => {
     if (data.includes('fin')){
       fin = 1;
     }
-    ws.send('*'.replace('\n', '').repeat(64), {
+    ws.send('*'.replace('\n', ''), {
       fin: fin,
     }, (err) => {
       if (err) {

@@ -45,8 +45,6 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-
-
 typedef int (*ws_handler)(ws_server_t *s, struct ws_conn_t *conn);
 
 typedef struct {
@@ -135,7 +133,8 @@ static inline size_t frame_payload_get_raw_len(const unsigned char *buf) {
   return buf[1] & 0X7F;
 }
 
-int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len, size_t *res) {
+static int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
+                                    size_t *res) {
   size_t raw_len = frame_payload_get_raw_len(buf);
   *res = raw_len;
   if (raw_len == PAYLOAD_LEN_16) {
@@ -271,8 +270,7 @@ static int conn_send(ws_conn_t *conn, const void *data, size_t n);
 
 static void ws_conn_handle(struct ws_conn_t *conn);
 
-static int handle_http(struct ws_conn_t *conn);
-
+static void handle_http(struct ws_conn_t *conn);
 static inline int conn_read(struct ws_conn_t *conn, buf_t *buf);
 
 static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf);
@@ -471,7 +469,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   }
 
   size_t max_backpressure =
-      params->max_buffered_bytes ? params->max_buffered_bytes : 1000 * 16;
+      params->max_buffered_bytes ? params->max_buffered_bytes : 16000;
   size_t page_size = getpagesize();
 
   // account for an interleaved control msg during fragmentation
@@ -539,9 +537,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
-  // TODO: REMOVE ASAP and use s->ev
-
-
   s->ev.data.ptr = s;
   s->ev.events = EPOLLIN;
 
@@ -623,9 +618,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
         // can't accept more connection, remove server's fd from epoll
         // it would be re-added when there is a disconnect and a fd is closed
-     
+
         if (s->max_conns == s->open_conns) {
-          printf("[INFO] server at full capacity, pausing accepts on new connections\n");
+          printf("[INFO] server at full capacity, pausing accepts on new "
+                 "connections\n");
           s->ev.data.ptr = s;
           if (epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &s->ev) == -1) {
             if (s->on_ws_err) {
@@ -688,8 +684,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
     server_writeable_conns_drain(s); // drain writes
 
     // we are at full capacity and about to remove something
-    // that's when we can rearm EPOLLIN on the listener 
-    bool should_enable_accepts = s->max_conns == s->open_conns && s->closeable_conns.len;
+    // that's when we can rearm EPOLLIN on the listener
+    bool should_enable_accepts =
+        s->max_conns == s->open_conns && s->closeable_conns.len;
     server_closeable_conns_close(s); // close connections
     if (should_enable_accepts) {
       printf("[INFO] starting to accept connections again\n");
@@ -726,20 +723,18 @@ static ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
 static int conn_read(struct ws_conn_t *conn, buf_t *buf) {
   ssize_t n = buf_recv(buf, conn->fd, 0);
   if (n == -1) {
-    if ((errno == EAGAIN || errno == EWOULDBLOCK)) {
+    if ((errno == EAGAIN || errno == EINTR)) {
       return 0;
     }
-    ws_conn_destroy(conn);
     return -1;
   } else if (n == 0) {
-    ws_conn_destroy(conn);
     return -1;
   }
 
   return 0;
 }
 
-static int handle_http(struct ws_conn_t *conn) {
+static void handle_http(struct ws_conn_t *conn) {
   ws_server_t *s = conn->base;
   buf_t *buf;
   if (buf_len(&conn->read_buf)) {
@@ -749,7 +744,9 @@ static int handle_http(struct ws_conn_t *conn) {
   }
 
   if (conn_read(conn, buf) == -1) {
-    return -1;
+    ws_conn_destroy(conn);
+    buf_reset(&s->shared_recv_buffer);
+    return;
   };
 
   uint8_t *headers = buf_peek(buf);
@@ -773,11 +770,10 @@ static int handle_http(struct ws_conn_t *conn) {
     buf_consume(buf, rbuf_len);
     conn->state.upgraded = 1;
     conn->state.needed_bytes = 2;
-    return 0;
+    return;
   }
 
-  // TODO(sah): handle errors
-  return -1;
+  return;
 }
 
 static inline buf_t *ws_conn_choose_read_buf(struct ws_conn_t *conn) {
@@ -809,200 +805,244 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
   size_t total_trimmed = 0;
   size_t max_allowed_len = s->max_msg_len;
 
-  if (conn_read(conn, buf) == 0) {
-    while (ws_conn_readable_len(conn, buf) - total_trimmed >=
-           conn->state.needed_bytes) {
-      // payload start
-      uint8_t *frame_buf = buf_peek_at(
-          buf, buf->rpos + ((buf == &conn->read_buf) *
-                            (conn->state.fragments_len + total_trimmed)));
+  if (conn_read(conn, buf) == -1) {
+    ws_conn_destroy(conn);
+    buf_reset(&s->shared_recv_buffer);
+    return;
+  }
 
-      uint8_t fin = frame_get_fin(frame_buf);
-      uint8_t opcode = frame_get_opcode(frame_buf);
-      // printf("fragments=%zu\n", conn->state.fragments_len);
-      // run general validation checks on the header
-      if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
-          (frame_has_reserved_bits_set(frame_buf) == 1) |
-          (frame_is_masked(frame_buf) == 0)) {
-        printf("invalid frame closing\n");
-        printf("opcode=%d\n", opcode);
-        printf("fin=%d\n", fin);
-        buf_reset(&s->shared_recv_buffer);
+  while (ws_conn_readable_len(conn, buf) - total_trimmed >=
+         conn->state.needed_bytes) {
+    // payload start
+    uint8_t *frame = buf_peek_at(
+        buf, buf->rpos + ((buf == &conn->read_buf) *
+                          (conn->state.fragments_len + total_trimmed)));
+
+    uint8_t fin = frame_get_fin(frame);
+    uint8_t opcode = frame_get_opcode(frame);
+    // printf("fragments=%zu\n", conn->state.fragments_len);
+    // run general validation checks on the header
+    if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
+        (frame_has_reserved_bits_set(frame) == 1) |
+        (frame_is_masked(frame) == 0)) {
+      printf("invalid frame closing\n");
+      printf("opcode=%d\n", opcode);
+      printf("fin=%d\n", fin);
+      buf_reset(&s->shared_recv_buffer);
+      ws_conn_destroy(conn);
+      return;
+    }
+
+    // make sure we can get the full msg
+    size_t payload_len = 0;
+    size_t frame_buf_len = buf_len(buf);
+    if (&conn->read_buf == buf) {
+      frame_buf_len = frame_buf_len - conn->state.fragments_len - total_trimmed;
+    }
+    // check if we need to do more reads to get the msg length
+    int missing_header_len =
+        frame_decode_payload_len(frame, frame_buf_len, &payload_len);
+    if (missing_header_len) {
+      // wait for atleast remaining of the header
+      conn->state.needed_bytes = missing_header_len;
+      goto clean_up_buffer;
+    }
+
+    size_t mask_offset = frame_get_header_len(payload_len);
+    size_t full_frame_len = payload_len + 4 + mask_offset;
+
+    // validate frame length
+    if (payload_len > max_allowed_len) {
+      // drop the connection
+      printf("max allowed length exceeded: drop the connections "
+             "[unimplemented]\n");
+      printf("opcode = %d len = %zu\n", opcode, full_frame_len);
+      ws_conn_close(conn, NULL, 0, WS_CLOSE_LG_MSG);
+      buf_reset(&s->shared_recv_buffer);
+      return;
+    }
+
+    // check that we have atleast the whole frame, otherwise
+    // set needed_bytes and exit waiting for more reads from the socket
+    if (frame_buf_len < full_frame_len) {
+      conn->state.needed_bytes = full_frame_len;
+      goto clean_up_buffer;
+    }
+
+    uint8_t *msg = frame + mask_offset + 4;
+    msg_unmask(msg, frame + mask_offset, payload_len);
+    // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n",
+    // frame_buf_len,
+    //        full_frame_len, opcode, fin);
+
+    switch (opcode) {
+    case OP_TXT:
+    case OP_BIN:
+      conn->state.bin = opcode == OP_BIN;
+      // fin and never fragmented
+      // this handles both text and binary hence the fallthrough
+      if (fin & (conn->state.fragments_len == 0)) {
+        if (!conn->state.bin && !utf8_is_valid(msg, payload_len)) {
+          printf("failed validation\n");
+          ws_conn_destroy(conn);
+          buf_reset(&s->shared_recv_buffer);
+          return; // TODO(sah): send a Close frame, & call close callback
+        }
+        s->on_ws_msg(conn, msg, payload_len, conn->state.bin);
+        buf_consume(buf, full_frame_len);
+        conn->state.bin = 0;
+        conn->state.needed_bytes = 2;
+
+        break; /* OP_BIN don't fall through to fragmented msg */
+      } else if (fin & (conn->state.fragments_len > 0)) {
+        // this is invalid because we expect continuation not text or binary
+        // opcode
         ws_conn_destroy(conn);
+        buf_reset(&s->shared_recv_buffer);
         return;
       }
 
-      // make sure we can get the full msg
-      size_t payload_len = 0;
-      size_t frames_buffer_len = buf_len(buf);
-      if (&conn->read_buf == buf) {
-        frames_buffer_len =
-            frames_buffer_len - conn->state.fragments_len - total_trimmed;
-      }
-      // check if we need to do more reads to get the msg length
-      int missing_header_len =
-          frame_decode_payload_len(frame_buf, frames_buffer_len, &payload_len);
-      if (missing_header_len) {
-        // wait for atleast remaining of the header
-        conn->state.needed_bytes = missing_header_len;
-        goto clean_up_buffer;
+    case OP_CONT:
+      // accumulate bytes and increase fragments_len
+
+      // move bytes over
+      // call the callback
+      // reset
+
+      // can't send cont as first fragment
+      if ((opcode == OP_CONT) & (conn->state.fragments_len == 0)) {
+        ws_conn_destroy(conn);
+        buf_reset(&s->shared_recv_buffer);
+        return;
       }
 
-      // Todo(sah): add validation to payload_len
-      // ....
-      // ....
-
-      size_t mask_offset = frame_get_header_len(payload_len);
-      size_t full_frame_len = payload_len + 4 + mask_offset;
-
-      if (full_frame_len > max_allowed_len) {
-        // drop the connection
+      if (conn->state.fragments_len + payload_len > max_allowed_len) {
         printf("max allowed length exceeded: drop the connections "
                "[unimplemented]\n");
+        printf("opcode = %d len = %zu\n", opcode, full_frame_len);
+        ws_conn_close(conn, NULL, 0, WS_CLOSE_LG_MSG);
+        buf_reset(&s->shared_recv_buffer);
+        return;
       }
 
-      // check that we have atleast the whole frame, otherwise
-      // set needed_bytes and exit waiting for more reads from the socket
-      if (frames_buffer_len < full_frame_len) {
-        conn->state.needed_bytes = full_frame_len;
-        goto clean_up_buffer;
+      // we are using the shared buffer
+      if (buf != &conn->read_buf) {
+        // trim off the header
+        buf_consume(buf, mask_offset + 4);
+        buf_move(buf, &conn->read_buf, payload_len);
+        conn->state.fragments_len += payload_len;
+        conn->state.needed_bytes = 2;
+      } else {
+        // place back at the frame start which contains the header & mask
+        // we want to get rid of but ensure to subtract by the frame_gap to
+        // fill it if it isn't zero
+        memmove(frame - total_trimmed, msg, payload_len);
+        conn->state.fragments_len += payload_len;
+        total_trimmed += mask_offset + 4;
+        conn->state.needed_bytes = 2;
       }
 
-      uint8_t *msg = frame_buf + mask_offset + 4;
-      msg_unmask(msg, frame_buf + mask_offset, payload_len);
-      // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n",
-      // frames_buffer_len,
-      //        full_frame_len, opcode, fin);
-
-      switch (opcode) {
-      case OP_TXT:
-      case OP_BIN:
-        conn->state.bin = opcode == OP_BIN;
-        // fin and never fragmented
-        // this handles both text and binary hence the fallthrough
-        if (fin & (conn->state.fragments_len == 0)) {
-          if (!conn->state.bin && !utf8_is_valid(msg, payload_len)) {
-            printf("failed validation\n");
-            ws_conn_destroy(conn);
-            buf_reset(&s->shared_recv_buffer);
-            return; // TODO(sah): send a Close frame, & call close callback
-          }
-          s->on_ws_msg(conn, msg, payload_len, conn->state.bin);
-          buf_consume(buf, full_frame_len);
-          conn->state.bin = 0;
-          conn->state.needed_bytes = 2;
-
-          break; /* OP_BIN don't fall through to fragmented msg */
-        } else if (fin & (conn->state.fragments_len > 0)) {
-          // this is invalid because we expect continuation not text or binary
-          // opcode
+      if (fin) {
+        if (!conn->state.bin && !utf8_is_valid(buf_peek(&conn->read_buf),
+                                               conn->state.fragments_len)) {
+          printf("failed validation\n");
           ws_conn_destroy(conn);
           buf_reset(&s->shared_recv_buffer);
-          return;
+          return; // TODO(sah): send a Close frame, & call close callback
         }
+        s->on_ws_msg(conn, buf_peek(&conn->read_buf), conn->state.fragments_len,
+                     conn->state.bin);
+        buf_consume(&conn->read_buf, conn->state.fragments_len);
 
-      case OP_CONT:
-        // todo: add msg size validation for fragmented msgs
-        // accumulate bytes and increase fragments_len
+        conn->state.fragments_len = 0;
+        conn->state.needed_bytes = 2;
+        conn->state.bin = 0;
+      }
+      break;
+    case OP_PING:
+      if (payload_len > 125) {
+        ws_conn_destroy(conn);
+        buf_reset(&s->shared_recv_buffer);
+        return;
+      }
+      if (s->on_ws_ping) {
+        s->on_ws_ping(conn, msg, payload_len);
+      } else {
+        // Todo(sah): add some throttling to this
+        // a bad client can constantly send pings and we would keep replying
+        ws_conn_pong(conn, msg, payload_len);
+      }
+      if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
+        total_trimmed += full_frame_len;
+        conn->state.needed_bytes = 2;
+      } else {
+        // printf("here\n");
+        buf_consume(buf, full_frame_len);
+        conn->state.needed_bytes = 2;
+      }
 
-        // move bytes over
-        // call the callback
-        // reset
+      break;
+    case OP_PONG:
+      if (payload_len > 125) {
+        ws_conn_destroy(conn);
+        buf_reset(&s->shared_recv_buffer);
+        return;
+      }
 
-        // can't send cont as first fragment
-        if ((opcode == OP_CONT) & (conn->state.fragments_len == 0)) {
-          ws_conn_destroy(conn);
-          buf_reset(&s->shared_recv_buffer);
-          return;
-        }
+      if (s->on_ws_pong) {
+        // only call the callback if provided
+        s->on_ws_pong(conn, msg, payload_len);
+      }
 
-        // we are using the shared buffer
-        if (buf != &conn->read_buf) {
-          // trim off the header
-          buf_consume(buf, mask_offset + 4);
-          buf_move(buf, &conn->read_buf, payload_len);
-          conn->state.fragments_len += payload_len;
-          conn->state.needed_bytes = 2;
+      if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
+        total_trimmed += total_trimmed;
+        conn->state.needed_bytes = 2;
+      } else {
+        buf_consume(buf, full_frame_len);
+        conn->state.needed_bytes = 2;
+      }
+      break;
+    case OP_CLOSE:
+      if (!payload_len) {
+        if (s->on_ws_close) {
+          s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
         } else {
-          // place back at the frame_buf start which contains the header & mask
-          // we want to get rid of but ensure to subtract by the frame_gap to
-          // fill it if it isn't zero
-          memmove(frame_buf - total_trimmed, msg, payload_len);
-          conn->state.fragments_len += payload_len;
-          total_trimmed += mask_offset + 4;
-          conn->state.needed_bytes = 2;
+          ws_conn_close(conn, NULL, 0, WS_CLOSE_NORMAL);
         }
-
-        if (fin) {
-          if (!conn->state.bin && !utf8_is_valid(buf_peek(&conn->read_buf),
-                                                 conn->state.fragments_len)) {
-            printf("failed validation\n");
-            ws_conn_destroy(conn);
-            buf_reset(&s->shared_recv_buffer);
-            return; // TODO(sah): send a Close frame, & call close callback
-          }
-          s->on_ws_msg(conn, buf_peek(&conn->read_buf),
-                       conn->state.fragments_len, conn->state.bin);
-          buf_consume(&conn->read_buf, conn->state.fragments_len);
-
-          conn->state.fragments_len = 0;
-          conn->state.needed_bytes = 2;
-          conn->state.bin = 0;
+        buf_reset(&s->shared_recv_buffer);
+        return;
+      } else if (payload_len < 2) {
+        if (s->on_ws_close) {
+          s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+        } else {
+          ws_conn_close(conn, NULL, 0, WS_CLOSE_EPROTO);
         }
-        break;
-      case OP_PING:
+        buf_reset(&s->shared_recv_buffer);
+        return;
+      }
+
+      else {
+        uint16_t code = WS_CLOSE_NOSTAT;
         if (payload_len > 125) {
-          ws_conn_destroy(conn);
-          buf_reset(&s->shared_recv_buffer);
-          return;
-        }
-        if (s->on_ws_ping) {
-          s->on_ws_ping(conn, msg, payload_len);
-        } else {
-          // Todo(sah): add some throttling to this
-          // a bad client can constantly send pings and we would keep replying
-          ws_conn_pong(conn, msg, payload_len);
-        }
-        if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
-          total_trimmed += full_frame_len;
-          conn->state.needed_bytes = 2;
-        } else {
-          // printf("here\n");
-          buf_consume(buf, full_frame_len);
-          conn->state.needed_bytes = 2;
-        }
-
-        break;
-      case OP_PONG:
-        if (payload_len > 125) {
+          // close frames can be more but this is the most that will be
+          // supported for various reasons close frames generally should
+          // contain just the 16bit code and a short string for the reason at
+          // most
           ws_conn_destroy(conn);
           buf_reset(&s->shared_recv_buffer);
           return;
         }
 
-        if (s->on_ws_pong) {
-          // only call the callback if provided
-          s->on_ws_pong(conn, msg, payload_len);
-        }
-
-        if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
-          total_trimmed += total_trimmed;
-          conn->state.needed_bytes = 2;
-        } else {
-          buf_consume(buf, full_frame_len);
-          conn->state.needed_bytes = 2;
-        }
-        break;
-      case OP_CLOSE:
-        if (!payload_len) {
-          if (s->on_ws_close) {
-            s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
-          } else {
-            ws_conn_close(conn, NULL, 0, WS_CLOSE_NORMAL);
-          }
+        if (!utf8_is_valid(msg + 2, payload_len - 2)) {
+          ws_conn_destroy(conn);
           buf_reset(&s->shared_recv_buffer);
           return;
-        } else if (payload_len < 2) {
+        };
+
+        code = (msg[0] << 8) | msg[1];
+        if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
+            code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
+            code == 2999) {
           if (s->on_ws_close) {
             s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
           } else {
@@ -1012,76 +1052,43 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           return;
         }
 
-        else {
-          uint16_t code = WS_CLOSE_NOSTAT;
-          if (payload_len > 125) {
-            // close frames can be more but this is the most that will be
-            // supported for various reasons close frames generally should
-            // contain just the 16bit code and a short string for the reason at
-            // most
-            ws_conn_destroy(conn);
-            buf_reset(&s->shared_recv_buffer);
-            return;
-          }
-
-          if (!utf8_is_valid(msg + 2, payload_len - 2)) {
-            ws_conn_destroy(conn);
-            buf_reset(&s->shared_recv_buffer);
-            return;
-          };
-
-          code = (msg[0] << 8) | msg[1];
-          if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
-              code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
-              code == 2999) {
-            if (s->on_ws_close) {
-              s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
-            } else {
-              ws_conn_close(conn, NULL, 0, WS_CLOSE_EPROTO);
-            }
-            buf_reset(&s->shared_recv_buffer);
-            return;
-          }
-
-          if (s->on_ws_close) {
-            s->on_ws_close(conn, code, msg + 2);
-          } else {
-            ws_conn_close(conn, NULL, 0, code);
-          }
-
-          buf_reset(&s->shared_recv_buffer);
-          return;
+        if (s->on_ws_close) {
+          s->on_ws_close(conn, code, msg + 2);
+        } else {
+          ws_conn_close(conn, NULL, 0, code);
         }
 
-        break;
-      default:
-        ws_conn_destroy(conn);
         buf_reset(&s->shared_recv_buffer);
         return;
       }
-    } /* loop end */
 
-    // if we own the shared buffer drain it right now to allow next conn to
-    // reuse it
-    if (s->shared_send_buffer_owner == conn->fd) {
-      conn_drain_write_buf(conn, &s->shared_send_buffer);
+      break;
+    default:
+      ws_conn_destroy(conn);
+      buf_reset(&s->shared_recv_buffer);
+      return;
     }
+  } /* loop end */
 
-  clean_up_buffer:
-    if ((buf == &s->shared_recv_buffer) && (buf_len(buf) > 0)) {
-      // move to connection specific buffer
-      // printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
-      buf_move(buf, &conn->read_buf, buf_len(buf));
-    } else {
+  // if we own the shared buffer drain it right now to allow next conn to
+  // reuse it
+  if (s->shared_send_buffer_owner == conn->fd) {
+    conn_drain_write_buf(conn, &s->shared_send_buffer);
+  }
 
-      memmove(buf->buf + buf->rpos + conn->state.fragments_len,
-              buf->buf + buf->rpos + conn->state.fragments_len + total_trimmed,
-              buf->wpos - buf->rpos + conn->state.fragments_len +
-                  total_trimmed);
-      buf->wpos =
-          buf->rpos + conn->state.fragments_len +
-          (buf->wpos - buf->rpos - conn->state.fragments_len - total_trimmed);
-    }
+clean_up_buffer:
+  if ((buf == &s->shared_recv_buffer) && (buf_len(buf) > 0)) {
+    // move to connection specific buffer
+    // printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
+    buf_move(buf, &conn->read_buf, buf_len(buf));
+  } else {
+
+    memmove(buf->buf + buf->rpos + conn->state.fragments_len,
+            buf->buf + buf->rpos + conn->state.fragments_len + total_trimmed,
+            buf->wpos - buf->rpos + conn->state.fragments_len + total_trimmed);
+    buf->wpos =
+        buf->rpos + conn->state.fragments_len +
+        (buf->wpos - buf->rpos - conn->state.fragments_len - total_trimmed);
   }
 }
 

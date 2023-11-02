@@ -9,9 +9,6 @@ ws.onopen = (ev) => {
   console.log("opened");
 };
 
-ws.onclose = (ev) => {
-  // console.log("close", ev);
-};
 
 ws.onerror = (err) => {
   console.log("err", err);
@@ -20,6 +17,10 @@ ws.onerror = (err) => {
 ws.onmessage = (msg) => {
   console.info("msg");
 };
+
+ws.on("close", (code, reason) => {
+  console.log('closed with code = ', code, 'reason=', reason.toString().length ? reason.toString() : null);
+})
 
 ws.on("ping", (data) => {
   console.log("ping", data.toString());
