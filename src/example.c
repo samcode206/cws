@@ -5,18 +5,18 @@
 
 void on_open(ws_conn_t *c) {}
 
-void on_ping(ws_conn_t *c, void *msg, size_t n) {
-  printf("on_ping:");
-  fwrite(msg, sizeof(char), n, stdout);
-  fwrite("\n", 1, 1, stdout);
-  int stat = ws_conn_pong(c, msg, n);
-  if (stat == 1) {
-    printf("pong sent\n");
-  } else {
-    printf("partial pong sent or an error occurred waiting for <on_ws_drain | "
-           "on_ws_disconnect>\n");
-  }
-}
+// void on_ping(ws_conn_t *c, void *msg, size_t n) {
+//   printf("on_ping:");
+//   fwrite(msg, sizeof(char), n, stdout);
+//   fwrite("\n", 1, 1, stdout);
+//   int stat = ws_conn_pong(c, msg, n);
+//   if (stat == 1) {
+//     printf("pong sent\n");
+//   } else {
+//     printf("partial pong sent or an error occurred waiting for <on_ws_drain | "
+//            "on_ws_disconnect>\n");
+//   }
+// }
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // printf("on_msg: ");
@@ -46,7 +46,7 @@ void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
 }
 
 void on_disconnect(ws_conn_t *ws_conn, int err) {
-  // printf("on_disconnect %d\n", err);
+  // printf("on_disconnect fd=%d\n", ws_conn_fd(ws_conn));
 }
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
