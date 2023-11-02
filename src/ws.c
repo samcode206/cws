@@ -352,7 +352,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
 
 static void server_closeable_conns_close(ws_server_t *s) {
   if (s->closeable_conns.len) {
-    printf("closing %zu connections\n", s->closeable_conns.len);
+    // printf("closing %zu connections\n", s->closeable_conns.len);
     size_t n = s->closeable_conns.len;
     while (n--) {
       struct ws_conn_t *c = s->closeable_conns.conns[n];
@@ -578,41 +578,61 @@ int ws_server_start(ws_server_t *s, int backlog) {
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
       if (s->events[i].data.ptr == s) {
+        size_t accepts = s->max_conns - s->open_conns;
+        if (accepts) {
+          while (accepts--) {
+            int client_fd =
+                accept4(fd, (struct sockaddr *)&client_sockaddr,
+                        &client_socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
 
-        int accepts = s->max_conns - s->open_conns;
-        while (accepts--) {
-          int client_fd =
-              accept4(fd, (struct sockaddr *)&client_sockaddr, &client_socklen,
-                      SOCK_NONBLOCK | SOCK_CLOEXEC);
+            if ((client_fd < 0)) {
+              if (!(errno == EAGAIN)) {
+                if (s->on_ws_err) {
+                  int err = errno;
+                  s->on_ws_err(s, err);
+                } else {
+                  perror("accept4");
+                  exit(1);
+                }
+              }
+              break;
+            }
 
-          if ((client_fd < 0)) {
-            if (!(errno == EAGAIN)) {
+            assert(setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &one,
+                              sizeof(one)) == 0);
+
+            ev.events = EPOLLIN | EPOLLRDHUP;
+            struct ws_conn_t *conn = calloc(1, sizeof(struct ws_conn_t));
+            assert(conn != NULL);
+            conn->fd = client_fd;
+            conn->base = s;
+            conn->state.writeable = 1;
+            conn->state.needed_bytes = 2;
+            ev.data.ptr = conn;
+
+            assert(buf_init(s->buffer_pool, &conn->read_buf) == 0);
+            assert(buf_init(s->buffer_pool, &conn->write_buf) == 0);
+            if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
               if (s->on_ws_err) {
                 int err = errno;
                 s->on_ws_err(s, err);
               } else {
-                perror("accept4");
+                perror("epoll_ctl");
                 exit(1);
               }
-            }
-            break;
+            };
+
+            ++s->open_conns;
           }
+        }
 
-          assert(setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &one,
-                            sizeof(one)) == 0);
-
-          ev.events = EPOLLIN | EPOLLRDHUP;
-          struct ws_conn_t *conn = calloc(1, sizeof(struct ws_conn_t));
-          assert(conn != NULL);
-          conn->fd = client_fd;
-          conn->base = s;
-          conn->state.writeable = 1;
-          conn->state.needed_bytes = 2;
-          ev.data.ptr = conn;
-
-          assert(buf_init(s->buffer_pool, &conn->read_buf) == 0);
-          assert(buf_init(s->buffer_pool, &conn->write_buf) == 0);
-          if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
+        // can't accept more connection, remove server's fd from epoll
+        // it would be re-added when there is a disconnect and a fd is closed
+     
+        if (s->max_conns == s->open_conns) {
+          printf("[INFO] server at full capacity, pausing accepts on new connections\n");
+          s->ev.data.ptr = s;
+          if (epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &s->ev) == -1) {
             if (s->on_ws_err) {
               int err = errno;
               s->on_ws_err(s, err);
@@ -621,8 +641,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
               exit(1);
             }
           };
-
-          ++s->open_conns;
         }
 
       } else {
@@ -673,7 +691,25 @@ int ws_server_start(ws_server_t *s, int backlog) {
     }
 
     server_writeable_conns_drain(s); // drain writes
+
+    // we are at full capacity and about to remove something
+    // that's when we can rearm EPOLLIN on the listener 
+    bool should_enable_accepts = s->max_conns == s->open_conns && s->closeable_conns.len;
     server_closeable_conns_close(s); // close connections
+    if (should_enable_accepts) {
+      printf("[INFO] starting to accept connections again\n");
+      s->ev.events = EPOLLIN;
+      s->ev.data.ptr = s;
+      if (epoll_ctl(epfd, EPOLL_CTL_ADD, s->fd, &s->ev) == -1) {
+        if (s->on_ws_err) {
+          int err = errno;
+          s->on_ws_err(s, err);
+        } else {
+          perror("epoll_ctl");
+          exit(1);
+        }
+      };
+    }
   }
 
   return 0;

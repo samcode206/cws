@@ -65,7 +65,8 @@ void *start_server() {
       .on_ws_msg = on_msg,
       .on_ws_disconnect = on_disconnect,
       .max_buffered_bytes = 1024 * 16,
-      .max_conns = 1024,
+      .max_conns = 100,
+      
   };
 
   int ret = 0;
