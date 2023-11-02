@@ -1,6 +1,6 @@
 const WebSocket = require("ws");
 
-const ws = new WebSocket("ws://127.0.0.1:9919/", {
+const ws = new WebSocket("ws://[::1]:9919/", {
   perMessageDeflate: false,
 });
 

@@ -44,7 +44,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define BUFFER_SIZE 1024 * 1024 * 4
+#define BUFFER_SIZE 1024 * 1024 * 32
 
 #define STATE_UPGRADING 0
 #define STATE_PARSING_HDR 1
@@ -381,9 +381,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     return NULL;
   }
 
-  if (!params->on_ws_close || !params->on_ws_msg || !params->on_ws_close ||
-      !params->on_ws_drain || !params->on_ws_disconnect ||
-      !params->on_ws_ping) {
+  if (!params->on_ws_open || !params->on_ws_msg || !params->on_ws_disconnect) {
     *ret = WS_CREAT_ENO_CB;
     return NULL;
   }
@@ -465,11 +463,9 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     return NULL;
   }
 
+  // mandatory callbacks
   s->on_ws_open = params->on_ws_open;
-  s->on_ws_ping = params->on_ws_ping;
   s->on_ws_msg = params->on_ws_msg;
-  s->on_ws_drain = params->on_ws_drain;
-  s->on_ws_close = params->on_ws_close;
   s->on_ws_disconnect = params->on_ws_disconnect;
 
   if (params->on_ws_pong) {
@@ -478,6 +474,18 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (params->on_ws_err) {
     s->on_ws_err = params->on_ws_err;
+  }
+
+  if (params->on_ws_ping) {
+    s->on_ws_ping = params->on_ws_ping;
+  }
+
+  if (params->on_ws_close) {
+    s->on_ws_close = params->on_ws_close;
+  }
+
+  if (params->on_ws_drain) {
+    s->on_ws_drain = params->on_ws_drain;
   }
 
   s->buffer_pool = buf_pool_init(1024 * 2, BUFFER_SIZE);
@@ -589,7 +597,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
             int ret = conn_drain_write_buf(c, &c->write_buf);
             if (ret == 1) {
               ws_conn_t *c = s->events[i].data.ptr;
-              s->on_ws_drain(c);
+              if (s->on_ws_drain) {
+                s->on_ws_drain(c);
+              }
               ev.data.ptr = c;
               ev.events = EPOLLIN | EPOLLRDHUP;
               if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev) == -1) {
@@ -870,7 +880,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           buf_reset(&s->shared_recv_buffer);
           return;
         }
-        s->on_ws_ping(conn, msg, payload_len);
+        if (s->on_ws_ping) {
+          s->on_ws_ping(conn, msg, payload_len);
+        } else {
+          // Todo(sah): add some throttling to this
+          // a bad client can constantly send pings and we would keep replying
+          ws_conn_pong(conn, msg, payload_len);
+        }
         if ((conn->state.fragments_len != 0) & (buf == &conn->read_buf)) {
           total_trimmed += full_frame_len;
           conn->state.needed_bytes = 2;
@@ -903,11 +919,19 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         break;
       case OP_CLOSE:
         if (!payload_len) {
-          s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
+          if (s->on_ws_close) {
+            s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
+          } else {
+            ws_conn_close(conn, NULL, 0, WS_CLOSE_NORMAL);
+          }
           buf_reset(&s->shared_recv_buffer);
           return;
         } else if (payload_len < 2) {
-          s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+          if (s->on_ws_close) {
+            s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+          } else {
+            ws_conn_close(conn, NULL, 0, WS_CLOSE_EPROTO);
+          }
           buf_reset(&s->shared_recv_buffer);
           return;
         }
@@ -934,12 +958,21 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
               code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
               code == 2999) {
-            s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+            if (s->on_ws_close) {
+              s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+            } else {
+              ws_conn_close(conn, NULL, 0, WS_CLOSE_EPROTO);
+            }
             buf_reset(&s->shared_recv_buffer);
             return;
           }
 
-          s->on_ws_close(conn, code, msg + 2);
+          if (s->on_ws_close) {
+            s->on_ws_close(conn, code, msg + 2);
+          } else {
+            ws_conn_close(conn, NULL, 0, code);
+          }
+
           buf_reset(&s->shared_recv_buffer);
           return;
         }

@@ -2,7 +2,7 @@
     "outdir": "./reports/servers",
     "servers": [
         {
-            "url": "ws://0.0.0.0:9919"
+            "url": "ws://[::1]:9919"
         }
     ],
     "cases": [

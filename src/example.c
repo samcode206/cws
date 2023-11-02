@@ -63,9 +63,6 @@ void *start_server() {
       .port = port,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
-      .on_ws_ping = on_ping,
-      .on_ws_drain = on_drain,
-      .on_ws_close = on_close,
       .on_ws_disconnect = on_disconnect,
   };
 
