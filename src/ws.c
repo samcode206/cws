@@ -1230,7 +1230,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
       buf[1] = 2;
       buf[2] = (code >> 8) & 0xFF;
       buf[3] = code & 0xFF;
-      send(conn->fd, buf, 4, 0);
+      send(conn->fd, buf, 4, MSG_NOSIGNAL);
     }
   }
 
@@ -1398,7 +1398,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
         // queue it up for writing
         server_writeable_conns_append(conn);
       }
-      
+
       return 1;
     }
   }
