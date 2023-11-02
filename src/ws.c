@@ -754,6 +754,11 @@ static void handle_http(struct ws_conn_t *conn) {
   if (!strncmp((char *)headers, GET_RQ, sizeof GET_RQ - 1)) {
     char res_hdrs[1024] = {0};
     ssize_t ret = handle_upgrade((char *)headers, res_hdrs, sizeof res_hdrs);
+    if (ret == -1) {
+      ws_conn_destroy(conn);
+      buf_reset(&s->shared_recv_buffer);
+      return;
+    }
 
     int n = conn_send(conn, res_hdrs, ret - 1);
     if (n == ret - 1) {
