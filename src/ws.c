@@ -545,12 +545,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
   // TODO: REMOVE ASAP and use s->ev
-  struct epoll_event ev;
-  memset(&ev, 0, sizeof ev);
-  ev.data.ptr = s;
-  ev.events = EPOLLIN;
 
-  if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+
+  s->ev.data.ptr = s;
+  s->ev.events = EPOLLIN;
+
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &s->ev) == -1) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
@@ -601,18 +601,18 @@ int ws_server_start(ws_server_t *s, int backlog) {
             assert(setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &one,
                               sizeof(one)) == 0);
 
-            ev.events = EPOLLIN | EPOLLRDHUP;
+            s->ev.events = EPOLLIN | EPOLLRDHUP;
             struct ws_conn_t *conn = calloc(1, sizeof(struct ws_conn_t));
             assert(conn != NULL);
             conn->fd = client_fd;
             conn->base = s;
             conn->state.writeable = 1;
             conn->state.needed_bytes = 2;
-            ev.data.ptr = conn;
+            s->ev.data.ptr = conn;
 
             assert(buf_init(s->buffer_pool, &conn->read_buf) == 0);
             assert(buf_init(s->buffer_pool, &conn->write_buf) == 0);
-            if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
+            if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &s->ev) == -1) {
               if (s->on_ws_err) {
                 int err = errno;
                 s->on_ws_err(s, err);
@@ -655,9 +655,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
               if (s->on_ws_drain) {
                 s->on_ws_drain(c);
               }
-              ev.data.ptr = c;
-              ev.events = EPOLLIN | EPOLLRDHUP;
-              if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev) == -1) {
+              s->ev.data.ptr = c;
+              s->ev.events = EPOLLIN | EPOLLRDHUP;
+              if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &s->ev) == -1) {
                 if (s->on_ws_err) {
                   int err = errno;
                   s->on_ws_err(s, err);
