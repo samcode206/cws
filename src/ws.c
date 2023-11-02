@@ -637,7 +637,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
       } else {
         if (s->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
           ws_conn_destroy(s->events[i].data.ptr);
-        } else if (s->events[i].events & EPOLLOUT) {
+        }
+        
+        if (s->events[i].events & EPOLLOUT) {
           ws_conn_t *c = s->events[i].data.ptr;
           if (!c->state.close_queued) {
             int ret = conn_drain_write_buf(c, &c->write_buf);
@@ -661,8 +663,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
               ws_conn_destroy(s->events[i].data.ptr);
             }
           }
-
-        } else if (s->events[i].events & EPOLLIN) {
+        }
+        if (s->events[i].events & EPOLLIN) {
           ws_conn_t *c = s->events[i].data.ptr;
           if (!c->state.close_queued) {
             if (buf_len(&s->shared_send_buffer) == 0) {
