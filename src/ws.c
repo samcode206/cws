@@ -622,7 +622,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
         if (s->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
           ws_conn_destroy(s->events[i].data.ptr);
         }
-        
+
         if (s->events[i].events & EPOLLOUT) {
           ws_conn_t *c = s->events[i].data.ptr;
           if (!c->state.close_queued) {
@@ -1257,169 +1257,153 @@ start sending more data
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op) {
 
-  /**
-  * Todo(sah):
-    in the common cases where there is a need to send data to a socket
-    that has no event triggered that would cause us to drain the write buffer
-    we need a way to "remember" draining all socket buffers which have data
-    at the end of each loop iteration
-    we should also keep in mind that sockets can be closed in the meantime and
-    carefully manage connection & buffer lifetimes, this also includes changing
-  how connection closing is handled at the moment to avoid serious memory/state
-  problems
-  */
+  if (!conn->state.close_queued) {
 
-  if (conn->state.close_queued) {
-    // this function seriously needs better returns codes...
-    return 0;
-  }
+    ws_server_t *s = conn->base;
+    size_t hlen = frame_get_header_len(len);
+    buf_t *wbuf;
 
-  ws_server_t *s = conn->base;
-  size_t hlen = frame_get_header_len(len);
-  buf_t *wbuf;
-
-  // use the connection write buffer when
-  // we don't own the shared send buffer or
-  // we are doing a large send 65kb+ or
-  // the connection is not in a writeable state or
-  // we currently have data in the connection write buffer pending
-  if ((s->shared_send_buffer_owner != conn->fd) | (hlen == 10) |
-      (buf_len(&conn->write_buf) != 0) | (conn->state.writeable == 0)) {
-    wbuf = &conn->write_buf;
-  } else {
-    wbuf = &s->shared_send_buffer;
-  }
-
-  size_t flen = len + hlen;
-  if (buf_space(wbuf) > flen) {
-    if (hlen == 2) {
-      uint8_t *hbuf =
-          wbuf->buf + wbuf->wpos; // place the header in the write buffer
-      memset(hbuf, 0, 2);
-      hbuf[0] = FIN | op; // Set FIN bit and opcode
-      hbuf[1] = (uint8_t)len;
-      wbuf->wpos += hlen;
-    } else if (hlen == 4) {
-      uint8_t *hbuf =
-          wbuf->buf + wbuf->wpos; // place the header in the write buffer
-      memset(hbuf, 0, 2);
-      hbuf[0] = FIN | op; // Set FIN bit and opcode
-      hbuf[1] = PAYLOAD_LEN_16;
-      hbuf[2] = (len >> 8) & 0xFF;
-      hbuf[3] = len & 0xFF;
-      wbuf->wpos += hlen;
+    // use the connection write buffer when
+    // we don't own the shared send buffer or
+    // we are doing a large send 65kb+ or
+    // the connection is not in a writeable state or
+    // we currently have data in the connection write buffer pending
+    if ((s->shared_send_buffer_owner != conn->fd) | (hlen == 10) |
+        (buf_len(&conn->write_buf) != 0) | (conn->state.writeable == 0)) {
+      wbuf = &conn->write_buf;
     } else {
+      wbuf = &s->shared_send_buffer;
+    }
+
+    size_t flen = len + hlen;
+    if (buf_space(wbuf) > flen) {
       // large sends are a bit more complex to handle
       // we attempt to avoid as much copying as possible
       // using vectored I/O
-      uint8_t hbuf[hlen]; // place the header on the stack
-      memset(hbuf, 0, 2);
-      hbuf[0] = FIN | op; // Set FIN bit and opcode
-      hbuf[1] = PAYLOAD_LEN_64;
-      hbuf[2] = (len >> 56) & 0xFF;
-      hbuf[3] = (len >> 48) & 0xFF;
-      hbuf[4] = (len >> 40) & 0xFF;
-      hbuf[5] = (len >> 32) & 0xFF;
-      hbuf[6] = (len >> 24) & 0xFF;
-      hbuf[7] = (len >> 16) & 0xFF;
-      hbuf[8] = (len >> 8) & 0xFF;
-      hbuf[9] = len & 0xFF;
+      if (hlen == 10) {
+        uint8_t hbuf[hlen]; // place the header on the stack
+        memset(hbuf, 0, 2);
+        hbuf[0] = FIN | op; // Set FIN bit and opcode
+        hbuf[1] = PAYLOAD_LEN_64;
+        hbuf[2] = (len >> 56) & 0xFF;
+        hbuf[3] = (len >> 48) & 0xFF;
+        hbuf[4] = (len >> 40) & 0xFF;
+        hbuf[5] = (len >> 32) & 0xFF;
+        hbuf[6] = (len >> 24) & 0xFF;
+        hbuf[7] = (len >> 16) & 0xFF;
+        hbuf[8] = (len >> 8) & 0xFF;
+        hbuf[9] = len & 0xFF;
 
-      // if connection is in a writeable state
-      if (conn->state.writeable) {
-        ssize_t n;
-        size_t total_write;
-        bool shared_buf_needs_drain = s->shared_send_buffer_owner == conn->fd &&
-                                      buf_len(&s->shared_send_buffer) != 0;
-
-        // we have to drain from shared buffer so make it first iovec entry
-        if (shared_buf_needs_drain) {
-          assert(buf_len(wbuf) == 0); // TODO: remove
-
-          // here we use 3 iovecs
-          // first iovec points to the shared buffer
-          // second points to the stack allocated header
-          // third points to the payload data
-          struct iovec vecs[3];
-          vecs[0].iov_len = buf_len(&s->shared_send_buffer);
-          vecs[0].iov_base =
-              s->shared_send_buffer.buf + s->shared_send_buffer.rpos;
-          vecs[1].iov_base = hbuf;
-          vecs[1].iov_len = hlen;
-          vecs[2].iov_base = data;
-          vecs[2].iov_len = len;
-          total_write = flen + vecs[0].iov_len;
-
-          // send of as much as we can and place the rest in the connection
-          // buffer draining the shared buffer and also moving leftover data
-          // there into the connection buffer if any
-          n = buf_drain_write2v(&s->shared_send_buffer, vecs, total_write, wbuf,
-                                conn->fd);
-
-        }
-        // no writes need to go ahead
-        else if (!buf_len(wbuf)) {
-          // here only two iovecs are needed
-          // stack allocated header and the payload data
-          struct iovec vecs[2];
-          vecs[0].iov_base = hbuf;
-          vecs[0].iov_len = hlen;
-          vecs[1].iov_base = data;
-          vecs[1].iov_len = len;
-          total_write = flen;
-          // write as much as possible and only copy from payload data what
-          // couldn't be drained
-          n = buf_write2v(wbuf, conn->fd, vecs, flen);
-        }
-
-        else {
-          // here there is data pending in the connection send buffer
-          // first iovec points to the connection buffer
-          // second points to the stack allocated header
-          // third points to the payload data
-          struct iovec vecs[3];
-          vecs[0].iov_len = buf_len(wbuf);
-          vecs[0].iov_base = wbuf->buf + wbuf->rpos;
-          vecs[1].iov_base = hbuf;
-          vecs[1].iov_len = hlen;
-          vecs[2].iov_base = data;
-          vecs[2].iov_len = len;
-          total_write = flen + vecs[0].iov_len;
-
-          // send of as much as we can and place the rest in the connection
-          // buffer
-          n = buf_drain_write2v(wbuf, vecs, total_write, NULL, conn->fd);
-        }
-
-        if (n == total_write) {
-          return 1;
-        } else if (n == 0 || (n == -1 && errno != EAGAIN)) {
-          return -1;
+        if (!conn->state.writeable) {
+          buf_put(wbuf, hbuf, hlen);
+          buf_put(wbuf, data, len);
         } else {
-          ws_conn_notify_on_writeable(conn);
-          return 1;
+          ssize_t n;
+          size_t total_write;
+          bool shared_buf_needs_drain =
+              s->shared_send_buffer_owner == conn->fd &&
+              buf_len(&s->shared_send_buffer) != 0;
+
+          // we have to drain from shared buffer so make it first iovec entry
+          if (shared_buf_needs_drain) {
+            assert(buf_len(wbuf) == 0); // TODO: remove
+
+            // here we use 3 iovecs
+            // first iovec points to the shared buffer
+            // second points to the stack allocated header
+            // third points to the payload data
+            struct iovec vecs[3];
+            vecs[0].iov_len = buf_len(&s->shared_send_buffer);
+            vecs[0].iov_base =
+                s->shared_send_buffer.buf + s->shared_send_buffer.rpos;
+            vecs[1].iov_base = hbuf;
+            vecs[1].iov_len = hlen;
+            vecs[2].iov_base = data;
+            vecs[2].iov_len = len;
+            total_write = flen + vecs[0].iov_len;
+
+            // send of as much as we can and place the rest in the connection
+            // buffer draining the shared buffer and also moving leftover data
+            // there into the connection buffer if any
+            n = buf_drain_write2v(&s->shared_send_buffer, vecs, total_write,
+                                  wbuf, conn->fd);
+
+          }
+          // no writes need to go ahead
+          else if (!buf_len(wbuf)) {
+            // here only two iovecs are needed
+            // stack allocated header and the payload data
+            struct iovec vecs[2];
+            vecs[0].iov_base = hbuf;
+            vecs[0].iov_len = hlen;
+            vecs[1].iov_base = data;
+            vecs[1].iov_len = len;
+            total_write = flen;
+            // write as much as possible and only copy from payload data what
+            // couldn't be drained
+            n = buf_write2v(wbuf, conn->fd, vecs, flen);
+          }
+
+          else {
+            // here there is data pending in the connection send buffer
+            // first iovec points to the connection buffer
+            // second points to the stack allocated header
+            // third points to the payload data
+            struct iovec vecs[3];
+            vecs[0].iov_len = buf_len(wbuf);
+            vecs[0].iov_base = wbuf->buf + wbuf->rpos;
+            vecs[1].iov_base = hbuf;
+            vecs[1].iov_len = hlen;
+            vecs[2].iov_base = data;
+            vecs[2].iov_len = len;
+            total_write = flen + vecs[0].iov_len;
+
+            // send of as much as we can and place the rest in the connection
+            // buffer
+            n = buf_drain_write2v(wbuf, vecs, total_write, NULL, conn->fd);
+          }
+
+          if (n == total_write) {
+            return 1;
+          } else if (n == 0 || (n == -1 && errno != EAGAIN)) {
+            return -1;
+          } else {
+            ws_conn_notify_on_writeable(conn);
+            return 1;
+          }
         }
-      }
-      // connection is not writeable
+
+      } 
+      // sends under 65kb
       else {
-        buf_put(wbuf, hbuf, hlen);
+        uint8_t *hbuf =
+            wbuf->buf + wbuf->wpos; // place the header in the write buffer
+        memset(hbuf, 0, 2);
+        hbuf[0] = FIN | op; // Set FIN bit and opcode
+        wbuf->wpos += hlen;
+
+        if (hlen == 2) {
+          hbuf[1] = (uint8_t)len;
+        } else {
+          hbuf[1] = PAYLOAD_LEN_16;
+          hbuf[2] = (len >> 8) & 0xFF;
+          hbuf[3] = len & 0xFF;
+        }
+
         buf_put(wbuf, data, len);
       }
 
+      // queue up for writing if not using shared buffer
+      if (wbuf != &s->shared_send_buffer) {
+        // queue it up for writing
+        server_writeable_conns_append(conn);
+      }
+      
       return 1;
     }
-
-    // under 65kb case
-    buf_put(wbuf, data, len);
-
-    if (wbuf != &s->shared_send_buffer) {
-      // queue it up for writing
-      server_writeable_conns_append(conn);
-    }
-    return 1;
-  } else {
-    return 0;
   }
+
+  return 0;
 }
 
 static int conn_send(ws_conn_t *conn, const void *data, size_t len) {
