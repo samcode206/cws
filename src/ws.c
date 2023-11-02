@@ -544,7 +544,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
-
+  // TODO: REMOVE ASAP and use s->ev
   struct epoll_event ev;
   memset(&ev, 0, sizeof ev);
   ev.data.ptr = s;
