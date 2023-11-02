@@ -282,24 +282,8 @@ static void conn_list_append(struct conn_list *cl, struct ws_conn_t *conn) {
   if (cl->len + 1 < cl->cap) {
     cl->conns[cl->len++] = conn;
   } else {
-    void *new_list = realloc(cl->conns, sizeof cl->conns * (cl->cap + cl->cap));
-    if (new_list == NULL) {
-      // there really isn't another viable option but to crash in this case
-      // what else are we gonna do??? silently failing isn't a great option
-      // might consider making this a fixed size array and never growing it if
-      // we can find out what the max amount of writeable connections there
-      // ever can be in the list it should be the max number of connections
-      // that we are willing to accept since duplicates aren't allowed but
-      // that is currently unbounded (which is also bad, there is always a
-      // limit to everything...)
-      fprintf(stderr, "failed to grow connection list, last cap = %zu\n",
-              cl->cap);
-      exit(1);
-    }
-    cl->conns = new_list;
-    cl->cap = cl->cap + cl->cap;
-
-    cl->conns[cl->len++] = conn;
+    fprintf(stderr, "%s: would overflow\n", "conn_list_append");
+    exit(1);
   }
 }
 
