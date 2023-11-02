@@ -320,7 +320,7 @@ static void server_writeable_conns_append(ws_conn_t *c) {
   }
 }
 
-static void conn_prep_close(ws_conn_t *c) {
+static void server_closeable_conns_append(ws_conn_t *c) {
   c->base->ev.data.ptr = c;
   if (epoll_ctl(c->base->epoll_fd, EPOLL_CTL_DEL, c->fd, &c->base->ev) == -1) {
     int err = errno;
@@ -339,7 +339,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
     struct ws_conn_t *c = s->writeable_conns.conns[i];
     if (!c->state.close_queued) {
       if (conn_drain_write_buf(c, &c->write_buf) == -1) {
-        conn_prep_close(c);
+        server_closeable_conns_append(c);
       };
       c->state.write_queued = 0;
     }
@@ -1095,14 +1095,14 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   }
 
   // prepare the connection to be close and queue it up in the close queue
-  conn_prep_close(conn);
+  server_closeable_conns_append(conn);
 }
 
 void ws_conn_destroy(ws_conn_t *conn) {
   if (conn->state.close_queued) {
     return;
   }
-  conn_prep_close(conn);
+  server_closeable_conns_append(conn);
 }
 
 /**
