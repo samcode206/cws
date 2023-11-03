@@ -122,27 +122,29 @@ typedef void (*ws_drain_cb_t)(ws_conn_t *ws_conn);
 typedef void (*ws_err_cb_t)(ws_server_t *s, int err);
 
 /**
- * Callback invoked when a WebSocket message fragment is received.
+ * Callback invoked upon receiving a fragment of a WebSocket message.
  *
- * A 'fragmented message' refers specifically to the concept of fragmentation
- * in the WebSocket protocol, rather than a partially read message at the socket
- * level. In practice, it is rarely ever useful to register this callback
+ * This callback pertains to the fragmentation feature of the WebSocket protocol,
+ * not to be confused with a partially read message at the socket level. It is
+ * generally inadvisable to register this callback unless there is a compelling
+ * reason, as it is rarely, if ever, needed for typical application use.
  *
- * If this callback is registered, it becomes the responsibility of the caller to
- * handle the accumulation of message fragments. When the `fin` (final fragment
- * flag) is set to true, it indicates that the final fragment of the message has
- * been received, and the message is therefore considered complete.
+ * Registering this callback places the responsibility on the caller to manage the reassembly
+ * of message fragments. The `fin` parameter, when true, signals that the last
+ * fragment has been received, thereby indicating message completion.
  *
- * Note: Registration of this callback will prevent `ws_msg_cb_t` from being
- * invoked upon the arrival of the final fragment. This is because the fragment
- * data will not be retained in the WebSocket parsing buffer. This callback should
- * only be used if the caller has a clear understanding of WebSocket message
- * fragmentation and its handling.
+ * Important: Once this callback is registered, `ws_msg_cb_t` will not be called
+ * after the last fragment is received. Fragment data is not preserved in the WebSocket parsing
+ * buffer after this callback is invoked. Thorough understanding of WebSocket
+ * message fragmentation and its management is essential before opting to use this callback.
  *
- * @param c A pointer to the WebSocket connection (`ws_conn_t`).
- * @param fragment The data pointer to the received fragment.
- * @param n The size of the fragment in bytes.
- * @param fin A boolean indicating whether this fragment is the final one in the message.
+ * Note: Registering this callback does not affect the handling of non-fragmented messages.
+ * Non-fragmented messages will continue to be received through `ws_msg_cb_t` as usual (see above).
+ *
+ * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param fragment Pointer to the data of the received fragment.
+ * @param n        Size of the fragment in bytes.
+ * @param fin      Boolean indicating if this fragment is the last in the message.
  *
  * @typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n, bool fin);
  */
