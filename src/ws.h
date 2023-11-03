@@ -64,8 +64,7 @@ typedef void (*ws_open_cb_t)(ws_conn_t *ws_conn);
  *
  * NOTE: The 'msg' data is provided for use only within this callback.
  * If the caller needs to retain any part of the message beyond this callback,
- * it must be copied to a separate buffer. Do not assume that the 'msg'
- * will remain unchanged after this callback returns.
+ * it must be copied to a separate buffer.
  *
  * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg  Pointer to the message data.
@@ -79,8 +78,7 @@ typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, bool bin);
  *
  * NOTE: The 'msg' data is provided for use only within this callback.
  * If the caller needs to retain any part of the ping message beyond this callback,
- * it must be copied to a separate buffer. Do not assume that the 'msg'
- * will remain unchanged after this callback returns.
+ * it must be copied to a separate buffer.
  *
  * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg  Pointer to the ping message data.
@@ -93,9 +91,7 @@ typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n);
  *
  * NOTE: The 'msg' data is provided for use only within this callback.
  * If the caller needs to retain any part of the pong message beyond this callback,
- * it must be copied to a separate buffer. Do not assume that the 'msg'
- * will remain unchanged after this callback returns.
- *
+ * it must be copied to a separate buffer.
  * This usually occurs in response to a PING frame sent by the server.
  *
  * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
@@ -109,8 +105,7 @@ typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg, size_t n);
  *
  * NOTE: The 'reason' data is provided for use only within this callback.
  * If the caller needs to retain any part of the closure reason beyond this callback,
- * it must be copied to a separate buffer. Do not assume that the 'reason'
- * will remain unchanged after this callback returns.
+ * it must be copied to a separate buffer.
  *
  * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`).
  * @param code    Status code for the closure.
