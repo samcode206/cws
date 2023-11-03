@@ -1029,7 +1029,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     case OP_CLOSE:
       if (!payload_len) {
         if (s->on_ws_close) {
-          s->on_ws_close(conn, WS_CLOSE_NORMAL, NULL);
+          s->on_ws_close(conn, NULL, 0, WS_CLOSE_NORMAL);
         } else {
           ws_conn_close(conn, NULL, 0, WS_CLOSE_NORMAL);
         }
@@ -1037,7 +1037,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         return;
       } else if (payload_len < 2) {
         if (s->on_ws_close) {
-          s->on_ws_close(conn, WS_CLOSE_PROTOCOL, NULL);
+          s->on_ws_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
         } else {
           ws_conn_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
         }
@@ -1068,7 +1068,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
             code == 2999) {
           if (s->on_ws_close) {
-            s->on_ws_close(conn, WS_CLOSE_PROTOCOL, NULL);
+            s->on_ws_close(conn, NULL, 0, code);
           } else {
             ws_conn_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
           }
@@ -1077,7 +1077,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         }
 
         if (s->on_ws_close) {
-          s->on_ws_close(conn, code, msg + 2);
+          s->on_ws_close(conn, msg + 2, payload_len - 2, code);
         } else {
           ws_conn_close(conn, NULL, 0, code);
         }
