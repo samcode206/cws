@@ -95,34 +95,57 @@ typedef struct ws_conn_t ws_conn_t;
 
 typedef struct server ws_server_t;
 
-typedef void (*ws_open_cb_t)(
-    ws_conn_t *ws_conn); /* called after a connection is upgraded */
+/* called after a connection is upgraded */
+typedef void (*ws_open_cb_t)(ws_conn_t *ws_conn);
 
-typedef void (*ws_msg_cb_t)(
-    ws_conn_t *c, void *msg, size_t n,
-    bool bin); /* called when a websocket msg is available */
+/* called when a websocket msg is available */
+typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, bool bin);
 
-typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg,
-                             size_t n); /* called when a client sends a PING */
+/* called when a client sends a PING */
+typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n);
 
-typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg,
-                             size_t n); /* called when a client sends a PONG */
+/* called when a client sends a PONG */
+typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg, size_t n);
 
-typedef void (*ws_close_cb_t)(
-    ws_conn_t *ws_conn, int code,
-    const void *reason); /* called when a close frame is received */
+/* called when a close frame is received */
+typedef void (*ws_close_cb_t)(ws_conn_t *ws_conn, int code, const void *reason);
 
-typedef void (*ws_disconnect_cb_t)(ws_conn_t *ws_conn,
-                                   int err); /* called after the connection is
-                                       closed, use for user data clean up */
+/* called after the connection is
+                                      closed, use for user data clean up */
+typedef void (*ws_disconnect_cb_t)(ws_conn_t *ws_conn, int err);
 
-typedef void (*ws_drain_cb_t)(
-    ws_conn_t *ws_conn); /* called after send buffer is drained (after some back
+/* called after send buffer is drained (after some back
                             pressure buildup) */
+typedef void (*ws_drain_cb_t)(ws_conn_t *ws_conn);
 
-typedef void (*ws_err_cb_t)(ws_server_t *s,
-                            int err); /* called if an internal error occurs */
+/* called if an internal error occurs */
+typedef void (*ws_err_cb_t)(ws_server_t *s, int err);
 
+/**
+ * Callback invoked when a WebSocket message fragment is received.
+ *
+ * A 'fragmented message' refers specifically to the concept of fragmentation
+ * in the WebSocket protocol, rather than a partially read message at the socket
+ * level. In practice, it is rarely ever useful to register this callback
+ *
+ * If this callback is registered, it becomes the responsibility of the caller to
+ * handle the accumulation of message fragments. When the `fin` (final fragment
+ * flag) is set to true, it indicates that the final fragment of the message has
+ * been received, and the message is therefore considered complete.
+ *
+ * Note: Registration of this callback will prevent `ws_msg_cb_t` from being
+ * invoked upon the arrival of the final fragment. This is because the fragment
+ * data will not be retained in the WebSocket parsing buffer. This callback should
+ * only be used if the caller has a clear understanding of WebSocket message
+ * fragmentation and its handling.
+ *
+ * @param c A pointer to the WebSocket connection (`ws_conn_t`).
+ * @param fragment The data pointer to the received fragment.
+ * @param n The size of the fragment in bytes.
+ * @param fin A boolean indicating whether this fragment is the final one in the message.
+ *
+ * @typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n, bool fin);
+ */
 typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n,
                                      bool fin);
 
