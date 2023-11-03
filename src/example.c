@@ -13,10 +13,22 @@ void on_open(ws_conn_t *c) {}
 //   if (stat == 1) {
 //     printf("pong sent\n");
 //   } else {
-//     printf("partial pong sent or an error occurred waiting for <on_ws_drain | "
+//     printf("partial pong sent or an error occurred waiting for <on_ws_drain |
+//     "
 //            "on_ws_disconnect>\n");
 //   }
 // }
+
+void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n,
+                     bool fin) {
+
+  if (!fin){
+      printf("received fragment: %.*s\n",(int)n, (char *)fragment);
+  } else {
+      printf("received final fragment: %.*s\n", (int)n, (char *)fragment);
+  }
+
+}
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // printf("on_msg: ");
@@ -66,7 +78,7 @@ void *start_server() {
       .on_ws_disconnect = on_disconnect,
       .max_buffered_bytes = 3000,
       .max_conns = 1024,
-      
+      .on_ws_msg_fragment = on_msg_fragment,
   };
 
   int ret = 0;

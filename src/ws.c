@@ -93,6 +93,7 @@ typedef struct server {
   struct buf_pool *buffer_pool;
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
+  ws_msg_fragment_cb_t on_ws_msg_fragment;
   ws_ping_cb_t on_ws_ping;
   ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;
@@ -450,6 +451,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (params->on_ws_drain) {
     s->on_ws_drain = params->on_ws_drain;
+  }
+
+  if (params->on_ws_msg_fragment) {
+    s->on_ws_msg_fragment = params->on_ws_msg_fragment;
   }
 
   size_t max_backpressure =
@@ -901,7 +906,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // reset
 
       // can't send cont as first fragment
-      if ((opcode == OP_CONT) & (conn->state.fragments_len == 0)) {
+      if ((opcode == OP_CONT) & (conn->state.fragments_len == 0) &
+          (!s->on_ws_msg_fragment)) {
         ws_conn_destroy(conn);
         buf_reset(&s->shared_recv_buffer);
         return;
@@ -916,38 +922,49 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         return;
       }
 
-      // we are using the shared buffer
-      if (buf != &conn->read_buf) {
-        // trim off the header
-        buf_consume(buf, mask_offset + 4);
-        buf_move(buf, &conn->read_buf, payload_len);
-        conn->state.fragments_len += payload_len;
-        conn->state.needed_bytes = 2;
-      } else {
-        // place back at the frame start which contains the header & mask
-        // we want to get rid of but ensure to subtract by the frame_gap to
-        // fill it if it isn't zero
-        memmove(frame - total_trimmed, msg, payload_len);
-        conn->state.fragments_len += payload_len;
-        total_trimmed += mask_offset + 4;
-        conn->state.needed_bytes = 2;
-      }
+      if (!s->on_ws_msg_fragment) {
 
-      if (fin) {
-        if (!conn->state.bin && !utf8_is_valid(buf_peek(&conn->read_buf),
-                                               conn->state.fragments_len)) {
-          printf("failed validation\n");
-          ws_conn_destroy(conn);
-          buf_reset(&s->shared_recv_buffer);
-          return; // TODO(sah): send a Close frame, & call close callback
+        // we are using the shared buffer
+        if (buf != &conn->read_buf) {
+          // trim off the header
+          buf_consume(buf, mask_offset + 4);
+          buf_move(buf, &conn->read_buf, payload_len);
+          conn->state.fragments_len += payload_len;
+          conn->state.needed_bytes = 2;
+        } else {
+          // place back at the frame start which contains the header & mask
+          // we want to get rid of but ensure to subtract by the frame_gap to
+          // fill it if it isn't zero
+          memmove(frame - total_trimmed, msg, payload_len);
+          conn->state.fragments_len += payload_len;
+          total_trimmed += mask_offset + 4;
+          conn->state.needed_bytes = 2;
         }
-        s->on_ws_msg(conn, buf_peek(&conn->read_buf), conn->state.fragments_len,
-                     conn->state.bin);
-        buf_consume(&conn->read_buf, conn->state.fragments_len);
+        if (fin) {
+          if (!conn->state.bin && !utf8_is_valid(buf_peek(&conn->read_buf),
+                                                 conn->state.fragments_len)) {
+            printf("failed validation\n");
+            ws_conn_destroy(conn);
+            buf_reset(&s->shared_recv_buffer);
+            return; // TODO(sah): send a Close frame, & call close callback
+          }
+          s->on_ws_msg(conn, buf_peek(&conn->read_buf),
+                       conn->state.fragments_len, conn->state.bin);
+          buf_consume(&conn->read_buf, conn->state.fragments_len);
 
-        conn->state.fragments_len = 0;
+          conn->state.fragments_len = 0;
+          conn->state.needed_bytes = 2;
+          conn->state.bin = 0;
+        }
+      } else {
+        s->on_ws_msg_fragment(conn, msg, payload_len, fin);
+        buf_consume(buf, full_frame_len);
         conn->state.needed_bytes = 2;
-        conn->state.bin = 0;
+        if (fin) {
+          conn->state.fragments_len = 0;
+          conn->state.needed_bytes = 2;
+          conn->state.bin = 0;
+        }
       }
       break;
     case OP_PING:
@@ -1373,7 +1390,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
           }
         }
 
-      } 
+      }
       // sends under 65kb
       else {
         uint8_t *hbuf =

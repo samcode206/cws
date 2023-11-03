@@ -123,6 +123,10 @@ typedef void (*ws_drain_cb_t)(
 typedef void (*ws_err_cb_t)(ws_server_t *s,
                             int err); /* called if an internal error occurs */
 
+
+typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n,
+                     bool fin) ;
+
 struct ws_server_params {
   const char *addr;
   uint16_t port;
@@ -132,6 +136,7 @@ struct ws_server_params {
                              // drop the connection defaults to 16000
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
+  ws_msg_fragment_cb_t on_ws_msg_fragment;
   ws_ping_cb_t on_ws_ping;
   ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;
