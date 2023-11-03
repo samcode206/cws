@@ -52,7 +52,7 @@ typedef struct server ws_server_t;
  * Callback invoked after a WebSocket connection is successfully upgraded.
  *
  * Caller can attach connection-specific context or resources
- * to the connection (see `ws_conn_set_ctx` below). These resources can utilized throughout the lifetime of
+ * to the connection (see `ws_conn_set_ctx` below). These resources can be utilized throughout the lifetime of
  * the WebSocket connection, which is valid until the `ws_disconnect_cb_t` is called (see below).
  *
  * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`).
