@@ -74,7 +74,7 @@ typedef void (*ws_open_cb_t)(ws_conn_t *ws_conn);
 typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, bool bin);
 
 /**
- * Callback invoked when a PING frame is received from the client.
+ * Optional callback invoked when a PING frame is received from the client.
  *
  * NOTE: The 'msg' data is provided for use only within this callback.
  * If the caller needs to retain any part of the ping message beyond this callback,
@@ -87,7 +87,7 @@ typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, bool bin);
 typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n);
 
 /**
- * Callback invoked when a PONG frame is received from the client.
+ * Optional callback invoked when a PONG frame is received from the client.
  *
  * NOTE: The 'msg' data is provided for use only within this callback.
  * If the caller needs to retain any part of the pong message beyond this callback,
@@ -144,6 +144,8 @@ typedef void (*ws_drain_cb_t)(ws_conn_t *ws_conn);
  *
  * @param s   Pointer to the WebSocket server (`ws_server_t`).
  * @param err Error code of the occurred error.
+ * 
+ * NOTE: When this callback is not registered the default is to exit and print an error message to stderr 
  */
 typedef void (*ws_err_cb_t)(ws_server_t *s, int err);
 
