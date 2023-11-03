@@ -51,7 +51,7 @@ typedef struct server ws_server_t;
 /**
  * Callback invoked after a WebSocket connection is successfully upgraded.
  *
- * This is an opportune moment to attach connection-specific context or resources
+ * Caller can attach connection-specific context or resources
  * to the connection (see `ws_conn_set_ctx` below). These resources can utilized throughout the lifetime of
  * the WebSocket connection, which is valid until the `ws_disconnect_cb_t` is called (see below).
  *
@@ -64,7 +64,7 @@ typedef void (*ws_open_cb_t)(ws_conn_t *ws_conn);
  *
  * NOTE: The 'msg' data is provided for use only within this callback.
  * If the caller needs to retain any part of the message beyond this callback,
- * it must be copied to a separate storage area. Do not assume that the 'msg'
+ * it must be copied to a separate buffer. Do not assume that the 'msg'
  * will remain unchanged after this callback returns.
  *
  * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
@@ -79,7 +79,7 @@ typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, bool bin);
  *
  * NOTE: The 'msg' data is provided for use only within this callback.
  * If the caller needs to retain any part of the ping message beyond this callback,
- * it must be copied to a separate storage area. Do not assume that the 'msg'
+ * it must be copied to a separate buffer. Do not assume that the 'msg'
  * will remain unchanged after this callback returns.
  *
  * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
@@ -93,7 +93,7 @@ typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n);
  *
  * NOTE: The 'msg' data is provided for use only within this callback.
  * If the caller needs to retain any part of the pong message beyond this callback,
- * it must be copied to a separate storage area. Do not assume that the 'msg'
+ * it must be copied to a separate buffer. Do not assume that the 'msg'
  * will remain unchanged after this callback returns.
  *
  * This usually occurs in response to a PING frame sent by the server.
@@ -109,7 +109,7 @@ typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg, size_t n);
  *
  * NOTE: The 'reason' data is provided for use only within this callback.
  * If the caller needs to retain any part of the closure reason beyond this callback,
- * it must be copied to a separate storage area. Do not assume that the 'reason'
+ * it must be copied to a separate buffer. Do not assume that the 'reason'
  * will remain unchanged after this callback returns.
  *
  * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`).
