@@ -108,10 +108,11 @@ typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg, size_t n);
  * it must be copied to a separate buffer.
  *
  * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`).
- * @param code    Status code for the closure.
- * @param reason  Pointer to the reason string for the closure.
+ * @param reason  Pointer to the reason string for the closure. 
+ * @param rlen    Length of the reason string.
+ * @param code    Websocket close code.
  */
-typedef void (*ws_close_cb_t)(ws_conn_t *ws_conn, void *reason, size_t rlen, int code);
+typedef void (*ws_close_cb_t)(ws_conn_t *ws_conn, void *reason, size_t rlen, uint16_t code);
 /**
  * Callback invoked after the WebSocket connection has been closed.
  *
