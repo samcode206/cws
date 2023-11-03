@@ -476,7 +476,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (!params->max_conns) {
     s->max_conns = rlim.rlim_cur;
   } else {
-    if (params->max_conns < rlim.rlim_cur) {
+    if (params->max_conns <= rlim.rlim_cur) {
       s->max_conns = params->max_conns;
     } else {
       fprintf(stderr,
