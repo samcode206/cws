@@ -108,8 +108,8 @@ typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg, size_t n);
  * it must be copied to a separate buffer.
  *
  * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`).
- * @param reason  Pointer to the reason string for the closure. 
- * @param rlen    Length of the reason string.
+ * @param reason  Pointer to the reason string for the closure. may be NULL
+ * @param rlen    Length of the reason string. if zero reason will be NULL
  * @param code    Websocket close code.
  */
 typedef void (*ws_close_cb_t)(ws_conn_t *ws_conn, void *reason, size_t rlen, uint16_t code);
@@ -225,18 +225,18 @@ int utf8_is_valid(uint8_t *s, size_t n);
  * Normal closure; the purpose for which the connection was
  * established has been fulfilled.
  */
-#define WS_CLOSE_NORMAL     1000 
+#define WS_CLOSE_NORMAL 1000 
 
 /**
  * Endpoint going away, such as a server shutting down or
  * a browser navigating away from a page.
  */
-#define WS_CLOSE_GOAWAY     1001
+#define WS_CLOSE_GOAWAY 1001
 
 /**
  * Protocol error encountered.
  */
-#define WS_CLOSE_PROTOCOL   1002 
+#define WS_CLOSE_PROTOCOL 1002 
 
 /**
  * Unsupported data; the client expects text but the server
@@ -247,22 +247,22 @@ int utf8_is_valid(uint8_t *s, size_t n);
 /**
  * Invalid data; for example, non-UTF-8 data within a text message.
  */
-#define WS_CLOSE_INVALID    1007
+#define WS_CLOSE_INVALID 1007
 
 /**
  * Policy violation.
  */
-#define WS_CLOSE_POLICY     1008
+#define WS_CLOSE_POLICY 1008
 
 /**
  * The message is too large for the server to process.
  */
-#define WS_CLOSE_TOO_LARGE  1009
+#define WS_CLOSE_TOO_LARGE 1009
 
 /**
  * Client ending connection due to expected server extension negotiation failure.
  */
-#define WS_CLOSE_EXTENSION  1010
+#define WS_CLOSE_EXTENSION 1010
 
 /**
  * An unexpected condition prevented the server from fulfilling the request.
@@ -272,12 +272,12 @@ int utf8_is_valid(uint8_t *s, size_t n);
 /**
  * No status code was present in the close frame.
  */
-#define WS_CLOSE_NO_STATUS  1005
+#define WS_CLOSE_NO_STATUS 1005
 
 /**
  * Connection closed abnormally, such as without sending/receiving a close frame.
  */
-#define WS_CLOSE_ABNORMAL   1006
+#define WS_CLOSE_ABNORMAL 1006
 
 
 
