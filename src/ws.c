@@ -45,6 +45,18 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
+#define FIN 0x80
+
+#define OP_CONT 0x0
+#define OP_TXT 0x1
+#define OP_BIN 0x2
+#define OP_PING 0x9
+#define OP_PONG 0xA
+#define OP_CLOSE 0x8
+
+#define PAYLOAD_LEN_16 126
+#define PAYLOAD_LEN_64 127
+
 typedef int (*ws_handler)(ws_server_t *s, struct ws_conn_t *conn);
 
 typedef struct {
@@ -854,7 +866,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       printf("max allowed length exceeded: drop the connections "
              "[unimplemented]\n");
       printf("opcode = %d len = %zu\n", opcode, full_frame_len);
-      ws_conn_close(conn, NULL, 0, WS_CLOSE_LG_MSG);
+      ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
       buf_reset(&s->shared_recv_buffer);
       return;
     }
@@ -916,7 +928,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         printf("max allowed length exceeded: drop the connections "
                "[unimplemented]\n");
         printf("opcode = %d len = %zu\n", opcode, full_frame_len);
-        ws_conn_close(conn, NULL, 0, WS_CLOSE_LG_MSG);
+        ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
         buf_reset(&s->shared_recv_buffer);
         return;
       }
@@ -1025,16 +1037,16 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         return;
       } else if (payload_len < 2) {
         if (s->on_ws_close) {
-          s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+          s->on_ws_close(conn, WS_CLOSE_PROTOCOL, NULL);
         } else {
-          ws_conn_close(conn, NULL, 0, WS_CLOSE_EPROTO);
+          ws_conn_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
         }
         buf_reset(&s->shared_recv_buffer);
         return;
       }
 
       else {
-        uint16_t code = WS_CLOSE_NOSTAT;
+        uint16_t code = WS_CLOSE_NO_STATUS;
         if (payload_len > 125) {
           // close frames can be more but this is the most that will be
           // supported for various reasons close frames generally should
@@ -1056,9 +1068,9 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
             code == 2999) {
           if (s->on_ws_close) {
-            s->on_ws_close(conn, WS_CLOSE_EPROTO, NULL);
+            s->on_ws_close(conn, WS_CLOSE_PROTOCOL, NULL);
           } else {
-            ws_conn_close(conn, NULL, 0, WS_CLOSE_EPROTO);
+            ws_conn_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
           }
           buf_reset(&s->shared_recv_buffer);
           return;
@@ -1465,7 +1477,7 @@ inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
 
 inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
-inline void ws_conn_ctx_attach(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
+inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
 
 inline bool ws_conn_msg_bin(ws_conn_t *c) { return c->state.bin; }
 

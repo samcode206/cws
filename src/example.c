@@ -33,7 +33,7 @@ void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n, bool fin) {
 
   frag_t *ctx = ws_conn_ctx(c);
   if (!ctx) {
-    ws_conn_ctx_attach(c, malloc(sizeof(frag_t) + 512));
+    ws_conn_set_ctx(c, malloc(sizeof(frag_t) + 512));
     assert((ctx = ws_conn_ctx(c)) != NULL);
     memset(ctx, 0, 16);
   }
@@ -41,7 +41,7 @@ void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n, bool fin) {
   if (ctx->len + n > ctx->cap) {
     size_t new_cap =
         ctx->cap + ctx->cap - ctx->len > n ? ctx->cap + ctx->cap : n + ctx->cap;
-    ws_conn_ctx_attach(c, realloc(ctx, 16 + new_cap));
+    ws_conn_set_ctx(c, realloc(ctx, 16 + new_cap));
     assert((ctx = ws_conn_ctx(c)) != NULL);
     ctx->cap = new_cap;
   }
@@ -66,7 +66,7 @@ void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n, bool fin) {
     // printf("full message: %.*s\n", (int)ctx->len, ctx->data);
 
     free(ws_conn_ctx(c));
-    ws_conn_ctx_attach(c, NULL);
+    ws_conn_set_ctx(c, NULL);
   }
 }
 
@@ -90,7 +90,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d \n", code);
-  if ((code == WS_CLOSE_ABNORM) | (code == WS_CLOSE_NOSTAT)) {
+  if ((code == WS_CLOSE_ABNORMAL) | (code == WS_CLOSE_NO_STATUS)) {
     ws_conn_close(ws_conn, (void *)reason, 0, WS_CLOSE_NORMAL);
   } else {
     ws_conn_close(ws_conn, (void *)reason, 0, code);
@@ -100,7 +100,7 @@ void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
 void on_disconnect(ws_conn_t *ws_conn, int err) {
   if (ws_conn_ctx(ws_conn)) {
     free(ws_conn_ctx(ws_conn));
-    ws_conn_ctx_attach(ws_conn, NULL);
+    ws_conn_set_ctx(ws_conn, NULL);
   };
 
   // printf("on_disconnect fd=%d\n", ws_conn_fd(ws_conn));
