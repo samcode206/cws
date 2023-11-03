@@ -123,17 +123,16 @@ typedef void (*ws_drain_cb_t)(
 typedef void (*ws_err_cb_t)(ws_server_t *s,
                             int err); /* called if an internal error occurs */
 
-
 typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n,
-                     bool fin) ;
+                                     bool fin);
 
 struct ws_server_params {
   const char *addr;
   uint16_t port;
   uint64_t max_conns;        // max connections willing to accept, defaults to
                              // getrlimit for RLIMIT_NOFILE
-  size_t max_buffered_bytes; // maximum buffered bytes, anything beyond this will
-                             // drop the connection defaults to 16000
+  size_t max_buffered_bytes; // maximum buffered bytes, anything beyond this
+                             // will drop the connection defaults to 16000
   ws_open_cb_t on_ws_open;
   ws_msg_cb_t on_ws_msg;
   ws_msg_fragment_cb_t on_ws_msg_fragment;
@@ -163,7 +162,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params,
 
 int ws_server_start(ws_server_t *s, int backlog); // start serving connections
 
-// for text stuff
+bool ws_conn_msg_bin(ws_conn_t *c);
+
 int utf8_is_valid(uint8_t *s, size_t n);
 
 #endif /* WS_PROTOCOL_PARSING23_H */

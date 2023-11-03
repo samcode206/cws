@@ -59,6 +59,7 @@ typedef struct {
                      // any IO on this connection, it will soon be closed and
                      // all resources will be recycled/freed
 
+  bool fragmented;      // are we handling a fragmented msg?
   size_t fragments_len; // size of the data portion of the frames across
                         // fragmentation
 
@@ -877,7 +878,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       conn->state.bin = opcode == OP_BIN;
       // fin and never fragmented
       // this handles both text and binary hence the fallthrough
-      if (fin & (conn->state.fragments_len == 0)) {
+      if (fin & (!conn->state.fragmented)) {
         if (!conn->state.bin && !utf8_is_valid(msg, payload_len)) {
           printf("failed validation\n");
           ws_conn_destroy(conn);
@@ -890,7 +891,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         conn->state.needed_bytes = 2;
 
         break; /* OP_BIN don't fall through to fragmented msg */
-      } else if (fin & (conn->state.fragments_len > 0)) {
+      } else if (fin & (conn->state.fragmented)) {
         // this is invalid because we expect continuation not text or binary
         // opcode
         ws_conn_destroy(conn);
@@ -904,10 +905,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // move bytes over
       // call the callback
       // reset
-
       // can't send cont as first fragment
-      if ((opcode == OP_CONT) & (conn->state.fragments_len == 0) &
-          (!s->on_ws_msg_fragment)) {
+      if ((opcode == OP_CONT) & (!conn->state.fragmented)) {
         ws_conn_destroy(conn);
         buf_reset(&s->shared_recv_buffer);
         return;
@@ -921,6 +920,9 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         buf_reset(&s->shared_recv_buffer);
         return;
       }
+
+      // set the state to fragmented after validation
+      conn->state.fragmented = 1;
 
       if (!s->on_ws_msg_fragment) {
 
@@ -953,6 +955,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           buf_consume(&conn->read_buf, conn->state.fragments_len);
 
           conn->state.fragments_len = 0;
+          conn->state.fragmented = 0;
           conn->state.needed_bytes = 2;
           conn->state.bin = 0;
         }
@@ -964,6 +967,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           conn->state.fragments_len = 0;
           conn->state.needed_bytes = 2;
           conn->state.bin = 0;
+          conn->state.fragmented = 0;
         }
       }
       break;
@@ -1462,6 +1466,8 @@ inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
 inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
 inline void ws_conn_ctx_attach(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
+
+inline bool ws_conn_msg_bin(ws_conn_t *c) { return c->state.bin; }
 
 int utf8_is_valid(uint8_t *s, size_t n) {
   for (uint8_t *e = s + n; s != e;) {
