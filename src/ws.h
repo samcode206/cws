@@ -216,6 +216,11 @@ ws_server_t *ws_server_create(struct ws_server_params *params,
 
 int ws_server_start(ws_server_t *s, int backlog); // start serving connections
 
+// count of all open websocket connections
+size_t ws_server_open_conns(ws_server_t *s);
+
+// is this a binary message?
+// only valid during on_ws_msg_fragment or on_ws_msg called
 bool ws_conn_msg_bin(ws_conn_t *c);
 
 int utf8_is_valid(uint8_t *s, size_t n);

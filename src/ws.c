@@ -1481,6 +1481,10 @@ inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
 
 inline bool ws_conn_msg_bin(ws_conn_t *c) { return c->state.bin; }
 
+inline size_t ws_server_open_conns(ws_server_t *s){
+  return s->open_conns;
+}
+
 int utf8_is_valid(uint8_t *s, size_t n) {
   for (uint8_t *e = s + n; s != e;) {
     if (s + 4 <= e) {
