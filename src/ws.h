@@ -180,9 +180,32 @@ typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n,
                                      bool fin);
 
 
-// a return code of -1 from the callee indicates that the connection should be immediately closed
-// caller should not attempt to call close on the file descriptor fd this will lead to serious problems
+/**
+ * Optional Callback invoked when a new connection is accepted through `accept4(2)`.
+ *
+ * This callback allows the user to inspect and optionally pre-process the incoming
+ * connection before the WebSocket handshake commences. Users can perform initial
+ * validation or setup as needed.
+ *
+ * It's important for users to avoid closing the file descriptor (`fd`) directly.
+ * Instead, to reject and close the connection, return -1. This ensures that the
+ * library is aware that the connection is not proceeding and will handle the
+ * closure and cleanup appropriately. Directly closing the `fd` can lead to
+ * the library attempting to allocate resources for a socket that is in the
+ * process of closing, which may cause erratic behavior.
+ *
+ *
+ * @param s     Pointer to the WebSocket server (`ws_server_t`).
+ * @param caddr Pointer to the client's address (`struct sockaddr_storage`).
+ * @param fd    File descriptor for the incoming connection.
+ *
+ * @return An integer result code. A return code of -1 signifies that the
+ *         connection should be rejected and closed immediately. The library
+ *         will then close the `fd` and no further action is required from the
+ *         user in regard to connection cleanup.
+ */
 typedef int (*ws_accept_cb_t)(ws_server_t *s, struct sockaddr_storage *caddr, int fd);
+
 
 /**
  * Optional callback for errors during client connection acceptance.
