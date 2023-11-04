@@ -79,12 +79,12 @@ typedef struct {
 } ws_state_t;
 
 struct ws_conn_t {
-  int fd;
   ws_state_t state;
-  ws_server_t *base;
-  void *ctx; // user data ptr
+  int fd;
   buf_t read_buf;
   buf_t write_buf;
+  ws_server_t *base;
+  void *ctx; // user data ptr
 };
 
 // general purpose dynamic array
@@ -585,7 +585,8 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return;
         }
 
-        if (s->on_ws_accept && s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr,
+        if (s->on_ws_accept &&
+            s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr,
                             client_fd) == -1) {
           if (close(client_fd) == -1) {
             if (s->on_ws_err) {
