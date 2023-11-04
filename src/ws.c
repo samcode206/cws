@@ -104,6 +104,7 @@ typedef struct server {
   size_t max_conns;   // max connections allowed
   size_t max_msg_len; // max allowed msg length
   ws_open_cb_t on_ws_open;
+  ws_accept_cb_t on_ws_accept;
   ws_msg_cb_t on_ws_msg;
   ws_msg_fragment_cb_t on_ws_msg_fragment;
   ws_ping_cb_t on_ws_ping;
@@ -470,6 +471,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     s->on_ws_msg_fragment = params->on_ws_msg_fragment;
   }
 
+  if (params->on_ws_accept) {
+    s->on_ws_accept = params->on_ws_accept;
+  }
+
   if (params->on_ws_accept_err) {
     s->on_ws_accept_err = params->on_ws_accept_err;
   }
@@ -580,6 +585,20 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return;
         }
 
+        if (s->on_ws_accept && s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr,
+                            client_fd) == -1) {
+          if (close(client_fd) == -1) {
+            if (s->on_ws_err) {
+              int err = errno;
+              s->on_ws_err(s, err);
+            } else {
+              perror("close()");
+              exit(EXIT_FAILURE);
+            }
+          };
+          continue;
+        };
+
         struct ws_conn_t *conn = calloc(1, sizeof(struct ws_conn_t));
         assert(conn != NULL); // TODO(sah): remove this
         s->ev.events = EPOLLIN | EPOLLRDHUP;
@@ -640,7 +659,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
       // fd closes
       ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
       s->accept_paused = 1;
-      if (s->on_ws_accept_err){
+      if (s->on_ws_accept_err) {
         s->on_ws_accept_err(s, 0);
       }
     }

@@ -180,6 +180,10 @@ typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n,
                                      bool fin);
 
 
+// a return code of -1 from the callee indicates that the connection should be immediately closed
+// caller should not attempt to call close on the file descriptor fd this will lead to serious problems
+typedef int (*ws_accept_cb_t)(ws_server_t *s, struct sockaddr_storage *caddr, int fd);
+
 /**
  * Optional callback for errors during client connection acceptance.
  * an err value of zero indicates that the server reached max_conns open connections and no specific error occurred
@@ -210,6 +214,7 @@ struct ws_server_params {
   ws_close_cb_t on_ws_close;           // Callback for when a close frame is received.
   ws_disconnect_cb_t on_ws_disconnect; // Callback for after the connection has been closed.
   ws_err_cb_t on_ws_err;               // Callback for when an internal error occurs.
+  ws_accept_cb_t on_ws_accept;         // Callback for when a new connection has been accepted
   ws_err_accept_cb_t on_ws_accept_err; // Callback for when accept() fails.
 };
 

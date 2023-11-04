@@ -1,11 +1,12 @@
 #include "ws.h"
 
+#include <arpa/inet.h>
 #include <assert.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 // fragment accumulator
 typedef struct {
   size_t len;
@@ -112,6 +113,31 @@ void on_server_err(ws_server_t *s, int err) {
   fprintf(stderr, "on_server_err: %s\n", strerror(err));
 }
 
+int on_accept(ws_server_t *s, struct sockaddr_storage *caddr, int fd) {
+  char client_ip[INET6_ADDRSTRLEN];
+  switch (caddr->ss_family) {
+  case AF_INET: {
+    // It's IPv4
+    struct sockaddr_in *s = (struct sockaddr_in *)caddr;
+    inet_ntop(AF_INET, &s->sin_addr, client_ip, sizeof(client_ip));
+    printf("%s:%d\n", client_ip, ntohs(s->sin_port));
+    break;
+  }
+  case AF_INET6: {
+    // It's IPv6
+    struct sockaddr_in6 *s = (struct sockaddr_in6 *)caddr;
+    inet_ntop(AF_INET6, &s->sin6_addr, client_ip, sizeof(client_ip));
+    printf("client connected %s:%d\n", client_ip, ntohs(s->sin6_port));
+    break;
+  }
+  default:
+    printf("Unknown address family.\n");
+    break;
+  }
+
+  return 0;
+}
+
 void on_accept_err(ws_server_t *s, int err) {
   printf("accept4(): %s\n", strerror(err));
   printf("open_conns = %zu \n", ws_server_open_conns(s));
@@ -124,13 +150,14 @@ void *start_server() {
   struct ws_server_params sp = {
       .addr = "::1",
       .port = port,
+      // .on_ws_accept = on_accept,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
       .on_ws_disconnect = on_disconnect,
       .max_buffered_bytes = 512,
       .on_ws_accept_err = on_accept_err,
       .max_conns = 1024,
-          // .on_ws_msg_fragment = on_msg_fragment,
+      // .on_ws_msg_fragment = on_msg_fragment,
   };
 
   int ret = 0;
