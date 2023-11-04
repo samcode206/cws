@@ -182,6 +182,10 @@ typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n,
 
 /**
  * Optional callback for errors during client connection acceptance.
+ * an err value of zero indicates that the server reached max_conns open connections and no specific error occurred
+ * caller may check `ws_server_accept_paused` to confirm. Accepting will automatically resume once there has been some
+ * disconnects which brings the server below the max_conns limit. Accepting new connections will also be paused when 
+ * err is EMFILE or ENFILE
  *
  * @param s   Pointer to the WebSocket server (`ws_server_t`).
  * @param err Error code (errno)
@@ -233,6 +237,8 @@ size_t ws_server_open_conns(ws_server_t *s);
 // is this a binary message?
 // only valid during on_ws_msg_fragment or on_ws_msg called
 bool ws_conn_msg_bin(ws_conn_t *c);
+
+bool ws_server_accept_paused(ws_server_t *s);
 
 int utf8_is_valid(uint8_t *s, size_t n);
 

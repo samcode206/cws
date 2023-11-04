@@ -600,14 +600,14 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return; // done
         } else if (errno == EMFILE || errno == ENFILE) {
           // too many open files in either the proccess or entire system
-          if (s->on_ws_accept_err) {
-            int err = errno;
-            s->on_ws_accept_err(s, err);
-          }
           // remove the server from epoll, it must be re added when atleast one
           // fd closes
           ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
           s->accept_paused = 1;
+          if (s->on_ws_accept_err) {
+            int err = errno;
+            s->on_ws_accept_err(s, err);
+          }
           return; // done
         } else if (errno == ENONET || errno == EPROTO || errno == ENOPROTOOPT ||
                    errno == EOPNOTSUPP || errno == ENETDOWN ||
@@ -640,6 +640,9 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
       // fd closes
       ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
       s->accept_paused = 1;
+      if (s->on_ws_accept_err){
+        s->on_ws_accept_err(s, 0);
+      }
     }
   }
 }
@@ -1487,6 +1490,8 @@ inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
 inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
 inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
+
+inline bool ws_server_accept_paused(ws_server_t *s) { return s->accept_paused; }
 
 inline bool ws_conn_msg_bin(ws_conn_t *c) { return c->state.bin; }
 
