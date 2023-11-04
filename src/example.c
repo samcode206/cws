@@ -113,8 +113,9 @@ void on_server_err(ws_server_t *s, int err) {
 }
 
 void on_accept_err(ws_server_t *s, int err) {
-  perror("accept()");
+  printf("accept4(): %s\n", strerror(err));
   printf("open_conns = %zu \n", ws_server_open_conns(s));
+  printf("is_paused=%d\n", ws_server_accept_paused(s));
 }
 
 void *start_server() {
@@ -128,7 +129,7 @@ void *start_server() {
       .on_ws_disconnect = on_disconnect,
       .max_buffered_bytes = 512,
       .on_ws_accept_err = on_accept_err,
-          .max_conns = 8190,
+      .max_conns = 1000,
           // .on_ws_msg_fragment = on_msg_fragment,
   };
 
