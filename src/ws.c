@@ -550,8 +550,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
                                       struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
   // how many conns should we try to accept in total
-  size_t accepts = ((s->accept_paused == 0) & (s->open_conns < s->max_conns)) *
-                   (s->max_conns - s->open_conns);
+  size_t accepts = (s->accept_paused == 0) * (s->max_conns - s->open_conns);
   // if we can do atleast one, then let's get started...
 
   int sockopt_on = 1;
@@ -601,10 +600,6 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           }
           // remove the server from epoll, it must be re added when atleast one
           // fd closes
-          if (s->max_conns - 1 >= s->open_conns) {
-            --s->max_conns; // reduce by one max_conns is over the system limit
-                            // of what can be accepted
-          }
           ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
           s->accept_paused = 1;
           return; // done
@@ -729,9 +724,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     server_writeable_conns_drain(s); // drain writes
 
-    bool accept_resumable =
-        ((s->accept_paused == 1) &&
-         ((s->open_conns - s->closeable_conns.len) <= s->max_conns));
+    bool accept_resumable = s->accept_paused && s->open_conns - s->closeable_conns.len <= s->max_conns;
     server_closeable_conns_close(s); // close connections
     if (accept_resumable) {
       s->ev.events = EPOLLIN;
@@ -958,9 +951,6 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       }
 
       if (conn->state.fragments_len + payload_len > max_allowed_len) {
-        printf("max allowed length exceeded: drop the connections "
-               "[unimplemented]\n");
-        printf("opcode = %d len = %zu\n", opcode, full_frame_len);
         ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
         buf_reset(&s->shared_recv_buffer);
         return;
