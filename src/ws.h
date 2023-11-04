@@ -101,7 +101,7 @@ typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n);
 typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg, size_t n);
 
 /**
- * Callback invoked when a close frame is received from the client.
+ * Optional Callback invoked when a close frame is received from the client.
  *
  * NOTE: The 'reason' data is provided for use only within this callback.
  * If the caller needs to retain any part of the closure reason beyond this callback,
@@ -129,7 +129,7 @@ typedef void (*ws_close_cb_t)(ws_conn_t *ws_conn, void *reason, size_t rlen, uin
 typedef void (*ws_disconnect_cb_t)(ws_conn_t *ws_conn, int err);
 
 /**
- * Callback invoked when the connection's send buffer is ready to accept more data.
+ * Optional Callback invoked when the connection's send buffer is ready to accept more data.
  *
  * This callback serves as a notification that the connection has alleviated back pressure,
  * allowing for additional write operations. It is typically called
@@ -150,7 +150,7 @@ typedef void (*ws_drain_cb_t)(ws_conn_t *ws_conn);
 typedef void (*ws_err_cb_t)(ws_server_t *s, int err);
 
 /**
- * Callback invoked upon receiving a fragment of a WebSocket message.
+ * Optional Callback invoked upon receiving a fragment of a WebSocket message.
  *
  * This callback pertains to the fragmentation feature of the WebSocket protocol,
  * not to be confused with a partially read message at the socket level. It is
@@ -179,6 +179,16 @@ typedef void (*ws_err_cb_t)(ws_server_t *s, int err);
 typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n,
                                      bool fin);
 
+
+/**
+ * Optional callback for errors during client connection acceptance.
+ *
+ * @param s   Pointer to the WebSocket server (`ws_server_t`).
+ * @param err Error code (errno)
+ */
+typedef void (*ws_err_accept_cb_t)(ws_server_t *s, int err);
+
+
 // Server parameter structure with optional callbacks for various WebSocket events.
 struct ws_server_params {
   const char *addr;
@@ -196,6 +206,7 @@ struct ws_server_params {
   ws_close_cb_t on_ws_close;           // Callback for when a close frame is received.
   ws_disconnect_cb_t on_ws_disconnect; // Callback for after the connection has been closed.
   ws_err_cb_t on_ws_err;               // Callback for when an internal error occurs.
+  ws_err_accept_cb_t on_ws_accept_err; // Callback for when accept() fails.
 };
 
 int ws_conn_fd(ws_conn_t *c);
