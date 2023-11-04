@@ -398,7 +398,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     free(s);
     return NULL;
   }
-  
+
   // socket config
   int on = 1;
   *ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
@@ -490,16 +490,17 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   assert(getrlimit(RLIMIT_NOFILE, &rlim) == 0);
 
   if (!params->max_conns) {
-    s->max_conns = rlim.rlim_cur;
+    // account for already open files
+    s->max_conns = rlim.rlim_cur - 6;
   } else {
-    if (params->max_conns <= rlim.rlim_cur) {
+    if (params->max_conns <= rlim.rlim_cur - 6) {
       s->max_conns = params->max_conns;
     } else {
       fprintf(stderr,
-              "[WARN] params->max_conns %zu is more than the current limit of "
-              "%zu max_conns will be set to the current limit\n",
-              params->max_conns, rlim.rlim_cur);
-      s->max_conns = rlim.rlim_cur;
+              "[WARN] params->max_conns %zu is more than the current limit -6"
+              "%zu max_conns will be set to the current limit -6 %zu\n",
+              params->max_conns, rlim.rlim_cur, rlim.rlim_cur - 6);
+      s->max_conns = rlim.rlim_cur - 6;
     }
   }
 
@@ -549,7 +550,8 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
                                       struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
   // how many conns should we try to accept in total
-  size_t accepts = (!s->accept_paused) * (s->max_conns - s->open_conns);
+  size_t accepts = ((s->accept_paused == 0) & (s->open_conns < s->max_conns)) *
+                   (s->max_conns - s->open_conns);
   // if we can do atleast one, then let's get started...
 
   int sockopt_on = 1;
@@ -597,13 +599,14 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
             int err = errno;
             s->on_ws_accept_err(s, err);
           }
-          perror("accept()");
           // remove the server from epoll, it must be re added when atleast one
           // fd closes
           if (s->max_conns - 1 >= s->open_conns) {
-            --s->max_conns; // reduce by one max_conns is over the system limit of what can be accepted
+            --s->max_conns; // reduce by one max_conns is over the system limit
+                            // of what can be accepted
           }
           ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
+          s->accept_paused = 1;
           return; // done
         } else if (errno == ENONET || errno == EPROTO || errno == ENOPROTOOPT ||
                    errno == EOPNOTSUPP || errno == ENETDOWN ||
@@ -632,11 +635,10 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
     }
 
     if (s->max_conns == s->open_conns) {
-      printf("[INFO] server at full capacity, pausing accepts on new "
-             "connections\n");
       // remove the server from epoll, it must be re added when atleast one
       // fd closes
       ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
+      s->accept_paused = 1;
     }
   }
 }
@@ -727,27 +729,15 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     server_writeable_conns_drain(s); // drain writes
 
-    if (s->closeable_conns.len){
-      printf("someone closed\n");
-    }
-    // we are at full capacity and about to remove something
-    // that's when we can rearm EPOLLIN on the listener
-    bool should_enable_accepts =
-        s->max_conns == s->open_conns && s->closeable_conns.len;
+    bool accept_resumable =
+        ((s->accept_paused == 1) &&
+         ((s->open_conns - s->closeable_conns.len) <= s->max_conns));
     server_closeable_conns_close(s); // close connections
-    if (should_enable_accepts) {
-      printf("[INFO] starting to accept connections again\n");
+    if (accept_resumable) {
       s->ev.events = EPOLLIN;
       s->ev.data.ptr = s;
-      if (epoll_ctl(epfd, EPOLL_CTL_ADD, s->fd, &s->ev) == -1) {
-        if (s->on_ws_err) {
-          int err = errno;
-          s->on_ws_err(s, err);
-        } else {
-          perror("epoll_ctl");
-          exit(EXIT_FAILURE);
-        }
-      };
+      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd);
+      s->accept_paused = 0;
     }
   }
 
