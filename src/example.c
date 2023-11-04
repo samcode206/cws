@@ -128,7 +128,7 @@ void *start_server() {
       .on_ws_disconnect = on_disconnect,
       .max_buffered_bytes = 512,
       .on_ws_accept_err = on_accept_err,
-          // .max_conns = 8192,
+          .max_conns = 8190,
           // .on_ws_msg_fragment = on_msg_fragment,
   };
 

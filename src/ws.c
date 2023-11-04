@@ -491,17 +491,23 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   if (!params->max_conns) {
     // account for already open files
-    s->max_conns = rlim.rlim_cur - 6;
-  } else {
-    if (params->max_conns <= rlim.rlim_cur - 6) {
-      s->max_conns = params->max_conns;
-    } else {
+    s->max_conns = rlim.rlim_cur - 16;
+  } else if (params->max_conns < 16) {
+    s->max_conns = 16;
+  } else if (params->max_conns < rlim.rlim_cur) {
+    s->max_conns = params->max_conns;
+
+    if (s->max_conns > rlim.rlim_cur - 8) {
       fprintf(stderr,
-              "[WARN] params->max_conns %zu is more than the current limit -6"
-              "%zu max_conns will be set to the current limit -6 %zu\n",
-              params->max_conns, rlim.rlim_cur, rlim.rlim_cur - 6);
-      s->max_conns = rlim.rlim_cur - 6;
+              "[WARN] params->max_conns-%zu may be too high. RLIMIT_NOFILE=%zu "
+              "only %zu open files would remain\n",
+              s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
     }
+
+  } else if (params->max_conns > rlim.rlim_cur) {
+    s->max_conns = params->max_conns;
+    fprintf(stderr, "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
+            s->max_conns, rlim.rlim_cur);
   }
 
   printf("max_conns = %zu\n", s->max_conns);
@@ -724,7 +730,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     server_writeable_conns_drain(s); // drain writes
 
-    bool accept_resumable = s->accept_paused && s->open_conns - s->closeable_conns.len <= s->max_conns;
+    bool accept_resumable =
+        s->accept_paused &&
+        s->open_conns - s->closeable_conns.len <= s->max_conns;
     server_closeable_conns_close(s); // close connections
     if (accept_resumable) {
       s->ev.events = EPOLLIN;
@@ -860,9 +868,6 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
         (frame_has_reserved_bits_set(frame) == 1) |
         (frame_is_masked(frame) == 0)) {
-      printf("invalid frame closing\n");
-      printf("opcode=%d\n", opcode);
-      printf("fin=%d\n", fin);
       buf_reset(&s->shared_recv_buffer);
       ws_conn_destroy(conn);
       return;
@@ -889,9 +894,6 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // validate frame length
     if (payload_len > max_allowed_len) {
       // drop the connection
-      printf("max allowed length exceeded: drop the connections "
-             "[unimplemented]\n");
-      printf("opcode = %d len = %zu\n", opcode, full_frame_len);
       ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
       buf_reset(&s->shared_recv_buffer);
       return;
