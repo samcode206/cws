@@ -945,7 +945,6 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // this handles both text and binary hence the fallthrough
       if (fin & (!conn->state.fragmented)) {
         if (!conn->state.bin && !utf8_is_valid(msg, payload_len)) {
-          printf("failed validation\n");
           ws_conn_destroy(conn);
           buf_reset(&s->shared_recv_buffer);
           return; // TODO(sah): send a Close frame, & call close callback
@@ -1007,7 +1006,6 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         if (fin) {
           if (!conn->state.bin && !utf8_is_valid(buf_peek(&conn->read_buf),
                                                  conn->state.fragments_len)) {
-            printf("failed validation\n");
             ws_conn_destroy(conn);
             buf_reset(&s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
