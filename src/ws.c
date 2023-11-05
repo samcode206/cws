@@ -572,20 +572,6 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
       int client_fd =
           accept4(fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
       if (client_fd != -1) {
-        // disable Nagle's algorithm
-        if (setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &sockopt_on,
-                       sizeof(sockopt_on)) == -1) {
-          if (s->on_ws_err) {
-            int err = errno;
-            s->on_ws_err(s, err);
-            exit(EXIT_FAILURE);
-          } else {
-            perror("setsockopt");
-            exit(EXIT_FAILURE);
-          }
-          return;
-        }
-
         if (s->on_ws_accept &&
             s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr,
                             client_fd) == -1) {
@@ -600,6 +586,21 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           };
           continue;
         };
+
+        // disable Nagle's algorithm
+        if (setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &sockopt_on,
+                       sizeof(sockopt_on)) == -1) {
+          if (s->on_ws_err) {
+            int err = errno;
+            s->on_ws_err(s, err);
+            exit(EXIT_FAILURE);
+          } else {
+            perror("setsockopt");
+            exit(EXIT_FAILURE);
+          }
+          return;
+        }
+
 
         struct ws_conn_t *conn = calloc(1, sizeof(struct ws_conn_t));
         assert(conn != NULL); // TODO(sah): remove this
