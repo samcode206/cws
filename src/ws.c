@@ -210,11 +210,10 @@ static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
 #define GET_RQ "GET"
 #define SEC_WS_KEY_HDR "Sec-WebSocket-Key"
 
-#define SWITCHING_PROTOCOLS                                                    \
-  "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: "     \
-  "Upgrade\r\nServer: cws\r\nSec-WebSocket-Accept: "
-#define SWITCHING_PROTOCOLS_HDRS_LEN                                           \
-  sizeof(SWITCHING_PROTOCOLS) - 1 // -1 to ignore the nul
+static const char switching_protocols[111] =  "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: "
+                                            "Upgrade\r\nServer: cws\r\nSec-WebSocket-Accept: ";
+#define SWITCHING_PROTOCOLS_HDRS_LEN  110
+
 
 static inline int get_header(const char *headers, const char *key, char *val,
                              size_t n) {
@@ -257,7 +256,7 @@ static inline int get_header(const char *headers, const char *key, char *val,
 static inline ssize_t ws_build_upgrade_headers(const char *accept_key,
                                                size_t keylen,
                                                char *resp_headers) {
-  memcpy(resp_headers, SWITCHING_PROTOCOLS, SWITCHING_PROTOCOLS_HDRS_LEN);
+  memcpy(resp_headers, switching_protocols, SWITCHING_PROTOCOLS_HDRS_LEN);
   keylen -= 1;
   memcpy(resp_headers + SWITCHING_PROTOCOLS_HDRS_LEN, accept_key, keylen);
   memcpy(resp_headers + SWITCHING_PROTOCOLS_HDRS_LEN + keylen, CRLF2,
@@ -265,15 +264,17 @@ static inline ssize_t ws_build_upgrade_headers(const char *accept_key,
   return SWITCHING_PROTOCOLS_HDRS_LEN + keylen + sizeof(CRLF2);
 }
 
-const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+#define MAGIC_STR_LEN 36
 
 static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
                                        size_t len) {
   unsigned char buf[64] = {0};
   memcpy(buf, akhdr_val, strlen(akhdr_val));
   strcat((char *)buf, magic_str);
-  len += sizeof magic_str;
-  len -= 1;
+  len += MAGIC_STR_LEN;
+
 
   unsigned char hash[20] = {0};
   SHA1(buf, len, hash);
