@@ -57,7 +57,7 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-typedef int (*ws_handler)(ws_server_t *s, struct ws_conn_t *conn);
+typedef int (*ws_handler)(ws_server_t *s, ws_conn_t *conn);
 
 typedef struct {
   int fd;
@@ -289,17 +289,17 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd);
 // generic send function (used for upgrade)
 static int conn_send(ws_conn_t *conn, const void *data, size_t n);
 
-static void ws_conn_handle(struct ws_conn_t *conn);
+static void ws_conn_handle(ws_conn_t *conn);
 
-static void handle_http(struct ws_conn_t *conn);
-static inline int conn_read(struct ws_conn_t *conn, buf_t *buf);
+static void handle_http(ws_conn_t *conn);
+static inline int conn_read(ws_conn_t *conn, buf_t *buf);
 
-static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf);
+static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf);
 
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op);
 
-static void conn_list_append(struct conn_list *cl, struct ws_conn_t *conn) {
+static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
   if (cl->len + 1 < cl->cap) {
     cl->conns[cl->len++] = conn;
   } else {
@@ -332,7 +332,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
   }
 
   for (size_t i = 0; i < s->writeable_conns.len; ++i) {
-    struct ws_conn_t *c = s->writeable_conns.conns[i];
+    ws_conn_t *c = s->writeable_conns.conns[i];
     if (!c->tx_state.close_queued) {
       if (conn_drain_write_buf(c, &c->tx_state.write_buf) == -1) {
         server_closeable_conns_append(c);
@@ -351,7 +351,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
     // printf("closing %zu connections\n", s->closeable_conns.len);
     size_t n = s->closeable_conns.len;
     while (n--) {
-      struct ws_conn_t *c = s->closeable_conns.conns[n];
+      ws_conn_t *c = s->closeable_conns.conns[n];
       assert(close(c->rx_state.fd) == 0);
       s->on_ws_disconnect(c, 0);
       buf_pool_free(s->buffer_pool, c->tx_state.write_buf.buf);
@@ -604,7 +604,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return;
         }
 
-        struct ws_conn_t *conn = calloc(1, sizeof(struct ws_conn_t));
+        ws_conn_t *conn = calloc(1, sizeof(ws_conn_t));
         assert(conn != NULL); // TODO(sah): remove this
         s->ev.events = EPOLLIN | EPOLLRDHUP;
         conn->rx_state.fd = client_fd;
@@ -615,7 +615,6 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
         conn->tx_state.fd = client_fd;
         conn->tx_state.base = s;
 
-  
         s->ev.data.ptr = conn;
 
         assert(buf_init(s->buffer_pool, &conn->rx_state.read_buf) == 0);
@@ -791,7 +790,7 @@ static ssize_t handle_upgrade(const char *buf, char *res_hdrs, size_t n) {
   return ws_build_upgrade_headers(accept_key, len, res_hdrs);
 }
 
-static int conn_read(struct ws_conn_t *conn, buf_t *buf) {
+static int conn_read(ws_conn_t *conn, buf_t *buf) {
   ssize_t n = buf_recv(buf, conn->rx_state.fd, 0);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EINTR)) {
@@ -805,7 +804,7 @@ static int conn_read(struct ws_conn_t *conn, buf_t *buf) {
   return 0;
 }
 
-static void handle_http(struct ws_conn_t *conn) {
+static void handle_http(ws_conn_t *conn) {
   ws_server_t *s = conn->rx_state.base;
   buf_t *buf;
   if (buf_len(&conn->rx_state.read_buf)) {
@@ -852,7 +851,7 @@ static void handle_http(struct ws_conn_t *conn) {
   return;
 }
 
-static inline buf_t *ws_conn_choose_read_buf(struct ws_conn_t *conn) {
+static inline buf_t *ws_conn_choose_read_buf(ws_conn_t *conn) {
 
   if ((buf_len(&conn->rx_state.read_buf) != 0) &
       !(conn->rx_state.fragments_len + conn->rx_state.read_buf.rpos ==
@@ -1177,14 +1176,14 @@ clean_up_buffer:
   }
 }
 
-static void ws_conn_notify_on_writeable(struct ws_conn_t *conn) {
+static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
   conn->tx_state.writeable = 0;
   conn->tx_state.base->ev.data.ptr = conn;
   conn->tx_state.base->ev.events = EPOLLOUT | EPOLLRDHUP;
   ws_server_epoll_ctl(conn->tx_state.base, EPOLL_CTL_MOD, conn->tx_state.fd);
 }
 
-static int conn_drain_write_buf(struct ws_conn_t *conn, buf_t *wbuf) {
+static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
   size_t to_write = buf_len(wbuf);
   ssize_t n = 0;
 
