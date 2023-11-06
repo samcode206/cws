@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <netinet/in.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +15,7 @@ typedef struct {
   uint8_t data[];
 } frag_t;
 
-void on_open(ws_conn_t *c) {}
+void on_open(ws_conn_t *c) { ws_conn_set_ctx(c, calloc(1, 8)); }
 
 // void on_ping(ws_conn_t *c, void *msg, size_t n) {
 //   printf("on_ping:");
@@ -72,6 +73,8 @@ void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n, bool fin) {
 }
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
+  size_t *count = (size_t*)ws_conn_ctx(c);
+  *count = *count + 1;
   // printf("on_msg: ");
   // fwrite(msg, sizeof(char), n, stdout);
   // fwrite("\n", 1, 1, stdout);
