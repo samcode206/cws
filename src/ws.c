@@ -1363,7 +1363,27 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       // large sends are a bit more complex to handle
       // we attempt to avoid as much copying as possible
       // using vectored I/O
-      if (hlen == 10) {
+
+      if (hlen == 4) {
+        uint8_t *hbuf =
+            wbuf->buf + wbuf->wpos; // place the header in the write buffer
+        memset(hbuf, 0, 2);
+        hbuf[0] = FIN | op; // Set FIN bit and opcode
+        wbuf->wpos += hlen;
+        hbuf[1] = PAYLOAD_LEN_16;
+        hbuf[2] = (len >> 8) & 0xFF;
+        hbuf[3] = len & 0xFF;
+        buf_put(wbuf, data, len);
+      } else if (hlen == 2) {
+        uint8_t *hbuf =
+            wbuf->buf + wbuf->wpos; // place the header in the write buffer
+        memset(hbuf, 0, 2);
+        hbuf[0] = FIN | op; // Set FIN bit and opcode
+        wbuf->wpos += hlen;
+        hbuf[1] = (uint8_t)len;
+        buf_put(wbuf, data, len);
+      } else {
+        // large send
         uint8_t hbuf[hlen]; // place the header on the stack
         memset(hbuf, 0, 2);
         hbuf[0] = FIN | op; // Set FIN bit and opcode
@@ -1456,25 +1476,6 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
             return 1;
           }
         }
-
-      }
-      // sends under 65kb
-      else {
-        uint8_t *hbuf =
-            wbuf->buf + wbuf->wpos; // place the header in the write buffer
-        memset(hbuf, 0, 2);
-        hbuf[0] = FIN | op; // Set FIN bit and opcode
-        wbuf->wpos += hlen;
-
-        if (hlen == 2) {
-          hbuf[1] = (uint8_t)len;
-        } else {
-          hbuf[1] = PAYLOAD_LEN_16;
-          hbuf[2] = (len >> 8) & 0xFF;
-          hbuf[3] = len & 0xFF;
-        }
-
-        buf_put(wbuf, data, len);
       }
 
       // queue up for writing if not using shared buffer
