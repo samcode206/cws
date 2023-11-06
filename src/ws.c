@@ -60,7 +60,7 @@
 typedef int (*ws_handler)(ws_server_t *s, ws_conn_t *conn);
 
 typedef struct {
-  int fd;
+  int fd;            // socket fd
   bool bin;          // is binary message?
   bool upgraded;     // are we even upgraded?
   bool close_queued; // we are in the close list and should not attempt to do
@@ -72,17 +72,17 @@ typedef struct {
                         // fragmentation
 
   size_t needed_bytes; // bytes needed before we can do something with the frame
-  buf_t read_buf;
-  ws_server_t *base;
+  buf_t read_buf;      // recv buffer structure
+  ws_server_t *base;   // server ptr
 } read_state_t;
 
 typedef struct {
-  int fd;
-  bool writeable;
-  bool write_queued;
-  bool close_queued;
-  buf_t write_buf;
-  ws_server_t *base;
+  int fd;            // socket fd
+  bool writeable;    // can we write to the socket now?
+  bool write_queued; // are we queued for writing?
+  bool close_queued; // are we getting removed/closed
+  buf_t write_buf;   // write buffer structure
+  ws_server_t *base; // server ptr
 } write_state_t;
 
 struct ws_conn_t {
