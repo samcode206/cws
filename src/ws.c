@@ -81,6 +81,7 @@ typedef struct {
   bool writeable;    // can we write to the socket now?
   bool write_queued; // are we queued for writing?
   bool close_queued; // are we getting removed/closed
+  bool using_shared; // are we using the shared send buffer
   buf_t write_buf;   // write buffer structure
   ws_server_t *base; // server ptr
 } write_state_t;
@@ -102,7 +103,8 @@ struct conn_list {
 };
 
 typedef struct server {
-  int fd;             // server file descriptor
+  int fd; // server file descriptor
+  int epoll_fd;
   bool accept_paused; // are we paused on accepting new connections
   size_t open_conns;  // open websocket connections
   size_t max_conns;   // max connections allowed
@@ -118,10 +120,9 @@ typedef struct server {
   ws_disconnect_cb_t on_ws_disconnect;
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
-  int epoll_fd;
-  int shared_send_buffer_owner;
   struct buf_pool *buffer_pool;
   buf_t shared_recv_buffer;
+  ws_conn_t *shared_send_buffer_owner;
   buf_t shared_send_buffer;
   struct epoll_event ev;
   struct epoll_event events[1024];
@@ -327,6 +328,16 @@ static void server_closeable_conns_append(ws_conn_t *c) {
 }
 
 static void server_writeable_conns_drain(ws_server_t *s) {
+  if (s->shared_send_buffer_owner) {
+    ws_conn_t *c = s->shared_send_buffer_owner;
+    if (!c->tx_state.close_queued &&
+        conn_drain_write_buf(c, &s->shared_send_buffer) == -1) {
+      server_closeable_conns_append(c);
+    };
+
+    c->tx_state.using_shared = false;
+    s->shared_send_buffer_owner = NULL;
+  }
   if (s->writeable_conns.len) {
     printf("draining %zu connections\n", s->writeable_conns.len);
   }
@@ -357,9 +368,8 @@ static void server_closeable_conns_close(ws_server_t *s) {
       buf_pool_free(s->buffer_pool, c->tx_state.write_buf.buf);
       buf_pool_free(s->buffer_pool, c->rx_state.read_buf.buf);
 
-      if (s->shared_send_buffer_owner == c->rx_state.fd) {
-        buf_reset(&s->shared_send_buffer);
-        s->shared_send_buffer_owner = -1;
+      if (s->shared_send_buffer_owner == c) {
+        s->shared_send_buffer_owner = NULL;
       }
       free(c);
       --s->open_conns;
@@ -513,7 +523,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
               s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
     }
 
-  } else if (params->max_conns > rlim.rlim_cur) {
+  } else if (params->max_conns >= rlim.rlim_cur) {
     s->max_conns = params->max_conns;
     fprintf(stderr, "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
             s->max_conns, rlim.rlim_cur);
@@ -525,7 +535,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   buf_init(s->buffer_pool, &s->shared_recv_buffer);
   buf_init(s->buffer_pool, &s->shared_send_buffer);
 
-  s->shared_send_buffer_owner = -1;
+  s->shared_send_buffer_owner = NULL;
   assert(s->buffer_pool != NULL);
 
   // allocate the list (dynamic array of pointers to ws_conn_t) to track
@@ -718,6 +728,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
         if (s->events[i].events & EPOLLOUT) {
           ws_conn_t *c = s->events[i].data.ptr;
           if (!c->tx_state.close_queued) {
+
             int ret = conn_drain_write_buf(c, &c->tx_state.write_buf);
             if (ret == 1) {
               ws_conn_t *c = s->events[i].data.ptr;
@@ -737,17 +748,15 @@ int ws_server_start(ws_server_t *s, int backlog) {
                 }
               };
             } else if (ret == -1) {
-              ws_conn_destroy(s->events[i].data.ptr);
+              if (!c->tx_state.close_queued){
+                server_closeable_conns_append(c);
+              }
             }
           }
         }
         if (s->events[i].events & EPOLLIN) {
           ws_conn_t *c = s->events[i].data.ptr;
           if (!c->rx_state.close_queued) {
-            if (buf_len(&s->shared_send_buffer) == 0) {
-              s->shared_send_buffer_owner = c->rx_state.fd;
-            }
-
             if (!c->rx_state.upgraded) {
               handle_http(c);
             } else {
@@ -1155,8 +1164,15 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
   // if we own the shared buffer drain it right now to allow next conn to
   // reuse it
-  if (s->shared_send_buffer_owner == conn->rx_state.fd) {
-    conn_drain_write_buf(conn, &s->shared_send_buffer);
+  if (conn->tx_state.using_shared) {
+    if (conn_drain_write_buf(conn, &s->shared_send_buffer) == -1) {
+      if (!conn->tx_state.close_queued) {
+        buf_reset(&s->shared_recv_buffer);
+        server_closeable_conns_append(conn);
+      }
+    };
+    conn->tx_state.using_shared = false;
+    conn->tx_state.base->shared_send_buffer_owner = NULL;
   }
 
 clean_up_buffer:
@@ -1187,7 +1203,7 @@ static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
   size_t to_write = buf_len(wbuf);
   ssize_t n = 0;
 
-  if (!to_write) {
+  if ((!to_write)) {
     return 0;
   }
 
@@ -1200,11 +1216,13 @@ static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
     conn->tx_state.writeable = 1;
     return 1;
   } else {
-    if (&conn->tx_state.base->shared_send_buffer == wbuf) {
+    if (conn->tx_state.using_shared) {
       // worst case
+      conn->tx_state.using_shared = false;
       buf_move(&conn->tx_state.base->shared_send_buffer,
                &conn->tx_state.write_buf,
                buf_len(&conn->tx_state.base->shared_send_buffer));
+      conn->tx_state.base->shared_send_buffer_owner = NULL;
     }
     ws_conn_notify_on_writeable(conn);
   }
@@ -1223,7 +1241,9 @@ will be called
 inline int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PONG);
   if (stat == -1) {
-    ws_conn_destroy(c);
+    if (!c->tx_state.close_queued){
+      server_closeable_conns_append(c);
+    }
   }
   return stat == 1;
 }
@@ -1238,7 +1258,9 @@ will be called
 inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PING);
   if (stat == -1) {
-    ws_conn_destroy(c);
+    if (!c->tx_state.close_queued){
+      server_closeable_conns_append(c);
+    }
   }
   return stat == 1;
 }
@@ -1254,7 +1276,9 @@ will be called
 inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_BIN);
   if (stat == -1) {
-    ws_conn_destroy(c);
+    if (!c->tx_state.close_queued){
+      server_closeable_conns_append(c);
+    }
   }
   return stat == 1;
 }
@@ -1270,7 +1294,9 @@ will be called
 inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_TXT);
   if (stat == -1) {
-    ws_conn_destroy(c);
+    if (!c->tx_state.close_queued){
+      server_closeable_conns_append(c);
+    }
   }
   return stat == 1;
 }
@@ -1336,27 +1362,38 @@ start sending more data
 
     -1 an error occurred connection should be closed, check errno
 */
+
+static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
+  if (send_len > 65535 || buf_len(&conn->tx_state.write_buf) != 0 ||
+      !conn->tx_state.writeable) {
+    return &conn->tx_state.write_buf;
+  } else {
+    if (!conn->tx_state.using_shared) {
+      ws_conn_t *owner = conn->tx_state.base->shared_send_buffer_owner;
+      if (owner) {
+        if (!owner->tx_state.close_queued) {
+          if (conn_drain_write_buf(
+                  owner, &owner->tx_state.base->shared_send_buffer) == -1) {
+            server_closeable_conns_append(owner);
+          };
+        }
+        owner->tx_state.using_shared = false;
+      }
+      conn->tx_state.using_shared = true;
+      conn->tx_state.base->shared_send_buffer_owner = conn;
+    }
+    return &conn->tx_state.base->shared_send_buffer;
+  }
+}
+
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op) {
 
   if (!conn->tx_state.close_queued) {
-
     ws_server_t *s = conn->tx_state.base;
     size_t hlen = frame_get_header_len(len);
-    buf_t *wbuf;
+    buf_t *wbuf = conn_choose_send_buf(conn, len);
 
-    // use the connection write buffer when
-    // we don't own the shared send buffer or
-    // we are doing a large send 65kb+ or
-    // the connection is not in a writeable state or
-    // we currently have data in the connection write buffer pending
-    if ((s->shared_send_buffer_owner != conn->tx_state.fd) | (hlen == 10) |
-        (buf_len(&conn->tx_state.write_buf) != 0) |
-        (conn->tx_state.writeable == 0)) {
-      wbuf = &conn->tx_state.write_buf;
-    } else {
-      wbuf = &s->shared_send_buffer;
-    }
 
     size_t flen = len + hlen;
     if (buf_space(wbuf) > flen) {
@@ -1403,14 +1440,11 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
         } else {
           ssize_t n;
           size_t total_write;
-          bool shared_buf_needs_drain =
-              s->shared_send_buffer_owner == conn->tx_state.fd &&
-              buf_len(&s->shared_send_buffer) != 0;
 
           // we have to drain from shared buffer so make it first iovec entry
-          if (shared_buf_needs_drain) {
+          if (conn->tx_state.using_shared &&
+              buf_len(&s->shared_send_buffer) != 0) {
             assert(buf_len(wbuf) == 0); // TODO: remove
-
             // here we use 3 iovecs
             // first iovec points to the shared buffer
             // second points to the stack allocated header
@@ -1469,9 +1503,14 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
 
           if (n == total_write) {
             return 1;
-          } else if (n == 0 || (n == -1 && errno != EAGAIN)) {
+          } else if (n == 0 ||
+                     ((n == -1) & ((errno != EAGAIN) | (errno != EINTR)))) {
             return -1;
           } else {
+            if (conn->tx_state.using_shared) {
+              conn->tx_state.using_shared = false;
+              conn->tx_state.base->shared_send_buffer_owner = NULL;
+            }
             ws_conn_notify_on_writeable(conn);
             return 1;
           }

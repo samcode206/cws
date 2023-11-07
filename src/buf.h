@@ -158,7 +158,7 @@ static inline ssize_t buf_write2v(buf_t *r, int fd, struct iovec const *iovs,
     // some error happened
   } else if (n == 0 || n == -1) {
     // if temporary error do a copy
-    if (n == -1 && errno == EAGAIN) {
+    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
       buf_put(r, iovs[0].iov_base, iovs[0].iov_len);
       buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
     }
@@ -198,7 +198,7 @@ static inline ssize_t buf_drain_write2v(buf_t *r, struct iovec const *iovs,
     // some error happened
   } else if (n == 0 || n == -1) {
     // if temporary error do a copy
-    if (n == -1 && errno == EAGAIN) {
+    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
       // copy both header and payload first iov already in the buffer
       buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
       buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
