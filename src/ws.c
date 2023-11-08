@@ -107,23 +107,25 @@ typedef struct server {
   ws_msg_cb_t on_ws_msg;
   buf_t shared_recv_buffer;
   ws_msg_fragment_cb_t on_ws_msg_fragment;
-  ws_conn_t *shared_send_buffer_owner;
+  ws_ping_cb_t on_ws_ping;
 
+  ws_conn_t *shared_send_buffer_owner;
   buf_t shared_send_buffer;
+  ws_pong_cb_t on_ws_pong;
+  ws_drain_cb_t on_ws_drain;
+  ws_disconnect_cb_t on_ws_disconnect;
+
   ws_open_cb_t on_ws_open;
   size_t open_conns; // open websocket connections
   size_t max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
 
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
-  ws_ping_cb_t on_ws_ping;
-  ws_pong_cb_t on_ws_pong;
-  ws_drain_cb_t on_ws_drain;
+
   ws_close_cb_t on_ws_close;
-  ws_disconnect_cb_t on_ws_disconnect;
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
-  
+
   struct buf_pool *buffer_pool;
   int fd; // server file descriptor
   int epoll_fd;
