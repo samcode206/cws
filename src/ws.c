@@ -112,9 +112,8 @@ typedef struct server {
   ws_open_cb_t on_ws_open;
   size_t open_conns; // open websocket connections
   size_t max_conns;  // max connections allowed
-  ws_on_upgrade_req_cb_t on_ws_upgrade_req;
   ws_accept_cb_t on_ws_accept;
-
+  ws_on_upgrade_req_cb_t on_ws_upgrade_req;
   ws_ping_cb_t on_ws_ping;
   ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;
