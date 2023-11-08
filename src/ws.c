@@ -103,12 +103,10 @@ struct conn_list {
 };
 
 typedef struct server {
-  int fd; // server file descriptor
-  int epoll_fd;
-  bool accept_paused; // are we paused on accepting new connections
   size_t max_msg_len; // max allowed msg length
   ws_msg_cb_t on_ws_msg;
   buf_t shared_recv_buffer;
+  ws_msg_fragment_cb_t on_ws_msg_fragment;
   ws_conn_t *shared_send_buffer_owner;
   buf_t shared_send_buffer;
   ws_open_cb_t on_ws_open;
@@ -117,7 +115,6 @@ typedef struct server {
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
   ws_accept_cb_t on_ws_accept;
 
-  ws_msg_fragment_cb_t on_ws_msg_fragment;
   ws_ping_cb_t on_ws_ping;
   ws_pong_cb_t on_ws_pong;
   ws_drain_cb_t on_ws_drain;
@@ -126,6 +123,9 @@ typedef struct server {
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct buf_pool *buffer_pool;
+  int fd; // server file descriptor
+  int epoll_fd;
+  bool accept_paused; // are we paused on accepting new connections
   struct epoll_event ev;
   struct epoll_event events[1024];
   struct conn_list writeable_conns;
@@ -640,7 +640,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
       if (s->events[i].data.ptr == s) {
-        ws_server_conns_establish(s, s->fd, (struct sockaddr *)&client_sockaddr,
+        ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
       } else {
 
@@ -707,7 +707,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
     if (accept_resumable) {
       s->ev.events = EPOLLIN;
       s->ev.data.ptr = s;
-      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd);
+      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
       s->accept_paused = 0;
     }
   }
