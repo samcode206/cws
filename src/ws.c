@@ -212,7 +212,7 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd);
 
 static void ws_conn_handle(ws_conn_t *conn);
 
-static void handle_http(ws_conn_t *conn);
+static void handle_upgrade(ws_conn_t *conn);
 static inline int conn_read(ws_conn_t *conn, buf_t *buf);
 
 static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf);
@@ -698,7 +698,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           ws_conn_t *c = s->events[i].data.ptr;
           if (!c->rx_state.close_queued) {
             if (!c->rx_state.upgraded) {
-              handle_http(c);
+              handle_upgrade(c);
             } else {
               ws_conn_handle(c);
             }
@@ -795,7 +795,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
   return Base64encode(derived_val, (const char *)hash, sizeof hash);
 }
 
-static void handle_http(ws_conn_t *conn) {
+static void handle_upgrade(ws_conn_t *conn) {
   ws_server_t *s = conn->rx_state.base;
   buf_t *request_buf;
   buf_t *response_buf = NULL;
