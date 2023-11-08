@@ -16,8 +16,8 @@ typedef struct {
 } frag_t;
 
 void on_open(ws_conn_t *c) {
-   // ws_conn_set_ctx(c, calloc(1, 8)); 
-   }
+  // ws_conn_set_ctx(c, calloc(1, 8));
+}
 
 // void on_ping(ws_conn_t *c, void *msg, size_t n) {
 //   printf("on_ping:");
@@ -94,6 +94,21 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // }
 }
 
+// size_t on_upgrade_request(ws_conn_t *c, char *request, const char *accept_key,
+//                           size_t max_resp_len, char *resp_dst) {
+//   // printf("%s\n", request);
+
+//   int ret = sprintf(resp_dst,
+//           "HTTP/1.1 101 Switching Protocols" CRLF "Upgrade: websocket" CRLF
+//           "Connection: Upgrade" CRLF "Server: cws" CRLF
+//           "Sec-WebSocket-Accept: %.*s\r\n\r\n",
+//           28,
+//           accept_key);
+
+
+//   return ret;
+// }
+
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d \n", code);
   if ((code == WS_CLOSE_ABNORMAL) | (code == WS_CLOSE_NO_STATUS)) {
@@ -155,6 +170,7 @@ void *start_server() {
   struct ws_server_params sp = {
       .addr = "::1",
       .port = port,
+      // .on_ws_upgrade_req = on_upgrade_request,
       // .on_ws_accept = on_accept,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
