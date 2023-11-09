@@ -352,9 +352,9 @@ int utf8_is_valid(uint8_t *s, size_t n);
 
 #define SPACE 0x20
 #define CRLF "\r\n"
-#define CRLF_LEN sizeof CRLF - 1
+#define CRLF_LEN (sizeof CRLF - 1)
 #define CRLF2 "\r\n\r\n"
-#define CRLF2_LEN sizeof CRLF2 - 1
+#define CRLF2_LEN (sizeof CRLF2 - 1)
 
 
 #define GET_RQ "GET"

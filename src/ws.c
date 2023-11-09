@@ -88,6 +88,7 @@ struct ws_conn_t {
 #define CONN_RX_UPGRADED (1u << 1)
 #define CONN_RX_BIN (1u << 2)
 #define CONN_RX_FRAGMENTED (1u << 3)
+#define CONN_RX_GET_REQUEST (1u << 4)
 
 #define CONN_TX_WRITEABLE (1u << 1)
 #define CONN_TX_USING_SHARED (1u << 2)
@@ -134,13 +135,11 @@ typedef struct server {
   struct conn_list closeable_conns;
 } ws_server_t;
 
-
 // connection state utils
 
 static inline bool is_closing(unsigned int const flags) {
   return (flags & CONN_CLOSE_QUEUED) != 0;
 }
-
 
 static inline void mark_closing(ws_conn_t *c) {
   c->tx_state.flags |= CONN_CLOSE_QUEUED;
@@ -180,6 +179,19 @@ static inline void set_fragmented(ws_conn_t *c) {
 static inline void clear_fragmented(ws_conn_t *c) {
   c->rx_state.flags &= ~CONN_RX_FRAGMENTED;
 }
+
+static inline bool is_http_get_request(ws_conn_t *c) {
+  return (c->rx_state.flags & CONN_RX_GET_REQUEST) != 0;
+}
+
+static inline void set_http_get_request(ws_conn_t *c) {
+  c->rx_state.flags |= CONN_RX_GET_REQUEST;
+}
+
+static inline void clear_http_get_request(ws_conn_t *c) {
+  c->rx_state.flags &= ~CONN_RX_GET_REQUEST;
+}
+
 
 static inline bool is_writeable(ws_conn_t *c) {
   return (c->tx_state.flags & CONN_TX_WRITEABLE) != 0;
@@ -892,7 +904,7 @@ static void handle_upgrade(ws_conn_t *conn) {
   } else {
     request_buf = s->shared_recv_buffer;
   }
-
+  
   if (conn_read(conn, request_buf) == -1) {
     ws_conn_destroy(conn);
     buf_reset(s->shared_recv_buffer);
@@ -904,72 +916,91 @@ static void handle_upgrade(ws_conn_t *conn) {
 
   headers[request_buf_len] = '\0';
 
-  if (!strncmp((char *)headers, GET_RQ, GET_RQ_LEN)) {
-    char sec_websocket_key[25] = {0};
-    int ret = get_header((char *)headers, SEC_WS_KEY_HDR, sec_websocket_key,
-                         sizeof sec_websocket_key);
-    if (ret < 0) {
-      printf("error parsing http headers: %d\n", ret);
-      return;
-    }
+  bool is_get_request = is_http_get_request(conn);
+  if (!is_get_request && request_buf_len > 11) {
+    if (strncmp((char *)headers, GET_RQ, GET_RQ_LEN) == 0) {
+      set_http_get_request(conn);
+      is_get_request = true;
+    };
+  };
 
-    char accept_key[32];
-    int accept_key_len =
-        ws_derive_accept_hdr(sec_websocket_key, accept_key, ret - 1) - 1;
+  if (is_get_request) {
+    bool header_end_reached =
+        strncmp((char *)headers + request_buf_len - CRLF2_LEN, CRLF2,
+                CRLF2_LEN) == 0;
 
-    if (!s->on_ws_upgrade_req) {
-      response_buf = request_buf;
-      buf_reset(response_buf);
-      buf_put(response_buf, switching_protocols, SWITCHING_PROTOCOLS_HDRS_LEN);
-      buf_put(response_buf, accept_key, accept_key_len);
-      buf_put(response_buf, CRLF2, CRLF2_LEN);
-      resp_len = buf_len(response_buf);
-    } else {
-
-      if (!buf_len(&conn->tx_state.write_buf) &&
-          s->shared_send_buffer_owner == NULL) {
-        s->shared_send_buffer_owner = conn;
-        set_using_shared(conn);
-        response_buf = s->shared_send_buffer;
-      } else {
-        response_buf = &conn->tx_state.write_buf;
+    if (header_end_reached) {
+      char sec_websocket_key[25] = {0};
+      int ret = get_header((char *)headers, SEC_WS_KEY_HDR, sec_websocket_key,
+                           sizeof sec_websocket_key);
+      if (ret < 0) {
+        printf("error parsing http headers: %d\n", ret);
+        return;
       }
 
-      size_t max_resp_len = buf_space(response_buf);
-      resp_len =
-          s->on_ws_upgrade_req(conn, (char *)headers, accept_key, max_resp_len,
-                               (char *)buf_peek(response_buf));
+      char accept_key[32];
+      int accept_key_len =
+          ws_derive_accept_hdr(sec_websocket_key, accept_key, ret - 1) - 1;
 
-      buf_consume(request_buf, request_buf_len);
-
-      if ((resp_len > 0) & (resp_len <= max_resp_len)) {
-        response_buf->wpos += resp_len;
+      if (!s->on_ws_upgrade_req) {
+        response_buf = request_buf;
+        buf_reset(response_buf);
+        buf_put(response_buf, switching_protocols,
+                SWITCHING_PROTOCOLS_HDRS_LEN);
+        buf_put(response_buf, accept_key, accept_key_len);
+        buf_put(response_buf, CRLF2, CRLF2_LEN);
+        resp_len = buf_len(response_buf);
       } else {
-        resp_len = 0;
-      }
-    }
 
-    if (response_buf) {
-      if (resp_len) {
-
-        int ret = conn_drain_write_buf(conn, response_buf);
-
-        if (ret == 1) {
-          s->on_ws_open(conn);
-          set_upgraded(conn);
-          conn->rx_state.needed_bytes = 2;
-        } else if (ret == -1) {
-          if (!is_closing(conn->tx_state.flags)) {
-            server_closeable_conns_append(conn);
-          }
+        if (!buf_len(&conn->tx_state.write_buf) &&
+            s->shared_send_buffer_owner == NULL) {
+          s->shared_send_buffer_owner = conn;
+          set_using_shared(conn);
+          response_buf = s->shared_send_buffer;
+        } else {
+          response_buf = &conn->tx_state.write_buf;
         }
-      } else {
-        // todo(sah): as printf suggests and maybe a 500 status code
-        printf("should drop connection\n");
+
+        size_t max_resp_len = buf_space(response_buf);
+        resp_len =
+            s->on_ws_upgrade_req(conn, (char *)headers, accept_key,
+                                 max_resp_len, (char *)buf_peek(response_buf));
+
+        buf_consume(request_buf, request_buf_len);
+
+        if ((resp_len > 0) & (resp_len <= max_resp_len)) {
+          response_buf->wpos += resp_len;
+        } else {
+          resp_len = 0;
+        }
+      }
+
+      if (response_buf) {
+        if (resp_len) {
+
+          int ret = conn_drain_write_buf(conn, response_buf);
+
+          if (ret == 1) {
+            clear_http_get_request(conn);
+            s->on_ws_open(conn);
+            set_upgraded(conn);
+            conn->rx_state.needed_bytes = 2;
+          } else if (ret == -1) {
+            if (!is_closing(conn->tx_state.flags)) {
+              server_closeable_conns_append(conn);
+            }
+          }
+        } else {
+          // todo(sah): as printf suggests and maybe a 500 status code
+          printf("should drop connection\n");
+        }
+      }
+    } else {
+      if (request_buf == s->shared_recv_buffer){
+        buf_move(s->shared_recv_buffer, &conn->rx_state.read_buf, buf_len(s->shared_recv_buffer));
       }
     }
 
-    return;
   } else {
     fprintf(stderr, "NOT a GET request");
   }

@@ -25,7 +25,7 @@ socket.on("connect", async () => {
       socket.write(requestBuffer.subarray(i, i+16));
       i+=16;
     } else {
-      socket.write(requestBuffer.subarray(i, requestBuffer.length - i));
+      socket.write(requestBuffer.subarray(i, requestBuffer.length));
       break;
     }
   }
