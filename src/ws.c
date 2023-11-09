@@ -630,7 +630,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
         s->ev.events = EPOLLIN | EPOLLRDHUP;
         conn->rx_state.fd = client_fd;
         conn->rx_state.base = s;
-        conn->rx_state.needed_bytes = 2;
+        conn->rx_state.needed_bytes = 12;
         set_writeable(conn);
         conn->tx_state.fd = client_fd;
         conn->tx_state.base = s;
