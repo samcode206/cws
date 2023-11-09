@@ -60,14 +60,8 @@
 typedef int (*ws_handler)(ws_server_t *s, ws_conn_t *conn);
 
 typedef struct {
-  int fd;            // socket fd
-  bool bin;          // is binary message?
-  bool upgraded;     // are we even upgraded?
-  bool close_queued; // we are in the close list and should not attempt to do
-                     // any IO on this connection, it will soon be closed and
-                     // all resources will be recycled/freed
-
-  bool fragmented;      // are we handling a fragmented msg?
+  int fd;               // socket fd
+  unsigned int flags;   // state flags
   size_t fragments_len; // size of the data portion of the frames across
                         // fragmentation
 
@@ -77,13 +71,10 @@ typedef struct {
 } read_state_t;
 
 typedef struct {
-  int fd;            // socket fd
-  bool writeable;    // can we write to the socket now?
-  bool write_queued; // are we queued for writing?
-  bool close_queued; // are we getting removed/closed
-  bool using_shared; // are we using the shared send buffer
-  buf_t write_buf;   // write buffer structure
-  ws_server_t *base; // server ptr
+  int fd;             // socket fd
+  unsigned int flags; // state flags
+  buf_t write_buf;    // write buffer structure
+  ws_server_t *base;  // server ptr
 } write_state_t;
 
 struct ws_conn_t {
@@ -91,6 +82,16 @@ struct ws_conn_t {
   write_state_t tx_state;
   void *ctx;
 };
+
+#define CONN_CLOSE_QUEUED (1u << 0)
+
+#define CONN_RX_UPGRADED (1u << 1)
+#define CONN_RX_BIN (1u << 2)
+#define CONN_RX_FRAGMENTED (1u << 3)
+
+#define CONN_TX_WRITEABLE (1u << 1)
+#define CONN_TX_USING_SHARED (1u << 2)
+#define CONN_TX_WRITE_QUEUED (1u << 3)
 
 // general purpose dynamic array
 // that is used to hold a list of connections
@@ -132,6 +133,89 @@ typedef struct server {
   struct conn_list writeable_conns;
   struct conn_list closeable_conns;
 } ws_server_t;
+
+
+// connection state utils
+
+static inline bool is_closing(unsigned int const flags) {
+  return (flags & CONN_CLOSE_QUEUED) != 0;
+}
+
+
+static inline void mark_closing(ws_conn_t *c) {
+  c->tx_state.flags |= CONN_CLOSE_QUEUED;
+  c->rx_state.flags |= CONN_CLOSE_QUEUED;
+}
+
+static inline bool is_upgraded(ws_conn_t *c) {
+  return (c->rx_state.flags & CONN_RX_UPGRADED) != 0;
+}
+
+static inline void set_upgraded(ws_conn_t *c) {
+  c->rx_state.flags |= CONN_RX_UPGRADED;
+}
+
+static inline void clear_upgraded(ws_conn_t *c) {
+  c->rx_state.flags &= ~CONN_RX_UPGRADED;
+}
+
+static inline bool is_bin(ws_conn_t *c) {
+  return (c->rx_state.flags & CONN_RX_BIN) != 0;
+}
+
+static inline void set_bin(ws_conn_t *c) { c->rx_state.flags |= CONN_RX_BIN; }
+
+static inline void clear_bin(ws_conn_t *c) {
+  c->rx_state.flags &= ~CONN_RX_BIN;
+}
+
+static inline bool is_fragmented(ws_conn_t *c) {
+  return (c->rx_state.flags & CONN_RX_FRAGMENTED) != 0;
+}
+
+static inline void set_fragmented(ws_conn_t *c) {
+  c->rx_state.flags |= CONN_RX_FRAGMENTED;
+}
+
+static inline void clear_fragmented(ws_conn_t *c) {
+  c->rx_state.flags &= ~CONN_RX_FRAGMENTED;
+}
+
+static inline bool is_writeable(ws_conn_t *c) {
+  return (c->tx_state.flags & CONN_TX_WRITEABLE) != 0;
+}
+
+static inline void set_writeable(ws_conn_t *c) {
+  c->tx_state.flags |= CONN_TX_WRITEABLE;
+}
+
+static inline void clear_writeable(ws_conn_t *c) {
+  c->tx_state.flags &= ~CONN_TX_WRITEABLE;
+}
+
+static inline bool is_write_queued(ws_conn_t *c) {
+  return (c->tx_state.flags & CONN_TX_WRITE_QUEUED) != 0;
+}
+
+static inline void set_write_queued(ws_conn_t *c) {
+  c->tx_state.flags |= CONN_TX_WRITE_QUEUED;
+}
+
+static inline void clear_write_queued(ws_conn_t *c) {
+  c->tx_state.flags &= ~CONN_TX_WRITE_QUEUED;
+}
+
+static inline bool is_using_shared(ws_conn_t *c) {
+  return (c->tx_state.flags & CONN_TX_USING_SHARED) != 0;
+}
+
+static inline void set_using_shared(ws_conn_t *c) {
+  c->tx_state.flags |= CONN_TX_USING_SHARED;
+}
+
+static inline void clear_using_shared(ws_conn_t *c) {
+  c->tx_state.flags &= ~CONN_TX_USING_SHARED;
+}
 
 // Frame Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
@@ -233,34 +317,34 @@ static void server_writeable_conns_append(ws_conn_t *c) {
   // to be added to the list:
   // a connection must not already be queued for writing
   // a connection must be in a writeable state
-  if (c->tx_state.writeable && !c->tx_state.write_queued) {
+  if (is_writeable(c) && !is_write_queued(c)) {
     conn_list_append(&c->tx_state.base->writeable_conns, c);
-    c->tx_state.write_queued = true;
+    set_write_queued(c);
   }
 }
 
 static void server_closeable_conns_append(ws_conn_t *c) {
-  if (c->tx_state.using_shared) {
+  // clear the shared buffer first if owned by this connection
+  if (is_using_shared(c)) {
     buf_reset(c->tx_state.base->shared_send_buffer);
-    c->tx_state.using_shared = false;
+    clear_using_shared(c);
     c->tx_state.base->shared_send_buffer_owner = NULL;
   }
   c->tx_state.base->ev.data.ptr = c;
   ws_server_epoll_ctl(c->tx_state.base, EPOLL_CTL_DEL, c->tx_state.fd);
   conn_list_append(&c->tx_state.base->closeable_conns, c);
-  c->tx_state.close_queued = true;
-  c->rx_state.close_queued = true;
+  mark_closing(c);
 }
 
 static void server_writeable_conns_drain(ws_server_t *s) {
   if (s->shared_send_buffer_owner) {
     ws_conn_t *c = s->shared_send_buffer_owner;
-    if (!c->tx_state.close_queued &&
+    if (!is_closing(c->tx_state.flags) &&
         conn_drain_write_buf(c, s->shared_send_buffer) == -1) {
+      // buf_reset(s->shared_send_buffer);
       server_closeable_conns_append(c);
     };
-
-    c->tx_state.using_shared = false;
+    clear_using_shared(c);
     s->shared_send_buffer_owner = NULL;
   }
   if (s->writeable_conns.len) {
@@ -269,11 +353,11 @@ static void server_writeable_conns_drain(ws_server_t *s) {
 
   for (size_t i = 0; i < s->writeable_conns.len; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
-    if (!c->tx_state.close_queued) {
+    if (!is_closing(c->tx_state.flags)) {
       if (conn_drain_write_buf(c, &c->tx_state.write_buf) == -1) {
         server_closeable_conns_append(c);
       };
-      c->tx_state.write_queued = false;
+      clear_write_queued(c);
     }
   }
 
@@ -547,8 +631,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
         conn->rx_state.fd = client_fd;
         conn->rx_state.base = s;
         conn->rx_state.needed_bytes = 2;
-
-        conn->tx_state.writeable = 1;
+        set_writeable(conn);
         conn->tx_state.fd = client_fd;
         conn->tx_state.base = s;
 
@@ -664,13 +747,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
         if (s->events[i].events & EPOLLOUT) {
           ws_conn_t *c = s->events[i].data.ptr;
-          if (!c->tx_state.close_queued) {
+          if (!is_closing(c->tx_state.flags)) {
 
             int ret = conn_drain_write_buf(c, &c->tx_state.write_buf);
             if (ret == 1) {
               ws_conn_t *c = s->events[i].data.ptr;
-              if (!c->rx_state.upgraded) {
-                c->rx_state.upgraded = 1;
+              if (!is_upgraded(c)) {
+                set_upgraded(c);
                 c->rx_state.needed_bytes = 2;
                 s->on_ws_open(c);
               } else {
@@ -691,7 +774,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                 }
               };
             } else if (ret == -1) {
-              if (!c->tx_state.close_queued) {
+              if (!is_closing(c->tx_state.flags)) {
                 server_closeable_conns_append(c);
               }
             }
@@ -699,8 +782,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
         }
         if (s->events[i].events & EPOLLIN) {
           ws_conn_t *c = s->events[i].data.ptr;
-          if (!c->rx_state.close_queued) {
-            if (!c->rx_state.upgraded) {
+          if (!is_closing(c->rx_state.flags)) {
+            if (!is_upgraded(c)) {
               handle_upgrade(c);
             } else {
               ws_conn_handle(c);
@@ -846,7 +929,7 @@ static void handle_upgrade(ws_conn_t *conn) {
       if (!buf_len(&conn->tx_state.write_buf) &&
           s->shared_send_buffer_owner == NULL) {
         s->shared_send_buffer_owner = conn;
-        conn->tx_state.using_shared = true;
+        set_using_shared(conn);
         response_buf = s->shared_send_buffer;
       } else {
         response_buf = &conn->tx_state.write_buf;
@@ -873,10 +956,10 @@ static void handle_upgrade(ws_conn_t *conn) {
 
         if (ret == 1) {
           s->on_ws_open(conn);
-          conn->rx_state.upgraded = 1;
+          set_upgraded(conn);
           conn->rx_state.needed_bytes = 2;
         } else if (ret == -1) {
-          if (!conn->tx_state.close_queued) {
+          if (!is_closing(conn->tx_state.flags)) {
             server_closeable_conns_append(conn);
           }
         }
@@ -987,22 +1070,23 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     switch (opcode) {
     case OP_TXT:
     case OP_BIN:
-      conn->rx_state.bin = opcode == OP_BIN;
+      conn->rx_state.flags &= ~CONN_RX_BIN;
+      conn->rx_state.flags |= (opcode == OP_BIN) * CONN_RX_BIN;
       // fin and never fragmented
       // this handles both text and binary hence the fallthrough
-      if (fin & (!conn->rx_state.fragmented)) {
-        if (!conn->rx_state.bin && !utf8_is_valid(msg, payload_len)) {
+      if (fin & (!is_fragmented(conn))) {
+        if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
           ws_conn_destroy(conn);
           buf_reset(s->shared_recv_buffer);
           return; // TODO(sah): send a Close frame, & call close callback
         }
-        s->on_ws_msg(conn, msg, payload_len, conn->rx_state.bin);
+        s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
         buf_consume(buf, full_frame_len);
-        conn->rx_state.bin = 0;
+        clear_bin(conn);
         conn->rx_state.needed_bytes = 2;
 
         break; /* OP_BIN don't fall through to fragmented msg */
-      } else if (fin & (conn->rx_state.fragmented)) {
+      } else if (fin & (is_fragmented(conn))) {
         // this is invalid because we expect continuation not text or binary
         // opcode
         ws_conn_destroy(conn);
@@ -1017,7 +1101,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // call the callback
       // reset
       // can't send cont as first fragment
-      if ((opcode == OP_CONT) & (!conn->rx_state.fragmented)) {
+      if ((opcode == OP_CONT) & (!is_fragmented(conn))) {
         ws_conn_destroy(conn);
         buf_reset(s->shared_recv_buffer);
         return;
@@ -1030,7 +1114,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       }
 
       // set the state to fragmented after validation
-      conn->rx_state.fragmented = 1;
+      set_fragmented(conn);
 
       if (!s->on_ws_msg_fragment) {
 
@@ -1051,7 +1135,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           conn->rx_state.needed_bytes = 2;
         }
         if (fin) {
-          if (!conn->rx_state.bin &&
+          if (!is_bin(conn) &&
               !utf8_is_valid(buf_peek(&conn->rx_state.read_buf),
                              conn->rx_state.fragments_len)) {
             ws_conn_destroy(conn);
@@ -1059,13 +1143,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             return; // TODO(sah): send a Close frame, & call close callback
           }
           s->on_ws_msg(conn, buf_peek(&conn->rx_state.read_buf),
-                       conn->rx_state.fragments_len, conn->rx_state.bin);
+                       conn->rx_state.fragments_len, is_bin(conn));
           buf_consume(&conn->rx_state.read_buf, conn->rx_state.fragments_len);
 
           conn->rx_state.fragments_len = 0;
-          conn->rx_state.fragmented = 0;
+          clear_fragmented(conn);
+          clear_bin(conn);
           conn->rx_state.needed_bytes = 2;
-          conn->rx_state.bin = 0;
         }
       } else {
         s->on_ws_msg_fragment(conn, msg, payload_len, fin);
@@ -1074,8 +1158,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         if (fin) {
           conn->rx_state.fragments_len = 0;
           conn->rx_state.needed_bytes = 2;
-          conn->rx_state.bin = 0;
-          conn->rx_state.fragmented = 0;
+          clear_fragmented(conn);
+          clear_bin(conn);
         }
       }
       break;
@@ -1194,14 +1278,14 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
   // if we own the shared buffer drain it right now to allow next conn to
   // reuse it
-  if (conn->tx_state.using_shared) {
+  if (is_using_shared(conn)) {
     if (conn_drain_write_buf(conn, s->shared_send_buffer) == -1) {
-      if (!conn->tx_state.close_queued) {
+      if (!is_closing(conn->tx_state.flags)) {
         buf_reset(s->shared_recv_buffer);
         server_closeable_conns_append(conn);
       }
     };
-    conn->tx_state.using_shared = false;
+    clear_using_shared(conn);
     conn->tx_state.base->shared_send_buffer_owner = NULL;
   }
 
@@ -1223,7 +1307,7 @@ clean_up_buffer:
 }
 
 static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
-  conn->tx_state.writeable = 0;
+  clear_writeable(conn);
   conn->tx_state.base->ev.data.ptr = conn;
   conn->tx_state.base->ev.events = EPOLLOUT | EPOLLRDHUP;
   ws_server_epoll_ctl(conn->tx_state.base, EPOLL_CTL_MOD, conn->tx_state.fd);
@@ -1243,12 +1327,12 @@ static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
   }
 
   if (to_write == n) {
-    conn->tx_state.writeable = 1;
+    set_writeable(conn);
     return 1;
   } else {
-    if (conn->tx_state.using_shared) {
+    if (is_using_shared(conn)) {
       // worst case
-      conn->tx_state.using_shared = false;
+      clear_using_shared(conn);
       buf_move(conn->tx_state.base->shared_send_buffer,
                &conn->tx_state.write_buf,
                buf_len(conn->tx_state.base->shared_send_buffer));
@@ -1271,7 +1355,7 @@ will be called
 inline int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PONG);
   if (stat == -1) {
-    if (!c->tx_state.close_queued) {
+    if (!is_closing(c->tx_state.flags)) {
       server_closeable_conns_append(c);
     }
   }
@@ -1288,7 +1372,7 @@ will be called
 inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PING);
   if (stat == -1) {
-    if (!c->tx_state.close_queued) {
+    if (!is_closing(c->tx_state.flags)) {
       server_closeable_conns_append(c);
     }
   }
@@ -1306,7 +1390,7 @@ will be called
 inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_BIN);
   if (stat == -1) {
-    if (!c->tx_state.close_queued) {
+    if (!is_closing(c->tx_state.flags)) {
       server_closeable_conns_append(c);
     }
   }
@@ -1324,7 +1408,7 @@ will be called
 inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_TXT);
   if (stat == -1) {
-    if (!c->tx_state.close_queued) {
+    if (!is_closing(c->tx_state.flags)) {
       server_closeable_conns_append(c);
     }
   }
@@ -1339,7 +1423,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   }
 
   // make sure we haven't already done this
-  if (conn->tx_state.close_queued) {
+  if (is_closing(conn->tx_state.flags)) {
     return;
   }
 
@@ -1348,7 +1432,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   // lead to us sending garbage as the other side is decoding the frames
   // because we will have interleaved data sent...
   // todo(Sah): solve for the above
-  if (conn->tx_state.writeable) {
+  if (is_writeable(conn)) {
     // reason msg was provided
     struct iovec iovs[2];
     if (len) {
@@ -1377,7 +1461,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
 }
 
 void ws_conn_destroy(ws_conn_t *conn) {
-  if (conn->rx_state.close_queued) {
+  if (is_closing(conn->rx_state.flags)) {
     return;
   }
   server_closeable_conns_append(conn);
@@ -1395,21 +1479,21 @@ start sending more data
 
 static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
   if (send_len > 65535 || buf_len(&conn->tx_state.write_buf) != 0 ||
-      !conn->tx_state.writeable) {
+      !is_writeable(conn)) {
     return &conn->tx_state.write_buf;
   } else {
-    if (!conn->tx_state.using_shared) {
+    if (!is_using_shared(conn)) {
       ws_conn_t *owner = conn->tx_state.base->shared_send_buffer_owner;
       if (owner) {
-        if (!owner->tx_state.close_queued) {
+        if (!is_closing(owner->tx_state.flags)) {
           if (conn_drain_write_buf(
                   owner, owner->tx_state.base->shared_send_buffer) == -1) {
             server_closeable_conns_append(owner);
           };
         }
-        owner->tx_state.using_shared = false;
+        clear_using_shared(owner);
       }
-      conn->tx_state.using_shared = true;
+      set_using_shared(conn);
       conn->tx_state.base->shared_send_buffer_owner = conn;
     }
     return conn->tx_state.base->shared_send_buffer;
@@ -1419,7 +1503,7 @@ static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op) {
 
-  if (!conn->tx_state.close_queued) {
+  if (!is_closing(conn->tx_state.flags)) {
     ws_server_t *s = conn->tx_state.base;
     size_t hlen = frame_get_header_len(len);
     buf_t *wbuf = conn_choose_send_buf(conn, len);
@@ -1463,7 +1547,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
         hbuf[8] = (len >> 8) & 0xFF;
         hbuf[9] = len & 0xFF;
 
-        if (!conn->tx_state.writeable) {
+        if (!is_writeable(conn)) {
           buf_put(wbuf, hbuf, hlen);
           buf_put(wbuf, data, len);
         } else {
@@ -1471,8 +1555,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
           size_t total_write;
 
           // we have to drain from shared buffer so make it first iovec entry
-          if (conn->tx_state.using_shared &&
-              buf_len(s->shared_send_buffer) != 0) {
+          if (is_using_shared(conn) && buf_len(s->shared_send_buffer) != 0) {
             assert(buf_len(wbuf) == 0); // TODO: remove
             // here we use 3 iovecs
             // first iovec points to the shared buffer
@@ -1536,8 +1619,8 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                      ((n == -1) & ((errno != EAGAIN) | (errno != EINTR)))) {
             return -1;
           } else {
-            if (conn->tx_state.using_shared) {
-              conn->tx_state.using_shared = false;
+            if (is_using_shared(conn)) {
+              clear_using_shared(conn);
               conn->tx_state.base->shared_send_buffer_owner = NULL;
             }
             ws_conn_notify_on_writeable(conn);
@@ -1569,7 +1652,7 @@ inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
 
 inline bool ws_server_accept_paused(ws_server_t *s) { return s->accept_paused; }
 
-inline bool ws_conn_msg_bin(ws_conn_t *c) { return c->rx_state.bin; }
+inline bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
 
 inline size_t ws_server_open_conns(ws_server_t *s) { return s->open_conns; }
 
