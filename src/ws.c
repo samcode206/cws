@@ -192,7 +192,6 @@ static inline void clear_http_get_request(ws_conn_t *c) {
   c->rx_state.flags &= ~CONN_RX_GET_REQUEST;
 }
 
-
 static inline bool is_writeable(ws_conn_t *c) {
   return (c->tx_state.flags & CONN_TX_WRITEABLE) != 0;
 }
@@ -904,27 +903,48 @@ static void handle_upgrade(ws_conn_t *conn) {
   } else {
     request_buf = s->shared_recv_buffer;
   }
-  
+
   if (conn_read(conn, request_buf) == -1) {
     ws_conn_destroy(conn);
     buf_reset(s->shared_recv_buffer);
     return;
   };
 
-  uint8_t *headers = buf_peek(request_buf);
   size_t request_buf_len = buf_len(request_buf);
+
+  // if we still have less than needed bytes
+  // stop and wait for more
+  if (request_buf_len < conn->rx_state.needed_bytes) {
+    if (request_buf == s->shared_recv_buffer) {
+      buf_move(s->shared_recv_buffer, &conn->rx_state.read_buf,
+               buf_len(s->shared_recv_buffer));
+    }
+
+    return;
+  }
+
+  // printf("request_buf_len=%zu\n", request_buf_len);
+
+  uint8_t *headers = buf_peek(request_buf);
 
   headers[request_buf_len] = '\0';
 
   bool is_get_request = is_http_get_request(conn);
-  if (!is_get_request && request_buf_len > 11) {
+  if (!is_get_request) {
+    // this is the first read
+    // validate that it's a GET request and increase the needed_bytes
     if (strncmp((char *)headers, GET_RQ, GET_RQ_LEN) == 0) {
       set_http_get_request(conn);
       is_get_request = true;
+      // Sec-WebSocket-Accept:s3pPLMBiTxaQ9kYGzzhZRbK+xOo= is 49 bytes and
+      // that's the absolute minimum (practically still higher because there
+      // will be other headers)
+      conn->rx_state.needed_bytes += 49;
     };
   };
 
   if (is_get_request) {
+    // only start processing when the final header has arrived
     bool header_end_reached =
         strncmp((char *)headers + request_buf_len - CRLF2_LEN, CRLF2,
                 CRLF2_LEN) == 0;
@@ -984,7 +1004,8 @@ static void handle_upgrade(ws_conn_t *conn) {
             clear_http_get_request(conn);
             s->on_ws_open(conn);
             set_upgraded(conn);
-            conn->rx_state.needed_bytes = 2;
+            conn->rx_state.needed_bytes =
+                2; // reset to the minimum needed to parse a ws header
           } else if (ret == -1) {
             if (!is_closing(conn->tx_state.flags)) {
               server_closeable_conns_append(conn);
@@ -996,8 +1017,9 @@ static void handle_upgrade(ws_conn_t *conn) {
         }
       }
     } else {
-      if (request_buf == s->shared_recv_buffer){
-        buf_move(s->shared_recv_buffer, &conn->rx_state.read_buf, buf_len(s->shared_recv_buffer));
+      if (request_buf == s->shared_recv_buffer) {
+        buf_move(s->shared_recv_buffer, &conn->rx_state.read_buf,
+                 buf_len(s->shared_recv_buffer));
       }
     }
 

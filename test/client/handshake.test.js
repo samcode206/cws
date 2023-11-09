@@ -18,17 +18,22 @@ socket.on("connect", async () => {
   const requestBuffer = Buffer.from("GET /chat HTTP/1.1\r\nHost: example.com:8000\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
 
 
-  let i = 0;
-
-  while (true){
-    if (i + 16 < requestBuffer.length){
-      socket.write(requestBuffer.subarray(i, i+16));
-      i+=16;
-    } else {
-      socket.write(requestBuffer.subarray(i, requestBuffer.length));
-      break;
-    }
+  for (const b of requestBuffer.toString()){
+    // console.log(b);
+    socket.write(Buffer.from(b));
   }
+
+  // let i = 0;
+
+  // while (true){
+  //   if (i + 16 < requestBuffer.length){
+  //     socket.write(requestBuffer.subarray(i, i+16));
+  //     i+=16;
+  //   } else {
+  //     socket.write(requestBuffer.subarray(i, requestBuffer.length));
+  //     break;
+  //   }
+  // }
 
 
 });
