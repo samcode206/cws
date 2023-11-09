@@ -1376,7 +1376,7 @@ static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
     return 0;
   }
 
-  n = buf_send(wbuf, conn->tx_state.fd, 0);
+  n = buf_send(wbuf, conn->tx_state.fd, MSG_NOSIGNAL);
   if ((n == -1 && errno != EAGAIN) | (n == 0)) {
     return -1;
   }
