@@ -120,7 +120,7 @@ typedef struct server {
   ws_accept_cb_t on_ws_accept;
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
   ws_close_cb_t on_ws_close;
-  
+
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct buf_pool *buffer_pool;
@@ -240,6 +240,11 @@ static void server_writeable_conns_append(ws_conn_t *c) {
 }
 
 static void server_closeable_conns_append(ws_conn_t *c) {
+  if (c->tx_state.using_shared) {
+    buf_reset(c->tx_state.base->shared_send_buffer);
+    c->tx_state.using_shared = false;
+    c->tx_state.base->shared_send_buffer_owner = NULL;
+  }
   c->tx_state.base->ev.data.ptr = c;
   ws_server_epoll_ctl(c->tx_state.base, EPOLL_CTL_DEL, c->tx_state.fd);
   conn_list_append(&c->tx_state.base->closeable_conns, c);
@@ -457,7 +462,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->buffer_pool = buf_pool_init(s->max_conns + s->max_conns + 2, buffer_size);
   s->max_msg_len = max_backpressure;
 
-
   s->shared_send_buffer_owner = NULL;
   assert(s->buffer_pool != NULL);
 
@@ -616,7 +620,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
   buf_t shared_rxb = {0};
   buf_t shared_txb = {0};
-
 
   buf_init(s->buffer_pool, &shared_rxb);
   buf_init(s->buffer_pool, &shared_txb);
