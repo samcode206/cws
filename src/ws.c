@@ -970,6 +970,8 @@ static void handle_upgrade(ws_conn_t *conn) {
     }
 
     return;
+  } else {
+    fprintf(stderr, "NOT a GET request");
   }
 }
 
