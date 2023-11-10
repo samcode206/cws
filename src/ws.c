@@ -1546,68 +1546,6 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
   return stat == 1;
 }
 
-void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
-  // reason string must be less than 124
-  // this isn't a websocket protocol restriction but it will be here for now
-  if (len > 124) {
-    return;
-  }
-
-  // make sure we haven't already done this
-  if (is_closing(conn->tx_state.flags)) {
-    return;
-  }
-
-  // if we can say good bye let's do that
-  // not if a partial write is in progress this will
-  // lead to us sending garbage as the other side is decoding the frames
-  // because we will have interleaved data sent...
-  // todo(Sah): solve for the above
-  if (is_writeable(conn)) {
-    // reason msg was provided
-    struct iovec iovs[2];
-    if (len) {
-      uint8_t buf1[4] = {0, 0};
-      buf1[0] = FIN | OP_CLOSE;
-      buf1[1] = len + 2;
-      buf1[2] = (code >> 8) & 0xFF;
-      buf1[3] = code & 0xFF;
-      iovs[0].iov_len = 4;
-      iovs[0].iov_base = buf1;
-      iovs[1].iov_len = len;
-      iovs[1].iov_base = msg;
-      writev(conn->tx_state.fd, iovs, 2);
-    } else {
-      uint8_t buf[4] = {0, 0};
-      buf[0] = FIN | OP_CLOSE;
-      buf[1] = 2;
-      buf[2] = (code >> 8) & 0xFF;
-      buf[3] = code & 0xFF;
-      send(conn->tx_state.fd, buf, 4, MSG_NOSIGNAL);
-    }
-  }
-
-  // prepare the connection to be close and queue it up in the close queue
-  server_closeable_conns_append(conn);
-}
-
-void ws_conn_destroy(ws_conn_t *conn) {
-  if (is_closing(conn->rx_state.flags)) {
-    return;
-  }
-  server_closeable_conns_append(conn);
-}
-
-/**
-* returns:
-     1 data was completely written
-
-     0 part of the data was written, caller should wait for on_drain event to
-start sending more data
-
-    -1 an error occurred connection should be closed, check errno
-*/
-
 static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
   if (send_len > 65535 || buf_len(&conn->tx_state.write_buf) != 0 ||
       !is_writeable(conn)) {
@@ -1630,6 +1568,49 @@ static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
     return conn->tx_state.base->shared_send_buffer;
   }
 }
+
+void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
+  // reason string must be less than 124
+  // this isn't a websocket protocol restriction but it will be here for now
+  if (len > 124) {
+    return;
+  }
+
+  // make sure we haven't already done this
+  if (is_closing(conn->tx_state.flags)) {
+    return;
+  }
+
+  buf_t *wbuf = conn_choose_send_buf(conn, 4 + len);
+  uint8_t *buf = buf_peek(wbuf);
+
+  buf[0] = FIN | OP_CLOSE;
+  buf[1] = 2 + len;
+  buf[2] = (code >> 8) & 0xFF;
+  buf[3] = code & 0xFF;
+  wbuf->wpos += 4;
+  buf_put(wbuf, msg, len);
+
+  conn_drain_write_buf(conn, wbuf);
+  server_closeable_conns_append(conn);
+}
+
+void ws_conn_destroy(ws_conn_t *conn) {
+  if (is_closing(conn->rx_state.flags)) {
+    return;
+  }
+  server_closeable_conns_append(conn);
+}
+
+/**
+* returns:
+     1 data was completely written
+
+     0 part of the data was written, caller should wait for on_drain event to
+start sending more data
+
+    -1 an error occurred connection should be closed, check errno
+*/
 
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op) {
