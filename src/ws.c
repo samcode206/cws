@@ -43,7 +43,9 @@
 #include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/uio.h>
+#include <time.h>
 
 #define FIN 0x80
 
@@ -80,8 +82,12 @@ typedef struct {
 struct ws_conn_t {
   read_state_t rx_state;
   write_state_t tx_state;
+  unsigned int read_timeout;
+  unsigned int write_timeout;
   void *ctx;
 };
+
+static_assert(sizeof(ws_conn_t) == 128, "64 bit systems only");
 
 #define CONN_CLOSE_QUEUED (1u << 0)
 
@@ -127,6 +133,7 @@ typedef struct server {
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct buf_pool *buffer_pool;
+  struct conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
   bool accept_paused; // are we paused on accepting new connections
@@ -400,7 +407,9 @@ static void server_closeable_conns_close(ws_server_t *s) {
       if (s->shared_send_buffer_owner == c) {
         s->shared_send_buffer_owner = NULL;
       }
-      free(c);
+
+      memset(c, 0, sizeof(ws_conn_t));
+      conn_pool_free(s->conn_pool, c);
       --s->open_conns;
     }
 
@@ -564,6 +573,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   printf("max_conns = %zu\n", s->max_conns);
   s->buffer_pool = buf_pool_init(s->max_conns + s->max_conns + 2, buffer_size);
+
+  s->conn_pool = conn_pool_init(s->max_conns, sizeof(ws_conn_t));
   s->max_msg_len = max_backpressure;
 
   s->shared_send_buffer_owner = NULL;
@@ -658,7 +669,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return;
         }
 
-        ws_conn_t *conn = calloc(1, sizeof(ws_conn_t));
+        ws_conn_t *conn = conn_pool_alloc(s->conn_pool);
         assert(conn != NULL); // TODO(sah): remove this
         s->ev.events = EPOLLIN | EPOLLRDHUP;
         conn->rx_state.fd = client_fd;
@@ -728,6 +739,27 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
   }
 }
 
+static void server_do_timers_sweep(ws_server_t *s) {
+
+  long ti = time(NULL);
+
+  unsigned int t = (unsigned int)ti;
+
+  size_t count = s->max_conns;
+  ws_conn_t *conns = s->conn_pool->base;
+
+  while (count--) {
+
+    if ((conns[count].read_timeout) & (conns[count].read_timeout < t)) {
+      printf("current time = %d\n", t);
+      printf("timeout time = %d\n", conns[count].read_timeout);
+      printf("read timeout: %d\n", conns[count].rx_state.fd);
+    };
+
+    // printf("fd = %d\n", conns[count].rx_state.fd);
+  }
+}
+
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = listen(s->fd, backlog);
   if (ret < 0) {
@@ -754,6 +786,21 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
 
+  int tfd = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+
+  struct itimerspec timer = {
+      .it_interval.tv_sec = 3,
+      .it_value.tv_sec = 3,
+  };
+
+  assert(timerfd_settime(tfd, 0, &timer, NULL) == 0);
+
+  s->ev.events = EPOLLIN;
+  s->ev.data.ptr = &timer;
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
+
+  bool do_timer_sweep = false;
+
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
     if (n_evs < 0) {
@@ -769,7 +816,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if (s->events[i].data.ptr == s) {
+      if (s->events[i].data.ptr == &timer) {
+        uint64_t v;
+        read(tfd, &v, 8);
+        (void)v;
+        do_timer_sweep = true;
+      } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
       } else {
@@ -833,6 +885,11 @@ int ws_server_start(ws_server_t *s, int backlog) {
     }
 
     server_writeable_conns_drain(s); // drain writes
+
+    if (do_timer_sweep) {
+      printf("checking timers\n");
+      server_do_timers_sweep(s);
+    }
 
     bool accept_resumable =
         s->accept_paused &&
@@ -1197,6 +1254,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n",
     // frame_buf_len,
     //        full_frame_len, opcode, fin);
+
+    conn->read_timeout = (unsigned int)time(NULL) + 5;
 
     switch (opcode) {
     case OP_TXT:

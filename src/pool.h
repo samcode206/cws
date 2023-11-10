@@ -33,9 +33,19 @@ void buf_pool_free(struct buf_pool *p, void *buf);
 
 void buf_pool_destroy(struct buf_pool *p);
 
-static inline size_t buf_pool_file_offset(struct buf_pool const *p,
-                                          void const *buf) {
-  return ((uintptr_t)buf - (uintptr_t)p->base) / (p->buf_sz + p->buf_sz) * p->buf_sz;
-}
+struct conn_pool {
+  void *base;
+  size_t item_size;
+  struct buf_node *head;
+  struct buf_node _buf_nodes[];
+};
+
+
+struct conn_pool *conn_pool_init(uint32_t nmemb, size_t conn_sz);
+
+void *conn_pool_alloc(struct conn_pool *p);
+
+void conn_pool_free(struct conn_pool *p, void *buf);
+
 
 #endif // __X_BUFFPOOL_LIB_14
