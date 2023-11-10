@@ -101,6 +101,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
 //   int ret = sprintf(resp_dst,
 //           "HTTP/1.1 101 Switching Protocols" CRLF "Upgrade: websocket" CRLF
 //           "Connection: Upgrade" CRLF "Server: cws" CRLF
+//           "X-Your-Header: Hi" CRLF
 //           "Sec-WebSocket-Accept: %.*s\r\n\r\n",
 //           28,
 //           accept_key);
@@ -175,9 +176,9 @@ void *start_server() {
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
       .on_ws_disconnect = on_disconnect,
-      .max_buffered_bytes = 512,
+      .max_buffered_bytes = 1024 * 1024 * 32,
       .on_ws_accept_err = on_accept_err,
-      .max_conns = 1024,
+      // .max_conns = 1024,
       // .on_ws_msg_fragment = on_msg_fragment,
   };
 

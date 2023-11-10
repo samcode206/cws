@@ -372,4 +372,21 @@ static const char switching_protocols[111] =
 #define SWITCHING_PROTOCOLS_HDRS_LEN 110
 
 
+static const char bad_request[80] =
+    "HTTP/1.1 400 Bad Request" CRLF
+    "Connection: close" CRLF
+    "Server: cws" CRLF
+    "Content-Length: 0" CRLF2;
+
+#define BAD_REQUEST_LEN 79
+
+
+static const char internal_server_error [90] = 
+    "HTTP/1.1 500 Internal Server Error" CRLF
+    "Server: cws" CRLF
+    "Connection: close" CRLF
+    "Content-Length: 0" CRLF2;
+
+#define INTERNAL_SERVER_ERROR_LEN 89
+
 #endif /* WS_PROTOCOL_PARSING23_H */
