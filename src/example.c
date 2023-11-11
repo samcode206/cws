@@ -94,7 +94,8 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // }
 }
 
-// size_t on_upgrade_request(ws_conn_t *c, char *request, const char *accept_key,
+// size_t on_upgrade_request(ws_conn_t *c, char *request, const char
+// *accept_key,
 //                           size_t max_resp_len, char *resp_dst) {
 //   // printf("%s\n", request);
 
@@ -105,7 +106,6 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
 //           "Sec-WebSocket-Accept: %.*s\r\n\r\n",
 //           28,
 //           accept_key);
-
 
 //   return ret;
 // }
@@ -159,6 +159,22 @@ int on_accept(ws_server_t *s, struct sockaddr_storage *caddr, int fd) {
   return 0;
 }
 
+void on_timeout(ws_conn_t *c, int what) {
+  switch (what) {
+  case 1:
+    printf("READ timeout on fd %d closing connection\n", ws_conn_fd(c));
+    break;
+  case 2:
+    printf("WRITE timeout on fd %d closing connection\n", ws_conn_fd(c));
+    break;
+  case 3:
+    printf("READ/WRITE timeout on fd closing connection%d\n", ws_conn_fd(c));
+    break;
+  }
+
+  ws_conn_destroy(c);
+}
+
 void on_accept_err(ws_server_t *s, int err) {
   printf("accept4(): %s\n", strerror(err));
   printf("open_conns = %zu \n", ws_server_open_conns(s));
@@ -173,6 +189,7 @@ void *start_server() {
       .port = port,
       // .on_ws_upgrade_req = on_upgrade_request,
       // .on_ws_accept = on_accept,
+      .on_ws_conn_timeout = on_timeout,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
       .on_ws_disconnect = on_disconnect,

@@ -59,9 +59,9 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-#define TIMEOUT_AFTER_SECS 5
+#define TIMEOUT_AFTER_SECS 30
 
-#define TIMER_GRANULARITY_SECS 3
+#define TIMER_GRANULARITY_SECS 5
 
 typedef int (*ws_handler)(ws_server_t *s, ws_conn_t *conn);
 
@@ -136,6 +136,7 @@ typedef struct server {
 
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
+  ws_on_timeout_cb_t on_ws_conn_timeout;
   struct buf_pool *buffer_pool;
   struct conn_pool *conn_pool;
   int fd; // server file descriptor
@@ -503,6 +504,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->on_ws_msg = params->on_ws_msg;
   s->on_ws_disconnect = params->on_ws_disconnect;
 
+  if (params->on_ws_conn_timeout) {
+    s->on_ws_conn_timeout = params->on_ws_conn_timeout;
+  }
+
   if (params->on_ws_pong) {
     s->on_ws_pong = params->on_ws_pong;
   }
@@ -755,15 +760,34 @@ static void server_do_timers_sweep(ws_server_t *s) {
   size_t count = s->max_conns;
   ws_conn_t *conns = s->conn_pool->base;
 
-  while (count--) {
-    if ((conns[count].read_timeout != 0) & (conns[count].read_timeout < now)) {
-      printf("read timeout on fd: %d\n", conns[count].rx_state.fd);
-      if (!is_closing(conns[count].rx_state.flags)) {
-        server_closeable_conns_append(&conns[count]);
-      }
-    };
+  int timeout_kind =
+      0; // no timeout, 1 read timeout, 2 write timeout, 3 read/write timeout
 
-    // printf("fd = %d\n", conns[count].rx_state.fd);
+  ws_on_timeout_cb_t to_cb = s->on_ws_conn_timeout;
+
+  while (count--) {
+
+    timeout_kind +=
+        (conns[count].read_timeout != 0) & (conns[count].read_timeout < now);
+    timeout_kind += ((conns[count].write_timeout != 0) &
+                     (conns[count].write_timeout < now)) *
+                    2;
+
+    if (timeout_kind) {
+      conns[count].read_timeout = 0;
+      conns[count].write_timeout = 0;
+
+      if (!to_cb) {
+        if (!is_closing(conns[count].rx_state.flags)) {
+
+          server_closeable_conns_append(&conns[count]);
+        }
+      } else {
+        to_cb(&conns[count], timeout_kind);
+      }
+
+      timeout_kind = 0;
+    }
   }
 }
 

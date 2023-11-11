@@ -222,6 +222,12 @@ typedef void (*ws_err_accept_cb_t)(ws_server_t *s, int err);
 
 typedef size_t (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, char *request, const char *accept_key, size_t max_resp_len, char *resp_dst);
 
+
+
+
+typedef void (*ws_on_timeout_cb_t)(ws_conn_t *c, int what);
+
+
 // Server parameter structure with optional callbacks for various WebSocket events.
 struct ws_server_params {
   const char *addr;
@@ -241,6 +247,7 @@ struct ws_server_params {
   ws_err_cb_t on_ws_err;               // Callback for when an internal error occurs.
   ws_accept_cb_t on_ws_accept;         // Callback for when a new connection has been accepted
   ws_err_accept_cb_t on_ws_accept_err; // Callback for when accept() fails.
+  ws_on_timeout_cb_t on_ws_conn_timeout;
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
 };
 
