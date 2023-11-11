@@ -1546,7 +1546,7 @@ inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
       server_closeable_conns_append(c);
     }
   }
-  return stat == 1;
+  return stat;
 }
 
 /**
