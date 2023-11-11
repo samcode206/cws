@@ -1288,13 +1288,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         }
         if (fin) {
           if (!is_bin(conn) &&
-              !utf8_is_valid(buf_peek(buf), conn->fragments_len)) {
+              !utf8_is_valid(buf_peek(conn->read_buf), conn->fragments_len)) {
             ws_conn_destroy(conn);
             buf_reset(s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
           }
-          s->on_ws_msg(conn, buf_peek(buf), conn->fragments_len, is_bin(conn));
-          buf_consume(buf, conn->fragments_len);
+          s->on_ws_msg(conn, buf_peek(conn->read_buf), conn->fragments_len, is_bin(conn));
+          buf_consume(conn->read_buf, conn->fragments_len);
 
           conn->fragments_len = 0;
           clear_fragmented(conn);
