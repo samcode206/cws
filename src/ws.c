@@ -901,6 +901,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
       ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
       s->accept_paused = 0;
     }
+
+    do_timer_sweep = false;
   }
 
   return 0;
