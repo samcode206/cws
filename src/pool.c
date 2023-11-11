@@ -35,14 +35,17 @@ struct buf_pool *buf_pool_init(uint32_t nmemb, size_t buf_sz) {
                    ~(page_size - 1);
   size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
 
+  printf("buf_pool size = %zu\n", pool_sz + buf_pool_sz);
   void *pool_mem = mmap(NULL, pool_sz + buf_pool_sz, PROT_NONE,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
   if (pool_mem == MAP_FAILED) {
+    perror("mmap()");
     return NULL;
   }
 
   if (mprotect(pool_mem, pool_sz, PROT_READ | PROT_WRITE) == -1) {
+    perror("mprotect()");
     return NULL;
   };
 
@@ -54,6 +57,7 @@ struct buf_pool *buf_pool_init(uint32_t nmemb, size_t buf_sz) {
   pool->base = ((uint8_t *)pool_mem) + pool_sz;
 
   if (ftruncate(pool->fd, buf_sz * nmemb) == -1) {
+    perror("ftruncate()");
     return NULL;
   };
 
@@ -65,12 +69,14 @@ struct buf_pool *buf_pool_init(uint32_t nmemb, size_t buf_sz) {
   for (i = 0; i < nmemb; ++i) {
     if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
              pool->fd, offset) == MAP_FAILED) {
+      perror("mmap()");
       close(pool->fd);
       return NULL;
     };
 
     if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
              MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
+      perror("mmap()");
       close(pool->fd);
       return NULL;
     };
@@ -147,6 +153,11 @@ struct conn_pool *conn_pool_init(uint32_t nmemb, size_t conn_sz) {
 
   void *pool_mem = mmap(NULL, aligned_total_size, PROT_READ | PROT_WRITE,
                         MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+
+  if (pool_mem == MAP_FAILED) {
+    perror("mmap()");
+    exit(EXIT_FAILURE);
+  }
   struct conn_pool *pool = pool_mem;
 
   pool->base = ((uint8_t *)pool_mem) + aligned_pool_structure_sz;
@@ -170,12 +181,11 @@ struct conn_pool *conn_pool_init(uint32_t nmemb, size_t conn_sz) {
   pool->_buf_nodes[nmemb - 1].b = pos;
   pool->head = &pool->_buf_nodes[0];
 
-  if (offset > aligned_total_size) {
+  if (offset >= aligned_total_size) {
     fprintf(stderr, "exceeded connection pool size %zu >= %zu \n",
             offset + aligned_conn_sz, aligned_total_size);
     exit(EXIT_FAILURE);
   }
-
 
   return pool;
 }

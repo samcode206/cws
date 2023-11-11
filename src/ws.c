@@ -59,6 +59,10 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
+#define TIMEOUT_AFTER_SECS 5
+
+#define TIMER_GRANULARITY_SECS 3
+
 typedef int (*ws_handler)(ws_server_t *s, ws_conn_t *conn);
 
 typedef struct {
@@ -572,9 +576,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   }
 
   printf("max_conns = %zu\n", s->max_conns);
+  s->conn_pool = conn_pool_init(s->max_conns, sizeof(ws_conn_t));
+
   s->buffer_pool = buf_pool_init(s->max_conns + s->max_conns + 2, buffer_size);
 
-  s->conn_pool = conn_pool_init(s->max_conns, sizeof(ws_conn_t));
   s->max_msg_len = max_backpressure;
 
   s->shared_send_buffer_owner = NULL;
@@ -687,6 +692,8 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
         ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
         ++s->open_conns;
 
+        conn->read_timeout = (unsigned int)time(NULL) + TIMEOUT_AFTER_SECS;
+
       } else {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           return; // done
@@ -743,17 +750,17 @@ static void server_do_timers_sweep(ws_server_t *s) {
 
   long ti = time(NULL);
 
-  unsigned int t = (unsigned int)ti;
+  unsigned int now = (unsigned int)ti;
 
   size_t count = s->max_conns;
   ws_conn_t *conns = s->conn_pool->base;
 
   while (count--) {
-
-    if ((conns[count].read_timeout) & (conns[count].read_timeout < t)) {
-      printf("current time = %d\n", t);
-      printf("timeout time = %d\n", conns[count].read_timeout);
-      printf("read timeout: %d\n", conns[count].rx_state.fd);
+    if ((conns[count].read_timeout != 0) & (conns[count].read_timeout < now)) {
+      printf("read timeout on fd: %d\n", conns[count].rx_state.fd);
+      if (!is_closing(conns[count].rx_state.flags)) {
+        server_closeable_conns_append(&conns[count]);
+      }
     };
 
     // printf("fd = %d\n", conns[count].rx_state.fd);
@@ -789,8 +796,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
   int tfd = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC);
 
   struct itimerspec timer = {
-      .it_interval.tv_sec = 3,
-      .it_value.tv_sec = 3,
+      .it_interval.tv_sec = TIMER_GRANULARITY_SECS,
+      .it_value.tv_sec = TIMER_GRANULARITY_SECS,
   };
 
   assert(timerfd_settime(tfd, 0, &timer, NULL) == 0);
@@ -887,7 +894,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
     server_writeable_conns_drain(s); // drain writes
 
     if (do_timer_sweep) {
-      printf("checking timers\n");
       server_do_timers_sweep(s);
     }
 
@@ -1257,7 +1263,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // frame_buf_len,
     //        full_frame_len, opcode, fin);
 
-    conn->read_timeout = (unsigned int)time(NULL) + 5;
+    conn->read_timeout = (unsigned int)time(NULL) + TIMEOUT_AFTER_SECS;
 
     switch (opcode) {
     case OP_TXT:
