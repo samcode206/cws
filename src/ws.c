@@ -897,7 +897,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
     server_writeable_conns_drain(s); // drain writes
 
     if (do_timers_sweep) {
-      printf("doing timers sweep\n");
       unsigned int now = (unsigned int)time(NULL);
 
       int timeout_kind = 0;
@@ -914,7 +913,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
         if (timeout_kind) {
           c->read_timeout = 0;
           c->write_timeout = 0;
-          // todo call the callback
 
           if (cb) {
             cb(c, timeout_kind);
