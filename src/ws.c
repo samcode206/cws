@@ -43,6 +43,10 @@
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+#include <time.h>
+
+
+#define READ_TIMEOUT 10
 
 #define FIN 0x80
 
@@ -646,6 +650,7 @@ static int conn_shutdown_wr(ws_conn_t *c) {
 static void ws_server_conns_establish(ws_server_t *s, int fd,
                                       struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
+  unsigned int now = (unsigned int)time(NULL);
   // how many conns should we try to accept in total
   size_t accepts = (s->accept_paused == 0) * (s->max_conns - s->open_conns);
   // if we can do atleast one, then let's get started...
@@ -704,6 +709,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
         assert(conn->read_buf != NULL);
         assert(conn->write_buf != NULL);
 
+        conn->read_timeout = now + READ_TIMEOUT;
         ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
         ++s->open_conns;
 
@@ -862,6 +868,18 @@ int ws_server_start(ws_server_t *s, int backlog) {
     }
 
     server_writeable_conns_drain(s); // drain writes
+
+
+    size_t n = s->max_conns;
+
+    unsigned int now = (unsigned int)time(NULL);
+    while (n--) {
+      ws_conn_t *c = &s->conn_pool->base[n];
+      if (c->read_timeout != 0 && c->read_timeout < now){
+        printf("read timeout\n");
+        ws_conn_destroy(c);
+      }
+    }
 
     bool accept_resumable =
         s->accept_paused &&
