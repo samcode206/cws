@@ -47,7 +47,7 @@
 #include <time.h>
 
 #define TIMER_GRANULARITY 5
-#define READ_TIMEOUT 10
+#define READ_TIMEOUT 60
 
 #define FIN 0x80
 
@@ -388,7 +388,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
     if (!is_closing(c->flags) &&
         conn_drain_write_buf(c, s->shared_send_buffer) == -1) {
       // buf_reset(s->shared_send_buffer);
-      server_closeable_conns_append(c);
+     ws_conn_destroy(c);
     };
     clear_using_shared(c);
     s->shared_send_buffer_owner = NULL;
@@ -401,7 +401,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
     ws_conn_t *c = s->writeable_conns.conns[i];
     if (!is_closing(c->flags)) {
       if (conn_drain_write_buf(c, c->write_buf) == -1) {
-        server_closeable_conns_append(c);
+        ws_conn_destroy(c);
       };
       clear_write_queued(c);
     }
@@ -552,7 +552,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     s->on_ws_upgrade_req = params->on_ws_upgrade_req;
   }
 
-  if (params->on_ws_conn_timeout){
+  if (params->on_ws_conn_timeout) {
     s->on_ws_conn_timeout = params->on_ws_conn_timeout;
   }
 
@@ -643,9 +643,7 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd) {
 // must be called AFTER the final write has completed
 static int conn_shutdown_wr(ws_conn_t *c) {
   if (shutdown(c->fd, SHUT_WR) == -1) {
-    if (!is_closing(c->flags)) {
-      server_closeable_conns_append(c);
-    }
+    ws_conn_destroy(c);
     return -1;
   }
 
@@ -877,9 +875,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                   }
                 };
               } else if (ret == -1) {
-                if (!is_closing(c->flags)) {
-                  server_closeable_conns_append(c);
-                }
+                ws_conn_destroy(c);
               }
             }
           }
@@ -899,14 +895,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     server_writeable_conns_drain(s); // drain writes
 
-
     if (do_timers_sweep) {
       printf("doing timers sweep\n");
       unsigned int now = (unsigned int)time(NULL);
 
       int timeout_kind = 0;
       size_t n = s->max_conns;
-      
+
       ws_on_timeout_t cb = s->on_ws_conn_timeout;
 
       while (n--) {
@@ -920,18 +915,15 @@ int ws_server_start(ws_server_t *s, int backlog) {
           c->write_timeout = 0;
           // todo call the callback
 
-          if (cb){
+          if (cb) {
             cb(c, timeout_kind);
           } else {
             ws_conn_destroy(c);
           }
 
-
-
           timeout_kind = 0;
           ws_conn_destroy(c);
         }
-
       }
 
       do_timers_sweep = false;
@@ -1051,7 +1043,7 @@ static void handle_upgrade(ws_conn_t *conn) {
     conn->fragments_len += request_buf_len;
     // client sending too much data after shutting down our write end
     if (conn->fragments_len > 8192) {
-      server_closeable_conns_append(conn);
+      ws_conn_destroy(conn);
     }
 
     // reset the buffer, we discard all data after socket is marked disposing
@@ -1195,9 +1187,7 @@ static void handle_upgrade(ws_conn_t *conn) {
       }
 
     } else if (ret == -1) {
-      if (!is_closing(conn->flags)) {
-        server_closeable_conns_append(conn);
-      }
+      ws_conn_destroy(conn);
     } else {
       if (response_buf != conn->write_buf ||
           response_buf != s->shared_send_buffer) {
@@ -1518,10 +1508,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
   // reuse it
   if (is_using_shared(conn)) {
     if (conn_drain_write_buf(conn, s->shared_send_buffer) == -1) {
-      if (!is_closing(conn->flags)) {
-        buf_reset(s->shared_recv_buffer);
-        server_closeable_conns_append(conn);
-      }
+      buf_reset(s->shared_recv_buffer);
+      ws_conn_destroy(conn);
     };
     clear_using_shared(conn);
     conn->base->shared_send_buffer_owner = NULL;
@@ -1597,9 +1585,7 @@ will be called
 inline int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PONG);
   if (stat == -1) {
-    if (!is_closing(c->flags)) {
-      server_closeable_conns_append(c);
-    }
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1614,9 +1600,7 @@ will be called
 inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PING);
   if (stat == -1) {
-    if (!is_closing(c->flags)) {
-      server_closeable_conns_append(c);
-    }
+ ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1632,9 +1616,7 @@ will be called
 inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_BIN);
   if (stat == -1) {
-    if (!is_closing(c->flags)) {
-      server_closeable_conns_append(c);
-    }
+ws_conn_destroy(c);
   }
   return stat;
 }
@@ -1650,9 +1632,7 @@ will be called
 inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_TXT);
   if (stat == -1) {
-    if (!is_closing(c->flags)) {
-      server_closeable_conns_append(c);
-    }
+ ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1668,7 +1648,7 @@ static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
         if (!is_closing(owner->flags)) {
           if (conn_drain_write_buf(owner, owner->base->shared_send_buffer) ==
               -1) {
-            server_closeable_conns_append(owner);
+           ws_conn_destroy(owner);
           };
         }
         clear_using_shared(owner);
@@ -1703,7 +1683,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   buf_put(wbuf, msg, len);
 
   conn_drain_write_buf(conn, wbuf);
-  server_closeable_conns_append(conn);
+ ws_conn_destroy(conn);
 }
 
 void ws_conn_destroy(ws_conn_t *conn) {

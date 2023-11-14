@@ -188,10 +188,10 @@ void *start_server() {
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
       .on_ws_disconnect = on_disconnect,
-      .max_buffered_bytes = 1024 * 1024,
+      .max_buffered_bytes = 1024 * 1024 * 32,
       .on_ws_accept_err = on_accept_err,
       .on_ws_conn_timeout = on_timeout,
-      .max_conns = 1024,
+      // .max_conns = 1024,
       // .on_ws_msg_fragment = on_msg_fragment,
   };
 
