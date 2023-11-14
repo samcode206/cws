@@ -42,10 +42,11 @@
 #include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
 
-
+#define TIMER_GRANULARITY 5
 #define READ_TIMEOUT 10
 
 #define FIN 0x80
@@ -421,7 +422,6 @@ static void server_closeable_conns_close(ws_server_t *s) {
       mbuf_put(s->buffer_pool, c->write_buf);
       mbuf_put(s->buffer_pool, c->read_buf);
 
-
       if (s->shared_send_buffer_owner == c) {
         s->shared_send_buffer_owner = NULL;
       }
@@ -774,8 +774,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   buf_t *shared_rxb = mbuf_get(s->buffer_pool);
   buf_t *shared_txb = mbuf_get(s->buffer_pool);
 
-
-
   s->shared_recv_buffer = shared_rxb;
   s->shared_send_buffer = shared_txb;
 
@@ -789,6 +787,28 @@ int ws_server_start(ws_server_t *s, int backlog) {
   s->ev.events = EPOLLIN;
 
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
+
+  int tfd;
+  assert((tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK)) !=
+         -1);
+
+  struct itimerspec timer = {.it_interval =
+                                 {
+                                     .tv_nsec = 0,
+                                     .tv_sec = TIMER_GRANULARITY,
+                                 },
+                             .it_value = {
+                                 .tv_nsec = 0,
+                                 .tv_sec = TIMER_GRANULARITY,
+                             }};
+
+  assert(timerfd_settime(tfd, 0, &timer, NULL) != -1);
+
+  s->ev.data.ptr = &tfd;
+  s->ev.events = EPOLLIN;
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
+
+  bool do_timers_sweep = false;
 
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
@@ -805,7 +825,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if (s->events[i].data.ptr == s) {
+      if (s->events[i].data.ptr == &tfd) {
+        uint64_t _;
+        assert(read(tfd, &_, 8) == 8);
+        do_timers_sweep = true;
+        (void)_;
+      } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
       } else {
@@ -869,16 +894,20 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     server_writeable_conns_drain(s); // drain writes
 
-
     size_t n = s->max_conns;
 
-    unsigned int now = (unsigned int)time(NULL);
-    while (n--) {
-      ws_conn_t *c = &s->conn_pool->base[n];
-      if (c->read_timeout != 0 && c->read_timeout < now){
-        printf("read timeout\n");
-        ws_conn_destroy(c);
+    if (do_timers_sweep) {
+      printf("doing timers sweep\n");
+      unsigned int now = (unsigned int)time(NULL);
+      while (n--) {
+        ws_conn_t *c = &s->conn_pool->base[n];
+        if (c->read_timeout != 0 && c->read_timeout < now) {
+          printf("read timeout\n");
+          ws_conn_destroy(c);
+        }
       }
+
+      do_timers_sweep = false;
     }
 
     bool accept_resumable =
