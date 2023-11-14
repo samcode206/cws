@@ -25,8 +25,7 @@
 
 #define _GNU_SOURCE
 #include "ws.h"
-#include "buf.h"
-#include "pool.h"
+#include "buffer.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
@@ -78,12 +77,10 @@ struct ws_conn_pool {
   struct buf_node _buf_nodes[];
 };
 
-
 struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
 struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p);
 
 void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
-
 
 #define CONN_CLOSE_QUEUED (1u << 0)
 #define CONN_UPGRADED (1u << 1)
@@ -133,7 +130,7 @@ typedef struct server {
 
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
-  struct buf_pool *buffer_pool;
+  struct mbuf_pool *buffer_pool;
   struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
@@ -417,8 +414,9 @@ static void server_closeable_conns_close(ws_server_t *s) {
       ws_conn_t *c = s->closeable_conns.conns[n];
       assert(close(c->fd) == 0);
       s->on_ws_disconnect(c, 0);
-      buf_pool_free(s->buffer_pool, c->write_buf->buf);
-      buf_pool_free(s->buffer_pool, c->read_buf->buf);
+      mbuf_put(s->buffer_pool, c->write_buf);
+      mbuf_put(s->buffer_pool, c->read_buf);
+
 
       if (s->shared_send_buffer_owner == c) {
         s->shared_send_buffer_owner = NULL;
@@ -586,13 +584,13 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   }
 
   printf("max_conns = %zu\n", s->max_conns);
-  s->buffer_pool = buf_pool_create(s->max_conns + s->max_conns + 2, buffer_size);
+  s->buffer_pool =
+      mbuf_pool_create(s->max_conns + s->max_conns + 2, buffer_size);
 
   s->conn_pool = ws_conn_pool_create(s->max_conns);
 
   assert(s->conn_pool != NULL);
   assert(s->buffer_pool != NULL);
-
 
   s->max_msg_len = max_backpressure;
 
@@ -700,12 +698,11 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
 
         s->ev.data.ptr = conn;
 
-        conn->read_buf = malloc(sizeof(buf_t) * 2);
-        assert(conn->read_buf != NULL);
-        conn->write_buf = conn->read_buf + 1;
+        conn->read_buf = mbuf_get(s->buffer_pool);
+        conn->write_buf = mbuf_get(s->buffer_pool);
 
-        assert(buf_init(s->buffer_pool, conn->read_buf) == 0);
-        assert(buf_init(s->buffer_pool, conn->write_buf) == 0);
+        assert(conn->read_buf != NULL);
+        assert(conn->write_buf != NULL);
 
         ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
         ++s->open_conns;
@@ -768,14 +765,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
     return ret;
   }
 
-  buf_t shared_rxb = {0};
-  buf_t shared_txb = {0};
+  buf_t *shared_rxb = mbuf_get(s->buffer_pool);
+  buf_t *shared_txb = mbuf_get(s->buffer_pool);
 
-  buf_init(s->buffer_pool, &shared_rxb);
-  buf_init(s->buffer_pool, &shared_txb);
 
-  s->shared_recv_buffer = &shared_rxb;
-  s->shared_send_buffer = &shared_txb;
+
+  s->shared_recv_buffer = shared_rxb;
+  s->shared_send_buffer = shared_txb;
 
   int fd = s->fd;
   int epfd = s->epoll_fd;
@@ -1857,7 +1853,6 @@ int utf8_is_valid(uint8_t *s, size_t n) {
   return 1;
 }
 
-
 struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   size_t conns_size = nmemb * sizeof(ws_conn_t);
   size_t pool_sz = (sizeof(struct ws_conn_pool) +
@@ -1910,4 +1905,3 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c) {
   p->_buf_nodes[diff].next = p->head;
   p->head = &p->_buf_nodes[diff];
 }
-
