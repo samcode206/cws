@@ -162,13 +162,13 @@ int on_accept(ws_server_t *s, struct sockaddr_storage *caddr, int fd) {
 void on_timeout(ws_conn_t *c, int what) {
   switch (what) {
   case 1:
-    printf("READ timeout on fd %d closing connection\n", ws_conn_fd(c));
+    printf("read timeout on %d\n", ws_conn_fd(c));
     break;
   case 2:
-    printf("WRITE timeout on fd %d closing connection\n", ws_conn_fd(c));
+    printf("write timeout on %d\n", ws_conn_fd(c));
     break;
   case 3:
-    printf("READ/WRITE timeout on fd closing connection%d\n", ws_conn_fd(c));
+    printf("read/write timeout on %d\n", ws_conn_fd(c));
     break;
   }
 
@@ -189,13 +189,13 @@ void *start_server() {
       .port = port,
       // .on_ws_upgrade_req = on_upgrade_request,
       // .on_ws_accept = on_accept,
-      .on_ws_conn_timeout = on_timeout,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
       .on_ws_disconnect = on_disconnect,
-      .max_buffered_bytes = 512,
+      .max_buffered_bytes = 1024 * 1024,
       .on_ws_accept_err = on_accept_err,
       .max_conns = 1024,
+      .on_ws_conn_timeout = on_timeout,
       // .on_ws_msg_fragment = on_msg_fragment,
   };
 
