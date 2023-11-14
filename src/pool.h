@@ -25,7 +25,7 @@ struct buf_pool {
   struct buf_node _buf_nodes[];
 };
 
-struct buf_pool *buf_pool_init(uint32_t nmemb, size_t buf_sz);
+struct buf_pool *buf_pool_create(uint32_t nmemb, size_t buf_sz);
 
 void *buf_pool_alloc(struct buf_pool *p);
 

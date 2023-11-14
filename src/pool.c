@@ -9,7 +9,7 @@
 #include "pool.h"
 
 
-struct buf_pool *buf_pool_init(uint32_t nmemb, size_t buf_sz) {
+struct buf_pool *buf_pool_create(uint32_t nmemb, size_t buf_sz) {
   long page_size = sysconf(_SC_PAGESIZE);
   if (page_size == -1) {
     fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");

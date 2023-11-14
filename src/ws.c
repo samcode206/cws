@@ -57,8 +57,6 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-typedef int (*ws_handler)(ws_server_t *s, ws_conn_t *conn);
-
 struct ws_conn_t {
   int fd;               // socket fd
   unsigned int flags;   // state flags
@@ -73,6 +71,19 @@ struct ws_conn_t {
   unsigned int read_timeout;  // seconds
   unsigned int write_timeout; // seconds
 };
+
+struct ws_conn_pool {
+  ws_conn_t *base;
+  struct buf_node *head;
+  struct buf_node _buf_nodes[];
+};
+
+
+struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
+struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p);
+
+void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
+
 
 #define CONN_CLOSE_QUEUED (1u << 0)
 #define CONN_UPGRADED (1u << 1)
@@ -123,6 +134,7 @@ typedef struct server {
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct buf_pool *buffer_pool;
+  struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
   bool accept_paused; // are we paused on accepting new connections
@@ -411,7 +423,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
       if (s->shared_send_buffer_owner == c) {
         s->shared_send_buffer_owner = NULL;
       }
-      free(c);
+      ws_conn_free(s->conn_pool, c);
       --s->open_conns;
     }
 
@@ -574,7 +586,14 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   }
 
   printf("max_conns = %zu\n", s->max_conns);
-  s->buffer_pool = buf_pool_init(s->max_conns + s->max_conns + 2, buffer_size);
+  s->buffer_pool = buf_pool_create(s->max_conns + s->max_conns + 2, buffer_size);
+
+  s->conn_pool = ws_conn_pool_create(s->max_conns);
+
+  assert(s->conn_pool != NULL);
+  assert(s->buffer_pool != NULL);
+
+
   s->max_msg_len = max_backpressure;
 
   s->shared_send_buffer_owner = NULL;
@@ -669,7 +688,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return;
         }
 
-        ws_conn_t *conn = calloc(1, sizeof(ws_conn_t));
+        ws_conn_t *conn = ws_conn_alloc(s->conn_pool);
         assert(conn != NULL); // TODO(sah): remove this
         s->ev.events = EPOLLIN | EPOLLRDHUP;
         conn->fd = client_fd;
@@ -1293,7 +1312,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             buf_reset(s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
           }
-          s->on_ws_msg(conn, buf_peek(conn->read_buf), conn->fragments_len, is_bin(conn));
+          s->on_ws_msg(conn, buf_peek(conn->read_buf), conn->fragments_len,
+                       is_bin(conn));
           buf_consume(conn->read_buf, conn->fragments_len);
 
           conn->fragments_len = 0;
@@ -1568,8 +1588,7 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
 }
 
 static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
-  if (send_len > 65535 || is_using_own_write_buf(conn) ||
-      !is_writeable(conn)) {
+  if (send_len > 65535 || is_using_own_write_buf(conn) || !is_writeable(conn)) {
     set_using_own_write_buf(conn);
     return conn->write_buf;
   } else {
@@ -1748,7 +1767,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
 
           if (n == total_write) {
 
-            if (is_using_own_write_buf(conn)){
+            if (is_using_own_write_buf(conn)) {
               clear_using_own_write_buf(conn);
             }
 
@@ -1837,3 +1856,58 @@ int utf8_is_valid(uint8_t *s, size_t n) {
   }
   return 1;
 }
+
+
+struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
+  size_t conns_size = nmemb * sizeof(ws_conn_t);
+  size_t pool_sz = (sizeof(struct ws_conn_pool) +
+                    (nmemb * sizeof(struct buf_node)) + 64 - 1) &
+                   ~(64 - 1);
+
+  struct ws_conn_pool *pool;
+
+  assert(posix_memalign((void *)&pool, 64, conns_size + pool_sz) == 0);
+
+  uintptr_t base_ptr = (uintptr_t)pool + pool_sz;
+
+  pool->base = (ws_conn_t *)base_ptr;
+
+  ws_conn_t *cur = pool->base;
+
+  for (size_t i = 0; i < nmemb; ++i) {
+    pool->_buf_nodes[i].b = cur;
+    cur += 1;
+  }
+
+  for (size_t i = 0; i < nmemb - 1; i++) {
+    pool->_buf_nodes[i].next = &pool->_buf_nodes[i + 1];
+  }
+
+  pool->_buf_nodes[nmemb - 1].next = NULL;
+
+  pool->head = &pool->_buf_nodes[0];
+
+  return pool;
+}
+
+struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p) {
+  if (p->head) {
+    struct buf_node *bn = p->head;
+    p->head = p->head->next;
+    bn->next = NULL; // unlink the buf_node mainly useful for debugging
+    return bn->b;
+  } else {
+    return NULL;
+  }
+}
+
+void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c) {
+  uintptr_t diff =
+      ((uintptr_t)c - (uintptr_t)p->base) / sizeof(struct ws_conn_t);
+
+  memset(c, 0, sizeof(struct ws_conn_t));
+
+  p->_buf_nodes[diff].next = p->head;
+  p->head = &p->_buf_nodes[diff];
+}
+
