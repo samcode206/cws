@@ -894,14 +894,14 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     server_writeable_conns_drain(s); // drain writes
 
-    size_t n = s->max_conns;
 
     if (do_timers_sweep) {
       printf("doing timers sweep\n");
       unsigned int now = (unsigned int)time(NULL);
 
       int timeout_kind = 0;
-
+      size_t n = s->max_conns;
+      
       while (n--) {
         ws_conn_t *c = &s->conn_pool->base[n];
 
