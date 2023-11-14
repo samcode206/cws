@@ -1,13 +1,11 @@
 #define _GNU_SOURCE
+#include "buffer.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include "buffer.h"
-
-
 
 struct buf_pool {
   int fd;
@@ -17,7 +15,6 @@ struct buf_pool {
   struct buf_node *head;
   struct buf_node _buf_nodes[];
 };
-
 
 static struct buf_pool *buf_pool_create(uint32_t nmemb, size_t buf_sz) {
   long page_size = sysconf(_SC_PAGESIZE);
@@ -35,7 +32,6 @@ static struct buf_pool *buf_pool_create(uint32_t nmemb, size_t buf_sz) {
                    ~(page_size - 1);
   size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
 
-
   void *pool_mem = mmap(NULL, pool_sz + buf_pool_sz, PROT_NONE,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
@@ -49,12 +45,10 @@ static struct buf_pool *buf_pool_create(uint32_t nmemb, size_t buf_sz) {
 
   struct buf_pool *pool = pool_mem;
 
-
   pool->fd = memfd_create("buf", 0);
   pool->buf_sz = buf_sz;
   pool->nmemb = nmemb;
   pool->base = ((uint8_t *)pool_mem) + pool_sz;
-
 
   if (ftruncate(pool->fd, buf_sz * nmemb) == -1) {
     return NULL;
@@ -125,12 +119,9 @@ static void *buf_pool_alloc(struct buf_pool *p) {
 //   uintptr_t diff =
 //       ((uintptr_t)buf - (uintptr_t)p->base) / (p->buf_sz + p->buf_sz);
 
-
 //   p->_buf_nodes[diff].next = p->head;
 //   p->head = &p->_buf_nodes[diff];
 // }
-
-
 
 static inline int buf_init(struct buf_pool *p, buf_t *r) {
 
@@ -145,18 +136,13 @@ static inline int buf_init(struct buf_pool *p, buf_t *r) {
   return 0;
 }
 
-
-
-
-
-
 struct mbuf_pool *mbuf_pool_create(uint32_t nmemb, size_t buf_sz) {
 
-  struct mbuf_pool *p = (struct mbuf_pool*)calloc(1, sizeof(struct mbuf_pool));
+  struct mbuf_pool *p = (struct mbuf_pool *)calloc(1, sizeof(struct mbuf_pool));
   p->avb = nmemb;
   p->cap = nmemb;
-  assert(posix_memalign((void **)&p->mirrored_bufs, 64, sizeof(buf_t) * nmemb) ==
-         0);
+  assert(posix_memalign((void **)&p->mirrored_bufs, 64,
+                        sizeof(buf_t) * nmemb) == 0);
   p->avb_list = (buf_t **)calloc(nmemb, sizeof(buf_t *));
   assert(p->avb_list != NULL);
   p->pool = buf_pool_create(nmemb, buf_sz);
@@ -185,10 +171,10 @@ buf_t *mbuf_get(struct mbuf_pool *bp) {
   return NULL;
 }
 
-
-void mbuf_put(struct mbuf_pool *bp, buf_t *buf){
-  buf->rpos = 0;
-  buf->wpos = 0; 
-  bp->avb_list[bp->avb++] = buf;
+void mbuf_put(struct mbuf_pool *bp, buf_t *buf) {
+  if (buf) {
+    buf->rpos = 0;
+    buf->wpos = 0;
+    bp->avb_list[bp->avb++] = buf;
+  }
 }
-

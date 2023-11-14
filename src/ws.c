@@ -955,7 +955,7 @@ static void handle_upgrade(ws_conn_t *conn) {
   size_t resp_len = 0;
 
   // pick the recv buffer
-  if (!is_using_own_recv_buf(conn)) {
+  if (is_using_own_recv_buf(conn)) {
     request_buf = conn->read_buf;
   } else {
     request_buf = s->shared_recv_buffer;
