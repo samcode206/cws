@@ -1,32 +1,5 @@
-/* The MIT License
-
-   Copyright (c) 2008, 2009, 2011 by Sam H
-
-   Permission is hereby granted, free of charge, to any person obtaining
-   a copy of this software and associated documentation files (the
-   "Software"), to deal in the Software without restriction, including
-   without limitation the rights to use, copy, modify, merge, publish,
-   distribute, sublicense, and/or sell copies of the Software, and to
-   permit persons to whom the Software is furnished to do so, subject to
-   the following conditions:
-
-   The above copyright notice and this permission notice shall be
-   included in all copies or substantial portions of the Software.
-
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
-   BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
-   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-   SOFTWARE.
-*/
-
-#ifndef __X_BUFF_LIB_14
-#define __X_BUFF_LIB_14
-
-#include "pool.h"
+#ifndef __X_BUFFPOOL_LIB_14
+#define __X_BUFFPOOL_LIB_14
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -39,6 +12,9 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <assert.h>
+
+
 typedef struct {
   size_t rpos;
   size_t wpos;
@@ -46,18 +22,6 @@ typedef struct {
   uint8_t *buf;
 } buf_t;
 
-static inline int buf_init(struct buf_pool *p, buf_t *r) {
-
-  r->buf = (uint8_t *)buf_pool_alloc(p);
-  if (r->buf == NULL) {
-    return -1;
-  }
-
-  memset(r, 0, sizeof(buf_t) - offsetof(buf_t, buf_sz));
-  r->buf_sz = p->buf_sz;
-
-  return 0;
-}
 
 static inline size_t buf_len(buf_t *r) { return r->wpos - r->rpos; }
 
@@ -235,22 +199,26 @@ static inline ssize_t buf_drain_write2v(buf_t *r, struct iovec const *iovs,
   return n;
 }
 
-// static inline ssize_t buf_sendfile(struct buf_pool *p, buf_t *r, int fd) {
-//   off_t off = buf_pool_file_offset(p, r->buf) + r->rpos;
 
-//   ssize_t n = sendfile(fd, p->fd, &off, buf_len(r));
-//   r->rpos += (n > 0) * n;
 
-//   if (r->rpos == r->wpos) {
-//     r->rpos = 0;
-//     r->wpos = 0;
-//   } else {
-//     int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
-//     r->rpos -= ovf;
-//     r->wpos -= ovf;
-//   }
+struct buf_node {
+  void *b;
+  struct buf_node *next;
+};
 
-//   return n;
-// }
 
-#endif
+struct mbuf_pool {
+  size_t avb;
+  size_t cap;
+  struct buf_pool *pool;
+  buf_t **avb_list;
+  buf_t *mirrored_bufs;
+};
+
+struct mbuf_pool *mbuf_pool_create(uint32_t nmemb, size_t buf_sz);
+
+buf_t *mbuf_get(struct mbuf_pool *bp);
+
+void mbuf_put(struct mbuf_pool *bp, buf_t *buf);
+
+#endif // __X_BUFFPOOL_LIB_14

@@ -25,8 +25,7 @@
 
 #define _GNU_SOURCE
 #include "ws.h"
-#include "buf.h"
-#include "pool.h"
+#include "buffer.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
@@ -43,7 +42,12 @@
 #include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/uio.h>
+#include <time.h>
+
+#define TIMER_GRANULARITY 5
+#define READ_TIMEOUT 60
 
 #define FIN 0x80
 
@@ -57,43 +61,48 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-typedef int (*ws_handler)(ws_server_t *s, ws_conn_t *conn);
-
-typedef struct {
+struct ws_conn_t {
   int fd;               // socket fd
   unsigned int flags;   // state flags
   size_t fragments_len; // size of the data portion of the frames across
                         // fragmentation
 
   size_t needed_bytes; // bytes needed before we can do something with the frame
-  buf_t read_buf;      // recv buffer structure
-  ws_server_t *base;   // server ptr
-} read_state_t;
-
-typedef struct {
-  int fd;             // socket fd
-  unsigned int flags; // state flags
-  buf_t write_buf;    // write buffer structure
-  ws_server_t *base;  // server ptr
-} write_state_t;
-
-struct ws_conn_t {
-  read_state_t rx_state;
-  write_state_t tx_state;
-  void *ctx;
+  buf_t *read_buf;     // recv buffer structure
+  buf_t *write_buf;
+  ws_server_t *base;          // server ptr
+  void *ctx;                  // user data pointer
+  unsigned int read_timeout;  // seconds
+  unsigned int write_timeout; // seconds
 };
 
-#define CONN_CLOSE_QUEUED (1u << 0)
+struct ws_conn_pool {
+  ws_conn_t *base;
+  struct buf_node *head;
+  struct buf_node _buf_nodes[];
+};
 
-#define CONN_RX_UPGRADED (1u << 1)
+struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
+struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p);
+
+void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
+
+#define CONN_CLOSE_QUEUED (1u << 0)
+#define CONN_UPGRADED (1u << 1)
+
 #define CONN_RX_BIN (1u << 2)
 #define CONN_RX_FRAGMENTED (1u << 3)
 #define CONN_RX_GET_REQUEST (1u << 4)
 
-#define CONN_TX_WRITEABLE (1u << 1)
-#define CONN_TX_USING_SHARED (1u << 2)
-#define CONN_TX_WRITE_QUEUED (1u << 3)
-#define CONN_TX_DISPOSING (1u << 4)
+#define CONN_TX_WRITEABLE (1u << 5)
+#define CONN_TX_USING_SHARED (1u << 6)
+#define CONN_TX_WRITE_QUEUED (1u << 7)
+#define CONN_TX_DISPOSING (1u << 8)
+
+#define CONN_RX_USING_OWN_BUF                                                  \
+  (1 << 9) // we are using the connection read buffer
+#define CONN_TX_USING_OWN_BUF                                                  \
+  (1 << 10) // we are using the connection write buffer
 
 // general purpose dynamic array
 // that is used to hold a list of connections
@@ -124,9 +133,11 @@ typedef struct server {
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
   ws_close_cb_t on_ws_close;
 
+  ws_on_timeout_t on_ws_conn_timeout;
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
-  struct buf_pool *buffer_pool;
+  struct mbuf_pool *buffer_pool;
+  struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
   bool accept_paused; // are we paused on accepting new connections
@@ -142,99 +153,114 @@ static inline bool is_closing(unsigned int const flags) {
   return (flags & CONN_CLOSE_QUEUED) != 0;
 }
 
-static inline void mark_closing(ws_conn_t *c) {
-  c->tx_state.flags |= CONN_CLOSE_QUEUED;
-  c->rx_state.flags |= CONN_CLOSE_QUEUED;
-}
+static inline void mark_closing(ws_conn_t *c) { c->flags |= CONN_CLOSE_QUEUED; }
 
 static inline bool is_upgraded(ws_conn_t *c) {
-  return (c->rx_state.flags & CONN_RX_UPGRADED) != 0;
+  return (c->flags & CONN_UPGRADED) != 0;
 }
 
-static inline void set_upgraded(ws_conn_t *c) {
-  c->rx_state.flags |= CONN_RX_UPGRADED;
-}
+static inline void set_upgraded(ws_conn_t *c) { c->flags |= CONN_UPGRADED; }
 
-static inline void clear_upgraded(ws_conn_t *c) {
-  c->rx_state.flags &= ~CONN_RX_UPGRADED;
-}
+static inline void clear_upgraded(ws_conn_t *c) { c->flags &= ~CONN_UPGRADED; }
 
 static inline bool is_bin(ws_conn_t *c) {
-  return (c->rx_state.flags & CONN_RX_BIN) != 0;
+  return (c->flags & CONN_RX_BIN) != 0;
 }
 
-static inline void set_bin(ws_conn_t *c) { c->rx_state.flags |= CONN_RX_BIN; }
+static inline void set_bin(ws_conn_t *c) { c->flags |= CONN_RX_BIN; }
 
-static inline void clear_bin(ws_conn_t *c) {
-  c->rx_state.flags &= ~CONN_RX_BIN;
-}
+static inline void clear_bin(ws_conn_t *c) { c->flags &= ~CONN_RX_BIN; }
 
 static inline bool is_fragmented(ws_conn_t *c) {
-  return (c->rx_state.flags & CONN_RX_FRAGMENTED) != 0;
+  return (c->flags & CONN_RX_FRAGMENTED) != 0;
 }
 
 static inline void set_fragmented(ws_conn_t *c) {
-  c->rx_state.flags |= CONN_RX_FRAGMENTED;
+  c->flags |= CONN_RX_FRAGMENTED;
 }
 
 static inline void clear_fragmented(ws_conn_t *c) {
-  c->rx_state.flags &= ~CONN_RX_FRAGMENTED;
+  c->flags &= ~CONN_RX_FRAGMENTED;
 }
 
 static inline bool is_http_get_request(ws_conn_t *c) {
-  return (c->rx_state.flags & CONN_RX_GET_REQUEST) != 0;
+  return (c->flags & CONN_RX_GET_REQUEST) != 0;
 }
 
 static inline void set_http_get_request(ws_conn_t *c) {
-  c->rx_state.flags |= CONN_RX_GET_REQUEST;
+  c->flags |= CONN_RX_GET_REQUEST;
 }
 
 static inline void clear_http_get_request(ws_conn_t *c) {
-  c->rx_state.flags &= ~CONN_RX_GET_REQUEST;
+  c->flags &= ~CONN_RX_GET_REQUEST;
 }
 
 static inline bool is_writeable(ws_conn_t *c) {
-  return (c->tx_state.flags & CONN_TX_WRITEABLE) != 0;
+  return (c->flags & CONN_TX_WRITEABLE) != 0;
 }
 
 static inline void set_writeable(ws_conn_t *c) {
-  c->tx_state.flags |= CONN_TX_WRITEABLE;
+  c->flags |= CONN_TX_WRITEABLE;
 }
 
 static inline void clear_writeable(ws_conn_t *c) {
-  c->tx_state.flags &= ~CONN_TX_WRITEABLE;
+  c->flags &= ~CONN_TX_WRITEABLE;
 }
 
 static inline bool is_write_queued(ws_conn_t *c) {
-  return (c->tx_state.flags & CONN_TX_WRITE_QUEUED) != 0;
+  return (c->flags & CONN_TX_WRITE_QUEUED) != 0;
 }
 
 static inline void set_write_queued(ws_conn_t *c) {
-  c->tx_state.flags |= CONN_TX_WRITE_QUEUED;
+  c->flags |= CONN_TX_WRITE_QUEUED;
 }
 
 static inline void clear_write_queued(ws_conn_t *c) {
-  c->tx_state.flags &= ~CONN_TX_WRITE_QUEUED;
+  c->flags &= ~CONN_TX_WRITE_QUEUED;
 }
 
 static inline bool is_using_shared(ws_conn_t *c) {
-  return (c->tx_state.flags & CONN_TX_USING_SHARED) != 0;
+  return (c->flags & CONN_TX_USING_SHARED) != 0;
 }
 
 static inline void set_using_shared(ws_conn_t *c) {
-  c->tx_state.flags |= CONN_TX_USING_SHARED;
+  c->flags |= CONN_TX_USING_SHARED;
 }
 
 static inline void clear_using_shared(ws_conn_t *c) {
-  c->tx_state.flags &= ~CONN_TX_USING_SHARED;
+  c->flags &= ~CONN_TX_USING_SHARED;
 }
 
-static inline bool is_disposing(ws_conn_t *c) {
-  return (c->tx_state.flags & CONN_TX_DISPOSING) != 0;
+static inline bool is_write_shutdown(ws_conn_t *c) {
+  return (c->flags & CONN_TX_DISPOSING) != 0;
 }
 
-static inline void set_disposing(ws_conn_t *c) {
-  c->tx_state.flags |= CONN_TX_DISPOSING;
+static inline void set_write_shutdown(ws_conn_t *c) {
+  c->flags |= CONN_TX_DISPOSING;
+}
+
+static inline bool is_using_own_recv_buf(ws_conn_t *c) {
+  return (c->flags & CONN_RX_USING_OWN_BUF) != 0;
+}
+
+static inline void set_using_own_recv_buf(ws_conn_t *c) {
+  c->flags |= CONN_RX_USING_OWN_BUF;
+}
+
+static inline void clear_using_own_recv_buf(ws_conn_t *c) {
+  c->flags &= ~CONN_RX_USING_OWN_BUF;
+}
+
+static inline bool is_using_own_write_buf(ws_conn_t *c) {
+  return (c->flags & CONN_TX_USING_OWN_BUF) != 0;
+}
+
+static inline void set_using_own_write_buf(ws_conn_t *c) {
+  c->flags |= CONN_TX_USING_OWN_BUF;
+}
+
+static inline void clear_using_own_write_buf(ws_conn_t *c) {
+  c->flags &= ~CONN_TX_USING_OWN_BUF;
 }
 
 // Frame Utils
@@ -338,7 +364,7 @@ static void server_writeable_conns_append(ws_conn_t *c) {
   // a connection must not already be queued for writing
   // a connection must be in a writeable state
   if (is_writeable(c) && !is_write_queued(c)) {
-    conn_list_append(&c->tx_state.base->writeable_conns, c);
+    conn_list_append(&c->base->writeable_conns, c);
     set_write_queued(c);
   }
 }
@@ -346,23 +372,23 @@ static void server_writeable_conns_append(ws_conn_t *c) {
 static void server_closeable_conns_append(ws_conn_t *c) {
   // clear the shared buffer first if owned by this connection
   if (is_using_shared(c)) {
-    buf_reset(c->tx_state.base->shared_send_buffer);
+    buf_reset(c->base->shared_send_buffer);
     clear_using_shared(c);
-    c->tx_state.base->shared_send_buffer_owner = NULL;
+    c->base->shared_send_buffer_owner = NULL;
   }
-  c->tx_state.base->ev.data.ptr = c;
-  ws_server_epoll_ctl(c->tx_state.base, EPOLL_CTL_DEL, c->tx_state.fd);
-  conn_list_append(&c->tx_state.base->closeable_conns, c);
+  c->base->ev.data.ptr = c;
+  ws_server_epoll_ctl(c->base, EPOLL_CTL_DEL, c->fd);
+  conn_list_append(&c->base->closeable_conns, c);
   mark_closing(c);
 }
 
 static void server_writeable_conns_drain(ws_server_t *s) {
   if (s->shared_send_buffer_owner) {
     ws_conn_t *c = s->shared_send_buffer_owner;
-    if (!is_closing(c->tx_state.flags) &&
+    if (!is_closing(c->flags) &&
         conn_drain_write_buf(c, s->shared_send_buffer) == -1) {
       // buf_reset(s->shared_send_buffer);
-      server_closeable_conns_append(c);
+      ws_conn_destroy(c);
     };
     clear_using_shared(c);
     s->shared_send_buffer_owner = NULL;
@@ -373,9 +399,9 @@ static void server_writeable_conns_drain(ws_server_t *s) {
 
   for (size_t i = 0; i < s->writeable_conns.len; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
-    if (!is_closing(c->tx_state.flags)) {
-      if (conn_drain_write_buf(c, &c->tx_state.write_buf) == -1) {
-        server_closeable_conns_append(c);
+    if (!is_closing(c->flags)) {
+      if (conn_drain_write_buf(c, c->write_buf) == -1) {
+        ws_conn_destroy(c);
       };
       clear_write_queued(c);
     }
@@ -392,15 +418,15 @@ static void server_closeable_conns_close(ws_server_t *s) {
     size_t n = s->closeable_conns.len;
     while (n--) {
       ws_conn_t *c = s->closeable_conns.conns[n];
-      assert(close(c->rx_state.fd) == 0);
+      assert(close(c->fd) == 0);
       s->on_ws_disconnect(c, 0);
-      buf_pool_free(s->buffer_pool, c->tx_state.write_buf.buf);
-      buf_pool_free(s->buffer_pool, c->rx_state.read_buf.buf);
+      mbuf_put(s->buffer_pool, c->write_buf);
+      mbuf_put(s->buffer_pool, c->read_buf);
 
       if (s->shared_send_buffer_owner == c) {
         s->shared_send_buffer_owner = NULL;
       }
-      free(c);
+      ws_conn_free(s->conn_pool, c);
       --s->open_conns;
     }
 
@@ -526,6 +552,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     s->on_ws_upgrade_req = params->on_ws_upgrade_req;
   }
 
+  if (params->on_ws_conn_timeout) {
+    s->on_ws_conn_timeout = params->on_ws_conn_timeout;
+  }
+
   size_t max_backpressure =
       params->max_buffered_bytes ? params->max_buffered_bytes : 16000;
   size_t page_size = getpagesize();
@@ -563,7 +593,14 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   }
 
   printf("max_conns = %zu\n", s->max_conns);
-  s->buffer_pool = buf_pool_init(s->max_conns + s->max_conns + 2, buffer_size);
+  s->buffer_pool =
+      mbuf_pool_create(s->max_conns + s->max_conns + 2, buffer_size);
+
+  s->conn_pool = ws_conn_pool_create(s->max_conns);
+
+  assert(s->conn_pool != NULL);
+  assert(s->buffer_pool != NULL);
+
   s->max_msg_len = max_backpressure;
 
   s->shared_send_buffer_owner = NULL;
@@ -605,10 +642,8 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd) {
 // shutting down our write end of the socket
 // must be called AFTER the final write has completed
 static int conn_shutdown_wr(ws_conn_t *c) {
-  if (shutdown(c->rx_state.fd, SHUT_WR) == -1) {
-    if (!is_closing(c->rx_state.flags)) {
-      server_closeable_conns_append(c);
-    }
+  if (shutdown(c->fd, SHUT_WR) == -1) {
+    ws_conn_destroy(c);
     return -1;
   }
 
@@ -618,6 +653,7 @@ static int conn_shutdown_wr(ws_conn_t *c) {
 static void ws_server_conns_establish(ws_server_t *s, int fd,
                                       struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
+  unsigned int now = (unsigned int)time(NULL);
   // how many conns should we try to accept in total
   size_t accepts = (s->accept_paused == 0) * (s->max_conns - s->open_conns);
   // if we can do atleast one, then let's get started...
@@ -658,21 +694,25 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return;
         }
 
-        ws_conn_t *conn = calloc(1, sizeof(ws_conn_t));
+        ws_conn_t *conn = ws_conn_alloc(s->conn_pool);
         assert(conn != NULL); // TODO(sah): remove this
         s->ev.events = EPOLLIN | EPOLLRDHUP;
-        conn->rx_state.fd = client_fd;
-        conn->rx_state.base = s;
-        conn->rx_state.needed_bytes = 12;
+        conn->fd = client_fd;
+        conn->base = s;
+        conn->needed_bytes = 12;
         set_writeable(conn);
-        conn->tx_state.fd = client_fd;
-        conn->tx_state.base = s;
+        conn->fd = client_fd;
+        conn->base = s;
 
         s->ev.data.ptr = conn;
 
-        assert(buf_init(s->buffer_pool, &conn->rx_state.read_buf) == 0);
-        assert(buf_init(s->buffer_pool, &conn->tx_state.write_buf) == 0);
+        conn->read_buf = mbuf_get(s->buffer_pool);
+        conn->write_buf = mbuf_get(s->buffer_pool);
 
+        assert(conn->read_buf != NULL);
+        assert(conn->write_buf != NULL);
+
+        conn->read_timeout = now + READ_TIMEOUT;
         ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
         ++s->open_conns;
 
@@ -734,14 +774,11 @@ int ws_server_start(ws_server_t *s, int backlog) {
     return ret;
   }
 
-  buf_t shared_rxb = {0};
-  buf_t shared_txb = {0};
+  buf_t *shared_rxb = mbuf_get(s->buffer_pool);
+  buf_t *shared_txb = mbuf_get(s->buffer_pool);
 
-  buf_init(s->buffer_pool, &shared_rxb);
-  buf_init(s->buffer_pool, &shared_txb);
-
-  s->shared_recv_buffer = &shared_rxb;
-  s->shared_send_buffer = &shared_txb;
+  s->shared_recv_buffer = shared_rxb;
+  s->shared_send_buffer = shared_txb;
 
   int fd = s->fd;
   int epfd = s->epoll_fd;
@@ -753,6 +790,28 @@ int ws_server_start(ws_server_t *s, int backlog) {
   s->ev.events = EPOLLIN;
 
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
+
+  int tfd;
+  assert((tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK)) !=
+         -1);
+
+  struct itimerspec timer = {.it_interval =
+                                 {
+                                     .tv_nsec = 0,
+                                     .tv_sec = TIMER_GRANULARITY,
+                                 },
+                             .it_value = {
+                                 .tv_nsec = 0,
+                                 .tv_sec = TIMER_GRANULARITY,
+                             }};
+
+  assert(timerfd_settime(tfd, 0, &timer, NULL) != -1);
+
+  s->ev.data.ptr = &tfd;
+  s->ev.events = EPOLLIN;
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
+
+  bool do_timers_sweep = false;
 
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
@@ -769,7 +828,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if (s->events[i].data.ptr == s) {
+      if (s->events[i].data.ptr == &tfd) {
+        uint64_t _;
+        assert(read(tfd, &_, 8) == 8);
+        do_timers_sweep = true;
+        (void)_;
+      } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
       } else {
@@ -778,17 +842,18 @@ int ws_server_start(ws_server_t *s, int backlog) {
           ws_conn_destroy(s->events[i].data.ptr);
         } else {
           if (s->events[i].events & EPOLLOUT) {
-            if (!is_closing(c->tx_state.flags)) {
-              int ret = conn_drain_write_buf(c, &c->tx_state.write_buf);
+            if (!is_closing(c->flags)) {
+              int ret = conn_drain_write_buf(c, c->write_buf);
               if (ret == 1) {
-                if (!is_disposing(c)) {
+                if (!is_write_shutdown(c)) {
                   if (s->on_ws_drain) {
                     s->on_ws_drain(c);
                   }
 
                   if (!is_upgraded(c)) {
                     set_upgraded(c);
-                    c->rx_state.needed_bytes = 2;
+                    c->needed_bytes = 2;
+                    c->read_timeout = time(NULL) + READ_TIMEOUT;
                     s->on_ws_open(c);
                   }
                 } else {
@@ -801,8 +866,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
                 s->ev.data.ptr = c;
                 s->ev.events = EPOLLIN | EPOLLRDHUP;
-                if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->tx_state.fd, &s->ev) ==
-                    -1) {
+                if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &s->ev) == -1) {
                   if (s->on_ws_err) {
                     int err = errno;
                     s->on_ws_err(s, err);
@@ -812,14 +876,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
                   }
                 };
               } else if (ret == -1) {
-                if (!is_closing(c->tx_state.flags)) {
-                  server_closeable_conns_append(c);
-                }
+                ws_conn_destroy(c);
               }
             }
           }
           if (s->events[i].events & EPOLLIN) {
-            if (!is_closing(c->rx_state.flags)) {
+            if (!is_closing(c->flags)) {
               if (is_upgraded(c)) {
                 ws_conn_handle(c);
               } else {
@@ -833,6 +895,38 @@ int ws_server_start(ws_server_t *s, int backlog) {
     }
 
     server_writeable_conns_drain(s); // drain writes
+
+    if (do_timers_sweep) {
+      unsigned int now = (unsigned int)time(NULL);
+
+      int timeout_kind = 0;
+      size_t n = s->max_conns;
+
+      ws_on_timeout_t cb = s->on_ws_conn_timeout;
+
+      while (n--) {
+        ws_conn_t *c = &s->conn_pool->base[n];
+
+        timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
+        timeout_kind += ((c->write_timeout != 0 && c->write_timeout < now) * 2);
+
+        if (timeout_kind) {
+          c->read_timeout = 0;
+          c->write_timeout = 0;
+
+          if (cb) {
+            cb(c, timeout_kind);
+          } else {
+            ws_conn_destroy(c);
+          }
+
+          timeout_kind = 0;
+          ws_conn_destroy(c);
+        }
+      }
+
+      do_timers_sweep = false;
+    }
 
     bool accept_resumable =
         s->accept_paused &&
@@ -850,7 +944,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
 }
 
 static int conn_read(ws_conn_t *conn, buf_t *buf) {
-  ssize_t n = buf_recv(buf, conn->rx_state.fd, 0);
+  ssize_t n = buf_recv(buf, conn->fd, 0);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EINTR)) {
       return 0;
@@ -920,14 +1014,14 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 }
 
 static void handle_upgrade(ws_conn_t *conn) {
-  ws_server_t *s = conn->rx_state.base;
+  ws_server_t *s = conn->base;
   buf_t *request_buf;
   buf_t *response_buf = NULL;
   size_t resp_len = 0;
 
   // pick the recv buffer
-  if (buf_len(&conn->rx_state.read_buf)) {
-    request_buf = &conn->rx_state.read_buf;
+  if (is_using_own_recv_buf(conn)) {
+    request_buf = conn->read_buf;
   } else {
     request_buf = s->shared_recv_buffer;
   }
@@ -944,11 +1038,11 @@ static void handle_upgrade(ws_conn_t *conn) {
 
   // if we are disposing the connection
   // it means that we received a bad request or an internal server error ocurred
-  if (is_disposing(conn)) {
-    conn->rx_state.fragments_len += request_buf_len;
+  if (is_write_shutdown(conn)) {
+    conn->fragments_len += request_buf_len;
     // client sending too much data after shutting down our write end
-    if (conn->rx_state.fragments_len > 8192) {
-      server_closeable_conns_append(conn);
+    if (conn->fragments_len > 8192) {
+      ws_conn_destroy(conn);
     }
 
     // reset the buffer, we discard all data after socket is marked disposing
@@ -958,9 +1052,10 @@ static void handle_upgrade(ws_conn_t *conn) {
 
   // if we still have less than needed bytes
   // stop and wait for more
-  if (request_buf_len < conn->rx_state.needed_bytes) {
-    if (request_buf == s->shared_recv_buffer) {
-      buf_move(s->shared_recv_buffer, &conn->rx_state.read_buf,
+  if (request_buf_len < conn->needed_bytes) {
+    if (request_buf != conn->read_buf) {
+      set_using_own_recv_buf(conn);
+      buf_move(s->shared_recv_buffer, conn->read_buf,
                buf_len(s->shared_recv_buffer));
     }
 
@@ -985,7 +1080,7 @@ static void handle_upgrade(ws_conn_t *conn) {
       // Sec-WebSocket-Accept:s3pPLMBiTxaQ9kYGzzhZRbK+xOo= is 49 bytes and
       // that's the absolute minimum (practically still higher because there
       // will be other headers)
-      conn->rx_state.needed_bytes += 49;
+      conn->needed_bytes += 49;
     };
   };
 
@@ -1017,13 +1112,13 @@ static void handle_upgrade(ws_conn_t *conn) {
           buf_put(response_buf, CRLF2, CRLF2_LEN);
           resp_len = buf_len(response_buf);
         } else {
-          if (!buf_len(&conn->tx_state.write_buf) &&
+          if (!buf_len(conn->write_buf) &&
               s->shared_send_buffer_owner == NULL) {
             s->shared_send_buffer_owner = conn;
             set_using_shared(conn);
             response_buf = s->shared_send_buffer;
           } else {
-            response_buf = &conn->tx_state.write_buf;
+            response_buf = conn->write_buf;
           }
 
           size_t max_resp_len = buf_space(response_buf);
@@ -1036,14 +1131,14 @@ static void handle_upgrade(ws_conn_t *conn) {
             response_buf->wpos += resp_len;
             ok = true;
           } else {
-            set_disposing(conn);
+            set_write_shutdown(conn);
             buf_put(response_buf, internal_server_error,
                     INTERNAL_SERVER_ERROR_LEN);
           }
         }
 
       } else {
-        set_disposing(conn);
+        set_write_shutdown(conn);
         buf_reset(request_buf);
         response_buf = request_buf;
         buf_put(response_buf, bad_request, BAD_REQUEST_LEN);
@@ -1054,14 +1149,15 @@ static void handle_upgrade(ws_conn_t *conn) {
       // there's still more data to be read from the network to get the full
       // header
       if (request_buf == s->shared_recv_buffer) {
-        buf_move(s->shared_recv_buffer, &conn->rx_state.read_buf,
+        set_using_own_recv_buf(conn);
+        buf_move(s->shared_recv_buffer, conn->read_buf,
                  buf_len(s->shared_recv_buffer));
       }
       return;
     }
 
   } else {
-    set_disposing(conn);
+    set_write_shutdown(conn);
     buf_reset(request_buf);
     response_buf = request_buf;
     buf_put(response_buf, bad_request, BAD_REQUEST_LEN);
@@ -1070,15 +1166,17 @@ static void handle_upgrade(ws_conn_t *conn) {
   if (is_writeable(conn)) {
     int ret = conn_drain_write_buf(conn, response_buf);
     if (ret == 1) {
+      clear_using_own_recv_buf(conn);
 
       if (ok) {
         clear_http_get_request(conn);
         s->on_ws_open(conn);
         set_upgraded(conn);
-        conn->rx_state.needed_bytes =
+        conn->read_timeout = time(NULL) + READ_TIMEOUT;
+        conn->needed_bytes =
             2; // reset to the minimum needed to parse a ws header
       } else {
-        if (shutdown(conn->tx_state.fd, SHUT_WR) == -1) {
+        if (shutdown(conn->fd, SHUT_WR) == -1) {
           if (!s->on_ws_err) {
             int err = errno;
             s->on_ws_err(s, err);
@@ -1089,45 +1187,50 @@ static void handle_upgrade(ws_conn_t *conn) {
       }
 
     } else if (ret == -1) {
-      if (!is_closing(conn->tx_state.flags)) {
-        server_closeable_conns_append(conn);
-      }
+      ws_conn_destroy(conn);
     } else {
-      if (response_buf != &conn->tx_state.write_buf ||
+      if (response_buf != conn->write_buf ||
           response_buf != s->shared_send_buffer) {
-        buf_move(response_buf, &conn->tx_state.write_buf,
-                 buf_len(response_buf));
+        buf_move(response_buf, conn->write_buf, buf_len(response_buf));
       }
     }
   } else {
-    buf_put(&conn->tx_state.write_buf, bad_request, BAD_REQUEST_LEN);
+    buf_put(conn->write_buf, bad_request, BAD_REQUEST_LEN);
   }
 }
 
 static inline buf_t *ws_conn_choose_read_buf(ws_conn_t *conn) {
-
-  if ((buf_len(&conn->rx_state.read_buf) != 0) &
-      !(conn->rx_state.fragments_len + conn->rx_state.read_buf.rpos ==
-        conn->rx_state.read_buf.wpos)) {
-    // buf_debug(&conn->read_buf, "conn buffer chosen");
-
-    return &conn->rx_state.read_buf;
+  if (!is_using_own_recv_buf(conn)) {
+    return conn->base->shared_recv_buffer;
   } else {
-    return conn->rx_state.base->shared_recv_buffer;
+    return conn->read_buf;
   }
+
+  // if ((buf_len(conn->read_buf) != 0) &
+  //     !(conn->fragments_len + conn->read_buf->rpos ==
+  //       conn->read_buf->wpos)) {
+  //   // buf_debug(&conn->read_buf, "conn buffer chosen");
+
+  //   return conn->read_buf;
+  // } else {
+  //   return conn->base->shared_recv_buffer;
+  // }
 }
 
 static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
-  if (buf != &conn->rx_state.read_buf) {
+  if (buf != conn->read_buf) {
     return buf->wpos - buf->rpos;
   } else {
-    return buf->wpos - buf->rpos - conn->rx_state.fragments_len;
+    return buf->wpos - buf->rpos -
+           conn->fragments_len; // do we really need the branch?
   }
 }
 
 static inline void ws_conn_handle(ws_conn_t *conn) {
   buf_t *buf = ws_conn_choose_read_buf(conn);
-  ws_server_t *s = conn->rx_state.base;
+  ws_server_t *s = conn->base;
+
+  unsigned int next_read_timeout = time(NULL) + READ_TIMEOUT;
 
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
@@ -1140,11 +1243,11 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
   }
 
   while (ws_conn_readable_len(conn, buf) - total_trimmed >=
-         conn->rx_state.needed_bytes) {
+         conn->needed_bytes) {
     // payload start
-    uint8_t *frame = buf_peek_at(
-        buf, buf->rpos + ((buf == &conn->rx_state.read_buf) *
-                          (conn->rx_state.fragments_len + total_trimmed)));
+    uint8_t *frame =
+        buf_peek_at(buf, buf->rpos + ((buf == conn->read_buf) *
+                                      (conn->fragments_len + total_trimmed)));
 
     uint8_t fin = frame_get_fin(frame);
     uint8_t opcode = frame_get_opcode(frame);
@@ -1161,16 +1264,15 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // make sure we can get the full msg
     size_t payload_len = 0;
     size_t frame_buf_len = buf_len(buf);
-    if (&conn->rx_state.read_buf == buf) {
-      frame_buf_len =
-          frame_buf_len - conn->rx_state.fragments_len - total_trimmed;
+    if (conn->read_buf == buf) {
+      frame_buf_len = frame_buf_len - conn->fragments_len - total_trimmed;
     }
     // check if we need to do more reads to get the msg length
     int missing_header_len =
         frame_decode_payload_len(frame, frame_buf_len, &payload_len);
     if (missing_header_len) {
       // wait for atleast remaining of the header
-      conn->rx_state.needed_bytes = missing_header_len;
+      conn->needed_bytes = missing_header_len;
       goto clean_up_buffer;
     }
 
@@ -1188,7 +1290,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // check that we have atleast the whole frame, otherwise
     // set needed_bytes and exit waiting for more reads from the socket
     if (frame_buf_len < full_frame_len) {
-      conn->rx_state.needed_bytes = full_frame_len;
+      conn->needed_bytes = full_frame_len;
       goto clean_up_buffer;
     }
 
@@ -1197,12 +1299,12 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n",
     // frame_buf_len,
     //        full_frame_len, opcode, fin);
-
+    conn->read_timeout = next_read_timeout;
     switch (opcode) {
     case OP_TXT:
     case OP_BIN:
-      conn->rx_state.flags &= ~CONN_RX_BIN;
-      conn->rx_state.flags |= (opcode == OP_BIN) * CONN_RX_BIN;
+      conn->flags &= ~CONN_RX_BIN;
+      conn->flags |= (opcode == OP_BIN) * CONN_RX_BIN;
       // fin and never fragmented
       // this handles both text and binary hence the fallthrough
       if (fin & (!is_fragmented(conn))) {
@@ -1214,7 +1316,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
         buf_consume(buf, full_frame_len);
         clear_bin(conn);
-        conn->rx_state.needed_bytes = 2;
+        conn->needed_bytes = 2;
 
         break; /* OP_BIN don't fall through to fragmented msg */
       } else if (fin & (is_fragmented(conn))) {
@@ -1238,7 +1340,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         return;
       }
 
-      if (conn->rx_state.fragments_len + payload_len > max_allowed_len) {
+      if (conn->fragments_len + payload_len > max_allowed_len) {
         ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
         buf_reset(s->shared_recv_buffer);
         return;
@@ -1250,45 +1352,44 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       if (!s->on_ws_msg_fragment) {
 
         // we are using the shared buffer
-        if (buf != &conn->rx_state.read_buf) {
+        if (buf != conn->read_buf) {
           // trim off the header
           buf_consume(buf, mask_offset + 4);
-          buf_move(buf, &conn->rx_state.read_buf, payload_len);
-          conn->rx_state.fragments_len += payload_len;
-          conn->rx_state.needed_bytes = 2;
+          buf_move(buf, conn->read_buf, payload_len);
+          conn->fragments_len += payload_len;
+          conn->needed_bytes = 2;
         } else {
           // place back at the frame start which contains the header & mask
           // we want to get rid of but ensure to subtract by the frame_gap to
           // fill it if it isn't zero
           memmove(frame - total_trimmed, msg, payload_len);
-          conn->rx_state.fragments_len += payload_len;
+          conn->fragments_len += payload_len;
           total_trimmed += mask_offset + 4;
-          conn->rx_state.needed_bytes = 2;
+          conn->needed_bytes = 2;
         }
         if (fin) {
           if (!is_bin(conn) &&
-              !utf8_is_valid(buf_peek(&conn->rx_state.read_buf),
-                             conn->rx_state.fragments_len)) {
+              !utf8_is_valid(buf_peek(conn->read_buf), conn->fragments_len)) {
             ws_conn_destroy(conn);
             buf_reset(s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
           }
-          s->on_ws_msg(conn, buf_peek(&conn->rx_state.read_buf),
-                       conn->rx_state.fragments_len, is_bin(conn));
-          buf_consume(&conn->rx_state.read_buf, conn->rx_state.fragments_len);
+          s->on_ws_msg(conn, buf_peek(conn->read_buf), conn->fragments_len,
+                       is_bin(conn));
+          buf_consume(conn->read_buf, conn->fragments_len);
 
-          conn->rx_state.fragments_len = 0;
+          conn->fragments_len = 0;
           clear_fragmented(conn);
           clear_bin(conn);
-          conn->rx_state.needed_bytes = 2;
+          conn->needed_bytes = 2;
         }
       } else {
         s->on_ws_msg_fragment(conn, msg, payload_len, fin);
         buf_consume(buf, full_frame_len);
-        conn->rx_state.needed_bytes = 2;
+        conn->needed_bytes = 2;
         if (fin) {
-          conn->rx_state.fragments_len = 0;
-          conn->rx_state.needed_bytes = 2;
+          conn->fragments_len = 0;
+          conn->needed_bytes = 2;
           clear_fragmented(conn);
           clear_bin(conn);
         }
@@ -1307,14 +1408,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         // a bad client can constantly send pings and we would keep replying
         ws_conn_pong(conn, msg, payload_len);
       }
-      if ((conn->rx_state.fragments_len != 0) &
-          (buf == &conn->rx_state.read_buf)) {
+      if ((conn->fragments_len != 0) & (buf == conn->read_buf)) {
         total_trimmed += full_frame_len;
-        conn->rx_state.needed_bytes = 2;
+        conn->needed_bytes = 2;
       } else {
         // printf("here\n");
         buf_consume(buf, full_frame_len);
-        conn->rx_state.needed_bytes = 2;
+        conn->needed_bytes = 2;
       }
 
       break;
@@ -1330,13 +1430,12 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         s->on_ws_pong(conn, msg, payload_len);
       }
 
-      if ((conn->rx_state.fragments_len != 0) &
-          (buf == &conn->rx_state.read_buf)) {
+      if ((conn->fragments_len != 0) & (buf == conn->read_buf)) {
         total_trimmed += total_trimmed;
-        conn->rx_state.needed_bytes = 2;
+        conn->needed_bytes = 2;
       } else {
         buf_consume(buf, full_frame_len);
-        conn->rx_state.needed_bytes = 2;
+        conn->needed_bytes = 2;
       }
       break;
     case OP_CLOSE:
@@ -1411,37 +1510,40 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
   // reuse it
   if (is_using_shared(conn)) {
     if (conn_drain_write_buf(conn, s->shared_send_buffer) == -1) {
-      if (!is_closing(conn->tx_state.flags)) {
-        buf_reset(s->shared_recv_buffer);
-        server_closeable_conns_append(conn);
-      }
+      buf_reset(s->shared_recv_buffer);
+      ws_conn_destroy(conn);
     };
     clear_using_shared(conn);
-    conn->tx_state.base->shared_send_buffer_owner = NULL;
+    conn->base->shared_send_buffer_owner = NULL;
   }
 
 clean_up_buffer:
-  if ((buf == s->shared_recv_buffer) && (buf_len(buf) > 0)) {
+  if (buf != conn->read_buf) {
     // move to connection specific buffer
-    // printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
-    buf_move(buf, &conn->rx_state.read_buf, buf_len(buf));
+    if (buf_len(buf)) {
+      // printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
+      buf_move(buf, conn->read_buf, buf_len(buf));
+      set_using_own_recv_buf(conn);
+    }
   } else {
 
-    memmove(buf->buf + buf->rpos + conn->rx_state.fragments_len,
-            buf->buf + buf->rpos + conn->rx_state.fragments_len + total_trimmed,
-            buf->wpos - buf->rpos + conn->rx_state.fragments_len +
-                total_trimmed);
-    buf->wpos =
-        buf->rpos + conn->rx_state.fragments_len +
-        (buf->wpos - buf->rpos - conn->rx_state.fragments_len - total_trimmed);
+    if (buf_len(buf)) {
+      memmove(buf->buf + buf->rpos + conn->fragments_len,
+              buf->buf + buf->rpos + conn->fragments_len + total_trimmed,
+              buf->wpos - buf->rpos + conn->fragments_len + total_trimmed);
+      buf->wpos = buf->rpos + conn->fragments_len +
+                  (buf->wpos - buf->rpos - conn->fragments_len - total_trimmed);
+    } else {
+      clear_using_own_recv_buf(conn);
+    }
   }
 }
 
 static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
   clear_writeable(conn);
-  conn->tx_state.base->ev.data.ptr = conn;
-  conn->tx_state.base->ev.events = EPOLLOUT | EPOLLRDHUP;
-  ws_server_epoll_ctl(conn->tx_state.base, EPOLL_CTL_MOD, conn->tx_state.fd);
+  conn->base->ev.data.ptr = conn;
+  conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
+  ws_server_epoll_ctl(conn->base, EPOLL_CTL_MOD, conn->fd);
 }
 
 static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
@@ -1452,7 +1554,7 @@ static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
     return 0;
   }
 
-  n = buf_send(wbuf, conn->tx_state.fd, MSG_NOSIGNAL);
+  n = buf_send(wbuf, conn->fd, MSG_NOSIGNAL);
   if ((n == -1 && errno != EAGAIN) | (n == 0)) {
     return -1;
   }
@@ -1464,10 +1566,9 @@ static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
     if (is_using_shared(conn)) {
       // worst case
       clear_using_shared(conn);
-      buf_move(conn->tx_state.base->shared_send_buffer,
-               &conn->tx_state.write_buf,
-               buf_len(conn->tx_state.base->shared_send_buffer));
-      conn->tx_state.base->shared_send_buffer_owner = NULL;
+      buf_move(conn->base->shared_send_buffer, conn->write_buf,
+               buf_len(conn->base->shared_send_buffer));
+      conn->base->shared_send_buffer_owner = NULL;
     }
     ws_conn_notify_on_writeable(conn);
   }
@@ -1486,9 +1587,7 @@ will be called
 inline int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PONG);
   if (stat == -1) {
-    if (!is_closing(c->tx_state.flags)) {
-      server_closeable_conns_append(c);
-    }
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1503,9 +1602,7 @@ will be called
 inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PING);
   if (stat == -1) {
-    if (!is_closing(c->tx_state.flags)) {
-      server_closeable_conns_append(c);
-    }
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1521,11 +1618,9 @@ will be called
 inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_BIN);
   if (stat == -1) {
-    if (!is_closing(c->tx_state.flags)) {
-      server_closeable_conns_append(c);
-    }
+    ws_conn_destroy(c);
   }
-  return stat == 1;
+  return stat;
 }
 
 /**
@@ -1539,33 +1634,31 @@ will be called
 inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_TXT);
   if (stat == -1) {
-    if (!is_closing(c->tx_state.flags)) {
-      server_closeable_conns_append(c);
-    }
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
 
 static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
-  if (send_len > 65535 || buf_len(&conn->tx_state.write_buf) != 0 ||
-      !is_writeable(conn)) {
-    return &conn->tx_state.write_buf;
+  if (send_len > 65535 || is_using_own_write_buf(conn) || !is_writeable(conn)) {
+    set_using_own_write_buf(conn);
+    return conn->write_buf;
   } else {
     if (!is_using_shared(conn)) {
-      ws_conn_t *owner = conn->tx_state.base->shared_send_buffer_owner;
+      ws_conn_t *owner = conn->base->shared_send_buffer_owner;
       if (owner) {
-        if (!is_closing(owner->tx_state.flags)) {
-          if (conn_drain_write_buf(
-                  owner, owner->tx_state.base->shared_send_buffer) == -1) {
-            server_closeable_conns_append(owner);
+        if (!is_closing(owner->flags)) {
+          if (conn_drain_write_buf(owner, owner->base->shared_send_buffer) ==
+              -1) {
+            ws_conn_destroy(owner);
           };
         }
         clear_using_shared(owner);
       }
       set_using_shared(conn);
-      conn->tx_state.base->shared_send_buffer_owner = conn;
+      conn->base->shared_send_buffer_owner = conn;
     }
-    return conn->tx_state.base->shared_send_buffer;
+    return conn->base->shared_send_buffer;
   }
 }
 
@@ -1577,7 +1670,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   }
 
   // make sure we haven't already done this
-  if (is_closing(conn->tx_state.flags)) {
+  if (is_closing(conn->flags)) {
     return;
   }
 
@@ -1592,11 +1685,11 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   buf_put(wbuf, msg, len);
 
   conn_drain_write_buf(conn, wbuf);
-  server_closeable_conns_append(conn);
+  ws_conn_destroy(conn);
 }
 
 void ws_conn_destroy(ws_conn_t *conn) {
-  if (is_closing(conn->rx_state.flags)) {
+  if (is_closing(conn->flags)) {
     return;
   }
   server_closeable_conns_append(conn);
@@ -1615,8 +1708,8 @@ start sending more data
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op) {
 
-  if (!is_closing(conn->tx_state.flags)) {
-    ws_server_t *s = conn->tx_state.base;
+  if (!is_closing(conn->flags)) {
+    ws_server_t *s = conn->base;
     size_t hlen = frame_get_header_len(len);
     buf_t *wbuf = conn_choose_send_buf(conn, len);
 
@@ -1687,7 +1780,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
             // buffer draining the shared buffer and also moving leftover data
             // there into the connection buffer if any
             n = buf_drain_write2v(s->shared_send_buffer, vecs, total_write,
-                                  wbuf, conn->tx_state.fd);
+                                  wbuf, conn->fd);
 
           }
           // no writes need to go ahead
@@ -1702,7 +1795,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
             total_write = flen;
             // write as much as possible and only copy from payload data what
             // couldn't be drained
-            n = buf_write2v(wbuf, conn->tx_state.fd, vecs, flen);
+            n = buf_write2v(wbuf, conn->fd, vecs, flen);
           }
 
           else {
@@ -1721,11 +1814,15 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
 
             // send of as much as we can and place the rest in the connection
             // buffer
-            n = buf_drain_write2v(wbuf, vecs, total_write, NULL,
-                                  conn->tx_state.fd);
+            n = buf_drain_write2v(wbuf, vecs, total_write, NULL, conn->fd);
           }
 
           if (n == total_write) {
+
+            if (is_using_own_write_buf(conn)) {
+              clear_using_own_write_buf(conn);
+            }
+
             return 1;
           } else if (n == 0 ||
                      ((n == -1) & ((errno != EAGAIN) | (errno != EINTR)))) {
@@ -1733,7 +1830,8 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
           } else {
             if (is_using_shared(conn)) {
               clear_using_shared(conn);
-              conn->tx_state.base->shared_send_buffer_owner = NULL;
+              set_using_own_write_buf(conn);
+              conn->base->shared_send_buffer_owner = NULL;
             }
             ws_conn_notify_on_writeable(conn);
             return 1;
@@ -1742,7 +1840,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       }
 
       // queue up for writing if not using shared buffer
-      if (wbuf != s->shared_send_buffer) {
+      if (wbuf == conn->write_buf) {
         // queue it up for writing
         server_writeable_conns_append(conn);
       }
@@ -1754,9 +1852,9 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
   return 0;
 }
 
-int ws_conn_fd(ws_conn_t *c) { return c->rx_state.fd; }
+int ws_conn_fd(ws_conn_t *c) { return c->fd; }
 
-inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->rx_state.base; }
+inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
 
 inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
@@ -1809,4 +1907,59 @@ int utf8_is_valid(uint8_t *s, size_t n) {
     }
   }
   return 1;
+}
+
+struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
+  size_t conns_size = nmemb * sizeof(ws_conn_t);
+  size_t pool_sz = (sizeof(struct ws_conn_pool) +
+                    (nmemb * sizeof(struct buf_node)) + 64 - 1) &
+                   ~(64 - 1);
+
+  struct ws_conn_pool *pool;
+
+  assert(posix_memalign((void **)&pool, 64, conns_size + pool_sz) == 0);
+
+  memset(pool, 0, conns_size + pool_sz);
+
+  uintptr_t base_ptr = (uintptr_t)pool + pool_sz;
+
+  pool->base = (ws_conn_t *)base_ptr;
+
+  ws_conn_t *cur = pool->base;
+
+  for (size_t i = 0; i < nmemb; ++i) {
+    pool->_buf_nodes[i].b = cur;
+    cur += 1;
+  }
+
+  for (size_t i = 0; i < nmemb - 1; i++) {
+    pool->_buf_nodes[i].next = &pool->_buf_nodes[i + 1];
+  }
+
+  pool->_buf_nodes[nmemb - 1].next = NULL;
+
+  pool->head = &pool->_buf_nodes[0];
+
+  return pool;
+}
+
+struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p) {
+  if (p->head) {
+    struct buf_node *bn = p->head;
+    p->head = p->head->next;
+    bn->next = NULL; // unlink the buf_node mainly useful for debugging
+    return bn->b;
+  } else {
+    return NULL;
+  }
+}
+
+void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c) {
+  uintptr_t diff =
+      ((uintptr_t)c - (uintptr_t)p->base) / sizeof(struct ws_conn_t);
+
+  memset(c, 0, sizeof(struct ws_conn_t));
+
+  p->_buf_nodes[diff].next = p->head;
+  p->head = &p->_buf_nodes[diff];
 }
