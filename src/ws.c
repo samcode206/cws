@@ -388,7 +388,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
     if (!is_closing(c->flags) &&
         conn_drain_write_buf(c, s->shared_send_buffer) == -1) {
       // buf_reset(s->shared_send_buffer);
-     ws_conn_destroy(c);
+      ws_conn_destroy(c);
     };
     clear_using_shared(c);
     s->shared_send_buffer_owner = NULL;
@@ -853,6 +853,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                   if (!is_upgraded(c)) {
                     set_upgraded(c);
                     c->needed_bytes = 2;
+                    c->read_timeout = time(NULL) + READ_TIMEOUT;
                     s->on_ws_open(c);
                   }
                 } else {
@@ -1173,6 +1174,7 @@ static void handle_upgrade(ws_conn_t *conn) {
         clear_http_get_request(conn);
         s->on_ws_open(conn);
         set_upgraded(conn);
+        conn->read_timeout = time(NULL) + READ_TIMEOUT;
         conn->needed_bytes =
             2; // reset to the minimum needed to parse a ws header
       } else {
@@ -1229,6 +1231,8 @@ static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
 static inline void ws_conn_handle(ws_conn_t *conn) {
   buf_t *buf = ws_conn_choose_read_buf(conn);
   ws_server_t *s = conn->base;
+
+  unsigned int next_read_timeout = time(NULL) + READ_TIMEOUT;
 
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
@@ -1297,7 +1301,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n",
     // frame_buf_len,
     //        full_frame_len, opcode, fin);
-
+    conn->read_timeout = next_read_timeout;
     switch (opcode) {
     case OP_TXT:
     case OP_BIN:
@@ -1600,7 +1604,7 @@ will be called
 inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_PING);
   if (stat == -1) {
- ws_conn_destroy(c);
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1616,7 +1620,7 @@ will be called
 inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_BIN);
   if (stat == -1) {
-ws_conn_destroy(c);
+    ws_conn_destroy(c);
   }
   return stat;
 }
@@ -1632,7 +1636,7 @@ will be called
 inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_frame(c, msg, n, OP_TXT);
   if (stat == -1) {
- ws_conn_destroy(c);
+    ws_conn_destroy(c);
   }
   return stat == 1;
 }
@@ -1648,7 +1652,7 @@ static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
         if (!is_closing(owner->flags)) {
           if (conn_drain_write_buf(owner, owner->base->shared_send_buffer) ==
               -1) {
-           ws_conn_destroy(owner);
+            ws_conn_destroy(owner);
           };
         }
         clear_using_shared(owner);
@@ -1683,7 +1687,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   buf_put(wbuf, msg, len);
 
   conn_drain_write_buf(conn, wbuf);
- ws_conn_destroy(conn);
+  ws_conn_destroy(conn);
 }
 
 void ws_conn_destroy(ws_conn_t *conn) {
