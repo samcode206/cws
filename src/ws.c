@@ -1861,7 +1861,9 @@ struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
 
   struct ws_conn_pool *pool;
 
-  assert(posix_memalign((void *)&pool, 64, conns_size + pool_sz) == 0);
+  assert(posix_memalign((void **)&pool, 64, conns_size + pool_sz) == 0);
+
+  memset(pool, 0, conns_size + pool_sz);
 
   uintptr_t base_ptr = (uintptr_t)pool + pool_sz;
 
