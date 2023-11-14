@@ -94,7 +94,8 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // }
 }
 
-// size_t on_upgrade_request(ws_conn_t *c, char *request, const char *accept_key,
+// size_t on_upgrade_request(ws_conn_t *c, char *request, const char
+// *accept_key,
 //                           size_t max_resp_len, char *resp_dst) {
 //   // printf("%s\n", request);
 
@@ -105,7 +106,6 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
 //           "Sec-WebSocket-Accept: %.*s\r\n\r\n",
 //           28,
 //           accept_key);
-
 
 //   return ret;
 // }
@@ -165,6 +165,18 @@ void on_accept_err(ws_server_t *s, int err) {
   printf("is_paused=%d\n", ws_server_accept_paused(s));
 }
 
+void on_timeout(ws_conn_t *c, int timeout_kind) {
+  if (timeout_kind == 1) {
+    printf("read timeout on %d\n", ws_conn_fd(c));
+  } else if (timeout_kind == 2) {
+    printf("write timeout on  %d\n", ws_conn_fd(c));
+  } else {
+    printf("read/write timeout on %d\n", ws_conn_fd(c));
+  }
+
+  ws_conn_destroy(c);
+}
+
 void *start_server() {
   const uint16_t port = 9919;
   const int backlog = 1024;
@@ -178,6 +190,7 @@ void *start_server() {
       .on_ws_disconnect = on_disconnect,
       .max_buffered_bytes = 1024 * 1024,
       .on_ws_accept_err = on_accept_err,
+      .on_ws_conn_timeout = on_timeout,
       .max_conns = 1024,
       // .on_ws_msg_fragment = on_msg_fragment,
   };

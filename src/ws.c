@@ -133,6 +133,7 @@ typedef struct server {
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
   ws_close_cb_t on_ws_close;
 
+  ws_on_timeout_t on_ws_conn_timeout;
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct mbuf_pool *buffer_pool;
@@ -551,6 +552,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     s->on_ws_upgrade_req = params->on_ws_upgrade_req;
   }
 
+  if (params->on_ws_conn_timeout){
+    s->on_ws_conn_timeout = params->on_ws_conn_timeout;
+  }
+
   size_t max_backpressure =
       params->max_buffered_bytes ? params->max_buffered_bytes : 16000;
   size_t page_size = getpagesize();
@@ -902,6 +907,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
       int timeout_kind = 0;
       size_t n = s->max_conns;
       
+      ws_on_timeout_t cb = s->on_ws_conn_timeout;
+
       while (n--) {
         ws_conn_t *c = &s->conn_pool->base[n];
 
@@ -913,13 +920,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
           c->write_timeout = 0;
           // todo call the callback
 
-          if (timeout_kind == 1) {
-            printf("read timeout\n");
-          } else if (timeout_kind == 2) {
-            printf("write timeout\n");
+          if (cb){
+            cb(c, timeout_kind);
           } else {
-            printf("read/write timeout\n");
+            ws_conn_destroy(c);
           }
+
+
 
           timeout_kind = 0;
           ws_conn_destroy(c);
