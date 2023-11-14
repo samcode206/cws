@@ -899,12 +899,32 @@ int ws_server_start(ws_server_t *s, int backlog) {
     if (do_timers_sweep) {
       printf("doing timers sweep\n");
       unsigned int now = (unsigned int)time(NULL);
+
+      int timeout_kind = 0;
+
       while (n--) {
         ws_conn_t *c = &s->conn_pool->base[n];
-        if (c->read_timeout != 0 && c->read_timeout < now) {
-          printf("read timeout\n");
+
+        timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
+        timeout_kind += ((c->write_timeout != 0 && c->write_timeout < now) * 2);
+
+        if (timeout_kind) {
+          c->read_timeout = 0;
+          c->write_timeout = 0;
+          // todo call the callback
+
+          if (timeout_kind == 1) {
+            printf("read timeout\n");
+          } else if (timeout_kind == 2) {
+            printf("write timeout\n");
+          } else {
+            printf("read/write timeout\n");
+          }
+
+          timeout_kind = 0;
           ws_conn_destroy(c);
         }
+
       }
 
       do_timers_sweep = false;
