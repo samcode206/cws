@@ -1104,11 +1104,26 @@ static void handle_upgrade(ws_conn_t *conn) {
 
         if (!s->on_ws_upgrade_req) {
           ok = true;
+          bool pmd = false;
+
+          char sec_websocket_extensions[1024];
+
+          int sec_websocket_extensions_ret = get_header((char *)headers, "Sec-WebSocket-Extensions", sec_websocket_extensions, 1024);
+          if (sec_websocket_extensions_ret > 0){
+            pmd = true;
+          }
+
+
+
           response_buf = request_buf;
           buf_reset(response_buf);
           buf_put(response_buf, switching_protocols,
                   SWITCHING_PROTOCOLS_HDRS_LEN);
           buf_put(response_buf, accept_key, accept_key_len);
+          if (pmd){
+          buf_put(response_buf, "\r\nSec-WebSocket-Extensions: permessage-deflate", 46);
+          }
+
           buf_put(response_buf, CRLF2, CRLF2_LEN);
           resp_len = buf_len(response_buf);
         } else {
