@@ -46,6 +46,12 @@
 #include <sys/uio.h>
 #include <time.h>
 
+#define WITH_COMPRESSION 1
+
+#ifdef WITH_COMPRESSION
+#include <zlib.h>
+#endif
+
 #define TIMER_GRANULARITY 5
 #define READ_TIMEOUT 60
 
@@ -60,6 +66,63 @@
 
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
+
+#define INFLATION_BUF_SIZE 1024 * 32
+
+struct inflation_stream {
+  z_stream inflation_strm;
+  char inflation_buf[INFLATION_BUF_SIZE];
+};
+
+struct inflation_stream *inflation_stream_init() {
+  struct inflation_stream *istrm = calloc(1, sizeof(struct inflation_stream));
+  assert(istrm != NULL);
+
+  inflateInit2(&istrm->inflation_strm, -15);
+  return istrm;
+}
+
+void inflation_stream_inflate(struct inflation_stream *istrm, char *input,
+                              size_t len, size_t maxPayloadLength) {
+  // Save off the bytes we're about to overwrite
+  char *tailLocation = input + len;
+  char preTailBytes[4];
+  memcpy(preTailBytes, tailLocation, 4);
+
+  // Append tail to chunk
+  unsigned char tail[4] = {0x00, 0x00, 0xff, 0xff};
+  memcpy(tailLocation, tail, 4);
+  len += 4;
+
+  istrm->inflation_strm.next_in = (Bytef *)input;
+  istrm->inflation_strm.avail_in = (unsigned int)len;
+
+  int err;
+  size_t total = 0;
+  do {
+    printf("inflating...\n");
+    istrm->inflation_strm.next_out = (Bytef *)istrm->inflation_buf;
+    istrm->inflation_strm.avail_out = INFLATION_BUF_SIZE;
+
+    err = inflate(&istrm->inflation_strm, Z_SYNC_FLUSH);
+    total += INFLATION_BUF_SIZE - istrm->inflation_strm.avail_out;
+
+    if (err == Z_OK && istrm->inflation_strm.avail_out) {
+      break;
+    }
+
+  } while (istrm->inflation_strm.avail_out == 0 && total <= maxPayloadLength);
+
+  if ((err < 0) || total > maxPayloadLength) {
+    fprintf(stderr, "Decompression error or payload too large %d\n", err);
+  } else {
+    printf("%.*s\n", istrm->inflation_strm.total_out, istrm->inflation_buf);
+    printf("%zu %zu\n", istrm->inflation_strm.total_out, total);
+  }
+
+  // Restore the bytes we used for the tail
+  memcpy(tailLocation, preTailBytes, 4);
+}
 
 struct ws_conn_t {
   int fd;               // socket fd
@@ -137,6 +200,7 @@ typedef struct server {
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct mbuf_pool *buffer_pool;
+  struct inflation_stream *istrm;
   struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
@@ -622,6 +686,9 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   // make sure we got the mem needed
   assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL);
+
+  s->istrm = inflation_stream_init();
+
   // server resources all ready
   return s;
 }
@@ -1108,20 +1175,21 @@ static void handle_upgrade(ws_conn_t *conn) {
 
           char sec_websocket_extensions[1024];
 
-          int sec_websocket_extensions_ret = get_header((char *)headers, "Sec-WebSocket-Extensions", sec_websocket_extensions, 1024);
-          if (sec_websocket_extensions_ret > 0){
+          int sec_websocket_extensions_ret =
+              get_header((char *)headers, "Sec-WebSocket-Extensions",
+                         sec_websocket_extensions, 1024);
+          if (sec_websocket_extensions_ret > 0) {
             pmd = true;
           }
-
-
 
           response_buf = request_buf;
           buf_reset(response_buf);
           buf_put(response_buf, switching_protocols,
                   SWITCHING_PROTOCOLS_HDRS_LEN);
           buf_put(response_buf, accept_key, accept_key_len);
-          if (pmd){
-          buf_put(response_buf, "\r\nSec-WebSocket-Extensions: permessage-deflate", 46);
+          if (pmd) {
+            buf_put(response_buf,
+                    "\r\nSec-WebSocket-Extensions: permessage-deflate", 46);
           }
 
           buf_put(response_buf, CRLF2, CRLF2_LEN);
@@ -1269,7 +1337,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // printf("fragments=%zu\n", conn->state.fragments_len);
     // run general validation checks on the header
     if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
-        (frame_has_reserved_bits_set(frame) == 1) |
+        // (frame_has_reserved_bits_set(frame) == 1) |
         (frame_is_masked(frame) == 0)) {
       buf_reset(s->shared_recv_buffer);
       ws_conn_destroy(conn);
@@ -1323,6 +1391,15 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // fin and never fragmented
       // this handles both text and binary hence the fallthrough
       if (fin & (!is_fragmented(conn))) {
+
+#ifdef WITH_COMPRESSION
+
+        printf("payload len = %zu\n", payload_len);
+
+        inflation_stream_inflate(s->istrm, (char *)msg, payload_len, 1024 * 32);
+
+#endif
+
         if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
           ws_conn_destroy(conn);
           buf_reset(s->shared_recv_buffer);
