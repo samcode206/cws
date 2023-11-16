@@ -67,11 +67,9 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-#define INFLATION_BUF_SIZE 1024 * 32
 
 struct inflation_stream {
   z_stream inflation_strm;
-  char inflation_buf[INFLATION_BUF_SIZE];
 };
 
 struct inflation_stream *inflation_stream_init() {
@@ -82,46 +80,51 @@ struct inflation_stream *inflation_stream_init() {
   return istrm;
 }
 
-void inflation_stream_inflate(struct inflation_stream *istrm, char *input,
-                              size_t len, size_t maxPayloadLength) {
+ssize_t inflation_stream_inflate(struct inflation_stream *istrm, char *input,
+                                 size_t in_len, char *out, size_t out_len) {
   // Save off the bytes we're about to overwrite
-  char *tailLocation = input + len;
+  char *tailLocation = input + in_len;
   char preTailBytes[4];
   memcpy(preTailBytes, tailLocation, 4);
 
   // Append tail to chunk
   unsigned char tail[4] = {0x00, 0x00, 0xff, 0xff};
   memcpy(tailLocation, tail, 4);
-  len += 4;
+  in_len += 4;
 
   istrm->inflation_strm.next_in = (Bytef *)input;
-  istrm->inflation_strm.avail_in = (unsigned int)len;
+  istrm->inflation_strm.avail_in = (unsigned int)in_len;
 
   int err;
-  size_t total = 0;
+  ssize_t total = 0;
   do {
     printf("inflating...\n");
-    istrm->inflation_strm.next_out = (Bytef *)istrm->inflation_buf;
-    istrm->inflation_strm.avail_out = INFLATION_BUF_SIZE;
-
+    istrm->inflation_strm.next_out = (Bytef *)out + total;
+    istrm->inflation_strm.avail_out = out_len - total;
     err = inflate(&istrm->inflation_strm, Z_SYNC_FLUSH);
-    total += INFLATION_BUF_SIZE - istrm->inflation_strm.avail_out;
-
-    if (err == Z_OK && istrm->inflation_strm.avail_out) {
-      break;
+    if (err == Z_OK) {
+      total += out_len - istrm->inflation_strm.avail_out;
+      if (istrm->inflation_strm.avail_out) {
+        break;
+      }
+    } else {
+      fprintf(stderr, "inflate(): %s\n", istrm->inflation_strm.msg);
+      exit(EXIT_FAILURE);
     }
 
-  } while (istrm->inflation_strm.avail_out == 0 && total <= maxPayloadLength);
+  } while (istrm->inflation_strm.avail_out == 0 && total <= out_len);
 
-  if ((err < 0) || total > maxPayloadLength) {
-    fprintf(stderr, "Decompression error or payload too large %d\n", err);
-  } else {
-    printf("%.*s\n", istrm->inflation_strm.total_out, istrm->inflation_buf);
-    printf("%zu %zu\n", istrm->inflation_strm.total_out, total);
+  // DON'T FORGET TO DO THIS
+  memcpy(tailLocation, preTailBytes, 4);
+
+  if ((err < 0) || total > out_len) {
+    fprintf(stderr, "Decompression error or payload too large %d %zu %zu\n",
+            err, total, out_len);
+
+    return err < 0 ? err : -1;
   }
 
-  // Restore the bytes we used for the tail
-  memcpy(tailLocation, preTailBytes, 4);
+  return total;
 }
 
 struct ws_conn_t {
@@ -1395,8 +1398,18 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 #ifdef WITH_COMPRESSION
 
         printf("payload len = %zu\n", payload_len);
+        char out[1024 * 64];
+        ssize_t inflated_sz = inflation_stream_inflate(
+            s->istrm, (char *)msg, payload_len, out, 1024 * 64);
 
-        inflation_stream_inflate(s->istrm, (char *)msg, payload_len, 1024 * 32);
+        if (inflated_sz) {
+          printf("%.*s\n", (int)inflated_sz, out);
+          printf("\ninflated_sz = %zi\n", inflated_sz);
+
+          buf_consume(buf, full_frame_len);
+          conn->needed_bytes = 2;
+          return;
+        }
 
 #endif
 
