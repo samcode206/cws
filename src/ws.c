@@ -181,7 +181,7 @@ struct ws_conn_t {
 };
 
 
-
+static_assert(sizeof (struct ws_conn_t) == 64, "ws_conn_t not 64");
 
 
 struct ws_conn_pool {
