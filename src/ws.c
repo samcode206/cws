@@ -144,7 +144,7 @@ ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
 
   int ret = deflate(dstrm, Z_FINISH);
 
-  if (ret == Z_STREAM_END){
+  if (ret == Z_STREAM_END) {
     size_t total = dstrm->total_out;
     deflateReset(dstrm);
     return total;
@@ -154,7 +154,6 @@ ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
   }
 
   return ret >= 0 ? -1 : ret;
-
 
   // dstrm->next_in = (Bytef *)input;
   // dstrm->avail_in = (unsigned int)in_len;
@@ -1489,7 +1488,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // this handles both text and binary hence the fallthrough
       if (fin & (!is_fragmented(conn))) {
 
-#ifdef WITH_COMPRESSION
+
+#if WITH_COMPRESSION
 
         printf("payload len = %zu\n", payload_len);
         char *inflated_buf;
@@ -1511,18 +1511,29 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             inflation_stream_inflate(s->istrm, (char *)msg, payload_len,
                                      inflated_buf, inflated_buf_space);
 
-        if (inflated_sz) {
+        if (inflated_sz > 0) {
           // printf("%.*s\n", (int)inflated_sz, out);
           // printf("\ninflated_sz = %zi\n", inflated_sz);
 
+          if (!is_bin(conn) && !utf8_is_valid((uint8_t*)inflated_buf, inflated_sz)) {
+            printf("invalid utf\n");
+            ws_conn_destroy(conn);
+            buf_reset(s->shared_recv_buffer);
+            return; // TODO(sah): send a Close frame, & call close callback
+          }
           s->on_ws_msg(conn, inflated_buf, inflated_sz, is_bin(conn));
           buf_consume(buf, full_frame_len);
           conn->needed_bytes = 2;
-          return;
+          clear_bin(conn);
+        } else {
+          // TODO handle error
+          printf("inflate error\n");
+          ws_conn_destroy(conn);
+          buf_reset(s->shared_recv_buffer);
+          return; // TODO(sah): send a Close frame, & call close callback
         }
 
-#endif
-
+#else
         if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
           ws_conn_destroy(conn);
           buf_reset(s->shared_recv_buffer);
@@ -1532,6 +1543,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         buf_consume(buf, full_frame_len);
         clear_bin(conn);
         conn->needed_bytes = 2;
+#endif
 
         break; /* OP_BIN don't fall through to fragmented msg */
       } else if (fin & (is_fragmented(conn))) {
