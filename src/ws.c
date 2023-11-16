@@ -157,7 +157,6 @@ ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
 
   } while (1);
 
-
   deflateReset(dstrm);
 
   return total - 4;
@@ -1436,17 +1435,29 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 #ifdef WITH_COMPRESSION
 
         printf("payload len = %zu\n", payload_len);
-        char out[1024 * 64];
+        char *inflated_buf;
+        size_t inflated_buf_space;
+
+        if (!is_using_own_recv_buf(conn)) {
+          inflated_buf = (char *)conn->read_buf->buf;
+          inflated_buf_space = buf_space(conn->read_buf);
+        } else {
+          inflated_buf = (char *)s->shared_recv_buffer->buf;
+          inflated_buf_space = buf_space(s->shared_recv_buffer);
+        }
+
         ssize_t inflated_sz = inflation_stream_inflate(
-            s->istrm, (char *)msg, payload_len, out, 1024 * 64);
+            s->istrm, (char *)msg, payload_len, inflated_buf, inflated_buf_space);
 
         if (inflated_sz) {
           // printf("%.*s\n", (int)inflated_sz, out);
           // printf("\ninflated_sz = %zi\n", inflated_sz);
 
+          // s->on_ws_msg(conn, inflated_buf, inflated_sz, is_bin(conn));
+
           char compressed[1024 * 64];
           ssize_t compressed_len = deflation_stream_deflate(
-              s->dstrm, out, inflated_sz, compressed, 1024 * 64);
+              s->dstrm, inflated_buf, inflated_sz, compressed, 1024 * 64);
           printf("sending len = %zi\n", compressed_len);
           ws_conn_send_txt(conn, compressed, compressed_len);
           buf_consume(buf, full_frame_len);
