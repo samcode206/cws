@@ -93,7 +93,7 @@ ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
   int err;
   ssize_t total = 0;
   do {
-    printf("inflating...\n");
+    // printf("inflating...\n");
     istrm->next_out = (Bytef *)out + total;
     istrm->avail_out = out_len - total;
     err = inflate(istrm, Z_SYNC_FLUSH);
@@ -135,52 +135,29 @@ ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
   dstrm->next_in = (Bytef *)input;
   dstrm->avail_in = (unsigned int)in_len;
 
-  // int err;
-  // ssize_t total = 0;
+  int err;
+  ssize_t total = 0;
 
-  dstrm->next_out = (Bytef *)out;
-  dstrm->avail_out = out_len;
-  assert(deflateBound(dstrm, in_len) <= out_len);
+  do {
+    // printf("deflating...\n");
+    assert(out_len - total >= 6);
+    dstrm->next_out = (Bytef *)out + total;
+    dstrm->avail_out = out_len - total;
 
-  int ret = deflate(dstrm, Z_FINISH);
+    err = deflate(dstrm, Z_SYNC_FLUSH);
+    if (err != Z_OK) {
+      break;
+    } else if (err == Z_OK && dstrm->avail_out) {
+      total += out_len - dstrm->avail_out;
+      break;
+    }
+    total += out_len - dstrm->avail_out;
 
-  if (ret == Z_STREAM_END) {
-    size_t total = dstrm->total_out;
-    deflateReset(dstrm);
-    return total;
-  } else {
-    fprintf(stderr, "deflate(): %s\n", dstrm->msg);
-    deflateReset(dstrm);
-  }
+  } while (1);
 
-  return ret >= 0 ? -1 : ret;
+  deflateReset(dstrm);
 
-  // dstrm->next_in = (Bytef *)input;
-  // dstrm->avail_in = (unsigned int)in_len;
-
-  // int err;
-  // ssize_t total = 0;
-
-  // do {
-  //   printf("deflating...\n");
-  //   assert(out_len - total >= 6);
-  //   dstrm->next_out = (Bytef *)out + total;
-  //   dstrm->avail_out = out_len - total;
-
-  //   err = deflate(dstrm, Z_SYNC_FLUSH);
-  //   if (err != Z_OK) {
-  //     break;
-  //   } else if (err == Z_OK && dstrm->avail_out) {
-  //     total += out_len - dstrm->avail_out;
-  //     break;
-  //   }
-  //   total += out_len - dstrm->avail_out;
-
-  // } while (1);
-
-  // deflateReset(dstrm);
-
-  // return total - 4;
+  return total - 4;
 }
 
 struct ws_conn_t {
@@ -1513,7 +1490,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
         if (inflated_sz > 0) {
           // printf("%.*s\n", (int)inflated_sz, out);
-          // printf("\ninflated_sz = %zi\n", inflated_sz);
+          printf("\ninflated_sz = %zi\n", inflated_sz);
 
           if (!is_bin(conn) && !utf8_is_valid((uint8_t*)inflated_buf, inflated_sz)) {
             printf("invalid utf\n");
@@ -1865,11 +1842,11 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
     struct per_message_deflate_buf *compress_buf =
         conn_per_message_deflate_buf(c);
 
-    printf("%zu\n", n);
+    // printf("%zu\n", n);
     ssize_t compressed_len = deflation_stream_deflate(
         c->base->dstrm, msg, n, compress_buf->data, 1024 * 64);
     printf("sending len = %zi\n", compressed_len);
-
+    
     stat =
         conn_write_frame(c, compress_buf->data, compressed_len, OP_TXT | 0x40);
     conn_per_message_deflate_buf_dispose(c);

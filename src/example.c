@@ -84,7 +84,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   if (bin) {
     ws_conn_send(c, msg, n, false);
   } else {
-    printf("text\n");
+    // printf("text\n");
     ws_conn_send_txt(c, msg, n, true);
   }
 
