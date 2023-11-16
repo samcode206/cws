@@ -148,6 +148,7 @@ ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
     if (err != Z_OK) {
       break;
     } else if (err == Z_OK && dstrm->avail_out) {
+      printf("done\n");
       total += out_len - dstrm->avail_out;
       break;
     }
@@ -1455,11 +1456,10 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       goto clean_up_buffer;
     }
 
+    buf_debug(buf, "buffer");
+
     uint8_t *msg = frame + mask_offset + 4;
     msg_unmask(msg, frame + mask_offset, payload_len);
-    // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n",
-    // frame_buf_len,
-    //        full_frame_len, opcode, fin);
     conn->read_timeout = next_read_timeout;
     switch (opcode) {
     case OP_TXT:
@@ -1567,6 +1567,36 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           conn->needed_bytes = 2;
         }
         if (fin) {
+
+#if WITH_COMPRESSION
+          struct per_message_deflate_buf *inflated_buf =
+              conn_per_message_deflate_buf(conn);
+
+          assert(inflated_buf->len == 0);
+          ssize_t inflated_sz = inflation_stream_inflate(
+              s->istrm, (char *)buf_peek(conn_read_buf(conn)),
+              conn->fragments_len, inflated_buf->data, inflated_buf->cap);
+
+          if (inflated_sz) {
+            inflated_buf->len += inflated_sz;
+            // printf("%s\n", inflated_buf->data);
+            printf("%zu\n", inflated_sz);
+            if (!is_bin(conn) && !utf8_is_valid((uint8_t *)inflated_buf->data,
+                                                inflated_sz)) {
+              ws_conn_destroy(conn);
+              buf_reset(s->shared_recv_buffer);
+              conn_per_message_deflate_buf_dispose(conn);
+              return; // TODO(sah): send a Close frame, & call close callback
+            }
+            s->on_ws_msg(conn, inflated_buf->data, inflated_sz,
+                         is_bin(conn));
+          } else {
+            ws_conn_destroy(conn);
+            buf_reset(s->shared_recv_buffer);
+          }
+
+          conn_per_message_deflate_buf_dispose(conn);
+#else
           if (!is_bin(conn) && !utf8_is_valid(buf_peek(conn_read_buf(conn)),
                                               conn->fragments_len)) {
             ws_conn_destroy(conn);
@@ -1575,6 +1605,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           }
           s->on_ws_msg(conn, buf_peek(conn_read_buf(conn)), conn->fragments_len,
                        is_bin(conn));
+#endif
+
           buf_consume(conn_read_buf(conn), conn->fragments_len);
 
           conn->fragments_len = 0;
@@ -1834,17 +1866,15 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat;
   if (compress) {
 
-    struct per_message_deflate_buf *compress_buf =
-        conn_per_message_deflate_buf(c);
+    struct per_message_deflate_buf *deflate_buf = conn_per_message_deflate_buf(c);
 
-    // printf("%zu\n", n);
-    ssize_t compressed_len = deflation_stream_deflate(
-        c->base->dstrm, msg, n, compress_buf->data, 1024 * 64);
+    ssize_t compressed_len =
+        deflation_stream_deflate(c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len, deflate_buf->cap - deflate_buf->len);
     printf("sending len = %zi\n", compressed_len);
 
-    stat =
-        conn_write_frame(c, compress_buf->data, compressed_len, OP_TXT | 0x40);
-    conn_per_message_deflate_buf_dispose(c);
+    stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len, compressed_len, OP_TXT | 0x40);
+
+
   } else {
     stat = conn_write_frame(c, msg, n, OP_TXT);
   }
