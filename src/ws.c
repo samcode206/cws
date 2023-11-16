@@ -137,29 +137,53 @@ ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
   dstrm->next_in = (Bytef *)input;
   dstrm->avail_in = (unsigned int)in_len;
 
-  int err;
-  ssize_t total = 0;
+  // int err;
+  // ssize_t total = 0;
 
-  do {
-    printf("deflating...\n");
-    assert(out_len - total >= 6);
-    dstrm->next_out = (Bytef *)out + total;
-    dstrm->avail_out = out_len - total;
+  dstrm->next_out = (Bytef *)out;
+  dstrm->avail_out = out_len;
+  assert(deflateBound(dstrm, in_len) <= out_len);
 
-    err = deflate(dstrm, Z_SYNC_FLUSH);
-    if (err != Z_OK) {
-      break;
-    } else if (err == Z_OK && dstrm->avail_out) {
-      total += out_len - dstrm->avail_out;
-      break;
-    }
-    total += out_len - dstrm->avail_out;
+  int ret = deflate(dstrm, Z_FINISH);
 
-  } while (1);
+  if (ret == Z_STREAM_END){
+    size_t total = dstrm->total_out;
+    deflateReset(dstrm);
+    return total;
+  } else {
+    fprintf(stderr, "deflate(): %s\n", dstrm->msg);
+    deflateReset(dstrm);
+  }
 
-  deflateReset(dstrm);
+  return ret >= 0 ? -1 : ret;
 
-  return total - 4;
+
+  // dstrm->next_in = (Bytef *)input;
+  // dstrm->avail_in = (unsigned int)in_len;
+
+  // int err;
+  // ssize_t total = 0;
+
+  // do {
+  //   printf("deflating...\n");
+  //   assert(out_len - total >= 6);
+  //   dstrm->next_out = (Bytef *)out + total;
+  //   dstrm->avail_out = out_len - total;
+
+  //   err = deflate(dstrm, Z_SYNC_FLUSH);
+  //   if (err != Z_OK) {
+  //     break;
+  //   } else if (err == Z_OK && dstrm->avail_out) {
+  //     total += out_len - dstrm->avail_out;
+  //     break;
+  //   }
+  //   total += out_len - dstrm->avail_out;
+
+  // } while (1);
+
+  // deflateReset(dstrm);
+
+  // return total - 4;
 }
 
 struct ws_conn_t {
@@ -180,9 +204,7 @@ struct ws_conn_t {
   unsigned int write_timeout; // seconds
 };
 
-
-static_assert(sizeof (struct ws_conn_t) == 64, "ws_conn_t not 64");
-
+static_assert(sizeof(struct ws_conn_t) == 64, "ws_conn_t not 64");
 
 struct ws_conn_pool {
   ws_conn_t *base;
@@ -257,39 +279,32 @@ typedef struct server {
   struct conn_list closeable_conns;
 } ws_server_t;
 
-
 struct per_message_deflate_buf {
   size_t len;
   size_t cap;
   char data[];
 };
 
-buf_t * conn_read_buf(ws_conn_t *c){
-  return c->data[0];
-}
+buf_t *conn_read_buf(ws_conn_t *c) { return c->data[0]; }
 
+buf_t *conn_write_buf(ws_conn_t *c) { return c->data[1]; }
 
-buf_t *conn_write_buf(ws_conn_t *c){
-  return c->data[1];
-}
-
-struct per_message_deflate_buf *conn_per_message_deflate_buf(ws_conn_t *c){
-  if (!c->data[2]){
-    c->data[2] = malloc(sizeof(struct per_message_deflate_buf) + c->base->max_msg_len+192);
+struct per_message_deflate_buf *conn_per_message_deflate_buf(ws_conn_t *c) {
+  if (!c->data[2]) {
+    c->data[2] = malloc(sizeof(struct per_message_deflate_buf) +
+                        c->base->max_msg_len + 192);
     assert(c->data[2] != NULL);
   }
-
 
   return c->data[2];
 }
 
-void conn_per_message_deflate_buf_dispose(ws_conn_t *c){
-  if (c->data[2]){
+void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
+  if (c->data[2]) {
     free(c->data[2]);
     c->data[2] = NULL;
   }
 }
-
 
 // connection state utils
 
@@ -854,13 +869,11 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
 
         s->ev.data.ptr = conn;
 
-        conn->data = calloc(3, sizeof(void**));
+        conn->data = calloc(3, sizeof(void **));
 
         conn->data[0] = mbuf_get(s->buffer_pool);
         conn->data[1] = mbuf_get(s->buffer_pool);
         conn->data[2] = NULL;
-
-
 
         assert(conn_read_buf(conn));
         assert(conn_write_buf(conn));
@@ -1572,8 +1585,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           conn->needed_bytes = 2;
         }
         if (fin) {
-          if (!is_bin(conn) &&
-              !utf8_is_valid(buf_peek(conn_read_buf(conn)), conn->fragments_len)) {
+          if (!is_bin(conn) && !utf8_is_valid(buf_peek(conn_read_buf(conn)),
+                                              conn->fragments_len)) {
             ws_conn_destroy(conn);
             buf_reset(s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
@@ -1839,17 +1852,16 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat;
   if (compress) {
 
-    struct per_message_deflate_buf *compress_buf = conn_per_message_deflate_buf(c);
-
-
-
+    struct per_message_deflate_buf *compress_buf =
+        conn_per_message_deflate_buf(c);
 
     printf("%zu\n", n);
-    ssize_t compressed_len =
-        deflation_stream_deflate(c->base->dstrm, msg, n, compress_buf->data, 1024 * 64);
+    ssize_t compressed_len = deflation_stream_deflate(
+        c->base->dstrm, msg, n, compress_buf->data, 1024 * 64);
     printf("sending len = %zi\n", compressed_len);
 
-    stat = conn_write_frame(c, compress_buf->data, compressed_len, OP_TXT | 0x40);
+    stat =
+        conn_write_frame(c, compress_buf->data, compressed_len, OP_TXT | 0x40);
     conn_per_message_deflate_buf_dispose(c);
   } else {
     stat = conn_write_frame(c, msg, n, OP_TXT);
