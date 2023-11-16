@@ -67,21 +67,16 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-
-struct inflation_stream {
-  z_stream inflation_strm;
-};
-
-struct inflation_stream *inflation_stream_init() {
-  struct inflation_stream *istrm = calloc(1, sizeof(struct inflation_stream));
+z_stream *inflation_stream_init() {
+  z_stream *istrm = calloc(1, sizeof(z_stream));
   assert(istrm != NULL);
 
-  inflateInit2(&istrm->inflation_strm, -15);
+  inflateInit2(istrm, -15);
   return istrm;
 }
 
-ssize_t inflation_stream_inflate(struct inflation_stream *istrm, char *input,
-                                 size_t in_len, char *out, size_t out_len) {
+ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
+                                 char *out, size_t out_len) {
   // Save off the bytes we're about to overwrite
   char *tailLocation = input + in_len;
   char preTailBytes[4];
@@ -92,27 +87,27 @@ ssize_t inflation_stream_inflate(struct inflation_stream *istrm, char *input,
   memcpy(tailLocation, tail, 4);
   in_len += 4;
 
-  istrm->inflation_strm.next_in = (Bytef *)input;
-  istrm->inflation_strm.avail_in = (unsigned int)in_len;
+  istrm->next_in = (Bytef *)input;
+  istrm->avail_in = (unsigned int)in_len;
 
   int err;
   ssize_t total = 0;
   do {
     printf("inflating...\n");
-    istrm->inflation_strm.next_out = (Bytef *)out + total;
-    istrm->inflation_strm.avail_out = out_len - total;
-    err = inflate(&istrm->inflation_strm, Z_SYNC_FLUSH);
+    istrm->next_out = (Bytef *)out + total;
+    istrm->avail_out = out_len - total;
+    err = inflate(istrm, Z_SYNC_FLUSH);
     if (err == Z_OK) {
-      total += out_len - istrm->inflation_strm.avail_out;
-      if (istrm->inflation_strm.avail_out) {
+      total += out_len - istrm->avail_out;
+      if (istrm->avail_out) {
         break;
       }
     } else {
-      fprintf(stderr, "inflate(): %s\n", istrm->inflation_strm.msg);
+      fprintf(stderr, "inflate(): %s\n", istrm->msg);
       exit(EXIT_FAILURE);
     }
 
-  } while (istrm->inflation_strm.avail_out == 0 && total <= out_len);
+  } while (istrm->avail_out == 0 && total <= out_len);
 
   // DON'T FORGET TO DO THIS
   memcpy(tailLocation, preTailBytes, 4);
@@ -203,7 +198,7 @@ typedef struct server {
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct mbuf_pool *buffer_pool;
-  struct inflation_stream *istrm;
+  z_stream *istrm;
   struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
