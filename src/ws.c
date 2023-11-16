@@ -1439,9 +1439,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         size_t inflated_buf_space;
 
         if (!is_using_own_recv_buf(conn)) {
+          // this should be empty and not in use 
+          assert(buf_len(conn->read_buf) == 0);
           inflated_buf = (char *)conn->read_buf->buf;
           inflated_buf_space = buf_space(conn->read_buf);
         } else {
+          // this should be empty and not in use 
+          assert(buf_len(s->shared_recv_buffer) == 0);
           inflated_buf = (char *)s->shared_recv_buffer->buf;
           inflated_buf_space = buf_space(s->shared_recv_buffer);
         }
