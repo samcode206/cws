@@ -97,17 +97,15 @@ ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
     istrm->next_out = (Bytef *)out + total;
     istrm->avail_out = out_len - total;
     err = inflate(istrm, Z_SYNC_FLUSH);
-    if (err == Z_OK) {
+    if ((err == Z_OK) & (istrm->avail_out != 0)) {
       total += out_len - istrm->avail_out;
-      if (istrm->avail_out) {
-        break;
-      }
+      break;
     } else {
       fprintf(stderr, "inflate(): %s\n", istrm->msg);
       exit(EXIT_FAILURE);
     }
 
-  } while (istrm->avail_out == 0 && total <= out_len);
+  } while ((istrm->avail_out == 0) & (total <= out_len));
 
   // DON'T FORGET TO DO THIS
   memcpy(tailLocation, preTailBytes, 4);
