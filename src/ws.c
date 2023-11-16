@@ -1439,31 +1439,26 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         size_t inflated_buf_space;
 
         if (!is_using_own_recv_buf(conn)) {
-          // this should be empty and not in use 
+          // this should be empty and not in use
           assert(buf_len(conn->read_buf) == 0);
           inflated_buf = (char *)conn->read_buf->buf;
           inflated_buf_space = buf_space(conn->read_buf);
         } else {
-          // this should be empty and not in use 
+          // this should be empty and not in use
           assert(buf_len(s->shared_recv_buffer) == 0);
           inflated_buf = (char *)s->shared_recv_buffer->buf;
           inflated_buf_space = buf_space(s->shared_recv_buffer);
         }
 
-        ssize_t inflated_sz = inflation_stream_inflate(
-            s->istrm, (char *)msg, payload_len, inflated_buf, inflated_buf_space);
+        ssize_t inflated_sz =
+            inflation_stream_inflate(s->istrm, (char *)msg, payload_len,
+                                     inflated_buf, inflated_buf_space);
 
         if (inflated_sz) {
           // printf("%.*s\n", (int)inflated_sz, out);
           // printf("\ninflated_sz = %zi\n", inflated_sz);
 
-          // s->on_ws_msg(conn, inflated_buf, inflated_sz, is_bin(conn));
-
-          char compressed[1024 * 64];
-          ssize_t compressed_len = deflation_stream_deflate(
-              s->dstrm, inflated_buf, inflated_sz, compressed, 1024 * 64);
-          printf("sending len = %zi\n", compressed_len);
-          ws_conn_send_txt(conn, compressed, compressed_len);
+          s->on_ws_msg(conn, inflated_buf, inflated_sz, is_bin(conn));
           buf_consume(buf, full_frame_len);
           conn->needed_bytes = 2;
           return;
@@ -1778,7 +1773,7 @@ inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
 start sending more data or an error occurred in which the corresponding callback
 will be called
 */
-inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
+inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_frame(c, msg, n, OP_BIN);
   if (stat == -1) {
     ws_conn_destroy(c);
@@ -1794,8 +1789,22 @@ inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
 start sending more data or an error occurred in which the corresponding callback
 will be called
 */
-inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(c, msg, n, OP_TXT);
+inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
+  int stat;
+  if (compress) {
+    char *cmsg = malloc(1024 * 64);
+    assert(cmsg != NULL);
+    printf("%zu\n", n);
+    ssize_t compressed_len =
+        deflation_stream_deflate(c->base->dstrm, msg, n, cmsg, 1024 * 64);
+    printf("sending len = %zi\n", compressed_len);
+
+    stat = conn_write_frame(c, cmsg, compressed_len, OP_TXT | 0x40);
+    free(cmsg);
+  } else {
+    stat = conn_write_frame(c, msg, n, OP_TXT);
+  }
+
   if (stat == -1) {
     ws_conn_destroy(c);
   }
@@ -1887,7 +1896,6 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
             wbuf->buf + wbuf->wpos; // place the header in the write buffer
         memset(hbuf, 0, 2);
         hbuf[0] = FIN | op; // Set FIN bit and opcode
-        hbuf[0] |= 0x40;
         wbuf->wpos += hlen;
         hbuf[1] = PAYLOAD_LEN_16;
         hbuf[2] = (len >> 8) & 0xFF;
@@ -1898,7 +1906,6 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
             wbuf->buf + wbuf->wpos; // place the header in the write buffer
         memset(hbuf, 0, 2);
         hbuf[0] = FIN | op; // Set FIN bit and opcode
-        hbuf[0] |= 0x40;
         wbuf->wpos += hlen;
         hbuf[1] = (uint8_t)len;
         buf_put(wbuf, data, len);
@@ -1907,7 +1914,6 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
         uint8_t hbuf[hlen]; // place the header on the stack
         memset(hbuf, 0, 2);
         hbuf[0] = FIN | op; // Set FIN bit and opcode
-        hbuf[0] |= 0x40;
         hbuf[1] = PAYLOAD_LEN_64;
         hbuf[2] = (len >> 56) & 0xFF;
         hbuf[3] = (len >> 48) & 0xFF;

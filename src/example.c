@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <netinet/in.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,9 +62,9 @@ void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n, bool fin) {
         ws_conn_close(c, NULL, 0, WS_CLOSE_INVALID);
         return;
       }
-      ws_conn_send_txt(c, ctx->data, ctx->len);
+      ws_conn_send_txt(c, ctx->data, ctx->len, true);
     } else {
-      ws_conn_send(c, ctx->data, ctx->len);
+      ws_conn_send(c, ctx->data, ctx->len, false);
     }
 
     // printf("received final fragment: %.*s\n", (int)n, (char *)fragment);
@@ -81,9 +82,10 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // fwrite(msg, sizeof(char), n, stdout);
   // fwrite("\n", 1, 1, stdout);
   if (bin) {
-    ws_conn_send(c, msg, n);
+    ws_conn_send(c, msg, n, false);
   } else {
-    ws_conn_send_txt(c, msg, n);
+    printf("text\n");
+    ws_conn_send_txt(c, msg, n, true);
   }
 
   // if (stat == 1) {
