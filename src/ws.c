@@ -122,6 +122,47 @@ ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
   return total;
 }
 
+z_stream *deflation_stream_init() {
+  z_stream *dstrm = calloc(1, sizeof(z_stream));
+  assert(dstrm != NULL);
+
+  deflateInit2(dstrm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8,
+               Z_DEFAULT_STRATEGY);
+  return dstrm;
+}
+
+ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
+                                 char *out, size_t out_len) {
+
+  dstrm->next_in = (Bytef *)input;
+  dstrm->avail_in = (unsigned int)in_len;
+
+  int err;
+  ssize_t total = 0;
+
+  do {
+    printf("deflating...\n");
+    assert(out_len - total >= 6);
+    dstrm->next_out = (Bytef *)out + total;
+    dstrm->avail_out = out_len - total;
+
+    err = deflate(dstrm, Z_SYNC_FLUSH);
+    if (err != Z_OK) {
+      break;
+    } else if (err == Z_OK && dstrm->avail_out) {
+      total += out_len - dstrm->avail_out;
+      break;
+    }
+    total += out_len - dstrm->avail_out;
+
+  } while (1);
+
+
+  deflateReset(dstrm);
+
+  return total - 4;
+}
+
 struct ws_conn_t {
   int fd;               // socket fd
   unsigned int flags;   // state flags
@@ -199,6 +240,7 @@ typedef struct server {
   ws_err_accept_cb_t on_ws_accept_err;
   struct mbuf_pool *buffer_pool;
   z_stream *istrm;
+  z_stream *dstrm;
   struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
@@ -686,6 +728,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL);
 
   s->istrm = inflation_stream_init();
+  s->dstrm = deflation_stream_init();
 
   // server resources all ready
   return s;
@@ -1398,9 +1441,14 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             s->istrm, (char *)msg, payload_len, out, 1024 * 64);
 
         if (inflated_sz) {
-          printf("%.*s\n", (int)inflated_sz, out);
-          printf("\ninflated_sz = %zi\n", inflated_sz);
+          // printf("%.*s\n", (int)inflated_sz, out);
+          // printf("\ninflated_sz = %zi\n", inflated_sz);
 
+          char compressed[1024 * 64];
+          ssize_t compressed_len = deflation_stream_deflate(
+              s->dstrm, out, inflated_sz, compressed, 1024 * 64);
+          printf("sending len = %zi\n", compressed_len);
+          ws_conn_send_txt(conn, compressed, compressed_len);
           buf_consume(buf, full_frame_len);
           conn->needed_bytes = 2;
           return;
@@ -1824,6 +1872,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
             wbuf->buf + wbuf->wpos; // place the header in the write buffer
         memset(hbuf, 0, 2);
         hbuf[0] = FIN | op; // Set FIN bit and opcode
+        hbuf[0] |= 0x40;
         wbuf->wpos += hlen;
         hbuf[1] = PAYLOAD_LEN_16;
         hbuf[2] = (len >> 8) & 0xFF;
@@ -1834,6 +1883,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
             wbuf->buf + wbuf->wpos; // place the header in the write buffer
         memset(hbuf, 0, 2);
         hbuf[0] = FIN | op; // Set FIN bit and opcode
+        hbuf[0] |= 0x40;
         wbuf->wpos += hlen;
         hbuf[1] = (uint8_t)len;
         buf_put(wbuf, data, len);
@@ -1842,6 +1892,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
         uint8_t hbuf[hlen]; // place the header on the stack
         memset(hbuf, 0, 2);
         hbuf[0] = FIN | op; // Set FIN bit and opcode
+        hbuf[0] |= 0x40;
         hbuf[1] = PAYLOAD_LEN_64;
         hbuf[2] = (len >> 56) & 0xFF;
         hbuf[3] = (len >> 48) & 0xFF;
