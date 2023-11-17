@@ -82,10 +82,14 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // fwrite(msg, sizeof(char), n, stdout);
   // fwrite("\n", 1, 1, stdout);
   if (bin) {
-    ws_conn_send(c, msg, n, false);
+    ws_conn_send(c, msg, n, 0);
   } else {
+    if (ws_conn_compression_allowed(c)) {
+      ws_conn_send_txt(c, msg, n, true);
+    } else {
+      ws_conn_send_txt(c, msg, n, 0);
+    }
     // printf("text\n");
-    ws_conn_send_txt(c, msg, n, true);
   }
 
   // if (stat == 1) {

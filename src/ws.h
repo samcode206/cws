@@ -276,6 +276,10 @@ size_t ws_server_open_conns(ws_server_t *s);
 // only valid during on_ws_msg_fragment or on_ws_msg called
 bool ws_conn_msg_bin(ws_conn_t *c);
 
+
+bool ws_conn_compression_allowed(ws_conn_t *c);
+
+
 bool ws_server_accept_paused(ws_server_t *s);
 
 int utf8_is_valid(uint8_t *s, size_t n);

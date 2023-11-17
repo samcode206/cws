@@ -38,7 +38,7 @@ let i = 1;
 process.stdin.on("data", (data) => {
   if (ws.OPEN) {
     let data = Buffer.from('*'.repeat(i++));
-    ws.send(data, (err) => {
+    ws.send(data.toString(), (err) => {
       if (err) {
         console.error(err);
       }

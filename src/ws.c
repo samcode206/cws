@@ -212,10 +212,11 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
 #define CONN_TX_WRITE_QUEUED (1u << 7)
 #define CONN_TX_DISPOSING (1u << 8)
 
-#define CONN_RX_USING_OWN_BUF                                                  \
-  (1 << 9) // we are using the connection read buffer
-#define CONN_TX_USING_OWN_BUF                                                  \
-  (1 << 10) // we are using the connection write buffer
+#define CONN_RX_USING_OWN_BUF (1 << 9) 
+#define CONN_TX_USING_OWN_BUF (1 << 10)
+
+#define CONN_COMPRESSION_ALLOWED (1u << 11)
+#define CONN_RX_COMPRESSED_FRAGMENTS (1U << 12)
 
 // general purpose dynamic array
 // that is used to hold a list of connections
@@ -451,6 +452,26 @@ static inline void clear_using_own_write_buf(ws_conn_t *c) {
   c->flags &= ~CONN_TX_USING_OWN_BUF;
 }
 
+static inline bool is_compression_allowed(ws_conn_t *c) {
+  return (c->flags & CONN_COMPRESSION_ALLOWED) != 0;
+}
+
+static inline void set_compression_allowed(ws_conn_t *c) {
+  c->flags |= CONN_COMPRESSION_ALLOWED;
+}
+
+static inline bool is_fragment_compressed(ws_conn_t *c) {
+  return (c->flags & CONN_RX_COMPRESSED_FRAGMENTS) != 0;
+}
+
+static inline void set_fragment_compressed(ws_conn_t *c) {
+  c->flags |= CONN_RX_COMPRESSED_FRAGMENTS;
+}
+
+static inline void clear_fragment_compressed(ws_conn_t *c) {
+  c->flags &= ~CONN_RX_COMPRESSED_FRAGMENTS;
+}
+
 // Frame Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
@@ -496,8 +517,17 @@ static int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
   return 0;
 }
 
-static inline int frame_has_reserved_bits_set(uint8_t const *buf) {
-  return (buf[0] & 0x70) != 0;
+static inline bool is_compressed_msg(uint8_t const *buf) {
+  return (buf[0] & 0x40) != 0;
+}
+
+static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
+                                                          uint8_t const *buf) {
+  printf("%d\n", is_compression_allowed(c));
+  bool rsv1 = (buf[0] & 0x40) != 0;
+  bool rsv2 = (buf[0] & 0x20) != 0;
+  bool rsv3 = (buf[0] & 0x10) != 0;
+  return rsv3 || rsv2 || (rsv1 && !is_compression_allowed(c));
 }
 
 static inline uint32_t frame_is_masked(const unsigned char *buf) {
@@ -1322,6 +1352,7 @@ static void handle_upgrade(ws_conn_t *conn) {
                   SWITCHING_PROTOCOLS_HDRS_LEN);
           buf_put(response_buf, accept_key, accept_key_len);
           if (pmd) {
+            set_compression_allowed(conn);
             buf_put(response_buf,
                     "\r\nSec-WebSocket-Extensions: permessage-deflate; "
                     "client_no_context_takeover",
@@ -1470,10 +1501,12 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
     uint8_t fin = frame_get_fin(frame);
     uint8_t opcode = frame_get_opcode(frame);
+    bool is_compressed = is_compressed_msg(frame);
+
     // printf("fragments=%zu\n", conn->state.fragments_len);
     // run general validation checks on the header
     if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
-        // (frame_has_reserved_bits_set(frame) == 1) |
+        (frame_has_unsupported_reserved_bits_set(conn, frame) == 1) |
         (frame_is_masked(frame) == 0)) {
       buf_reset(s->shared_recv_buffer);
       ws_conn_destroy(conn);
@@ -1531,35 +1564,48 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
         printf("payload len = %zu\n", payload_len);
 
-        struct per_message_deflate_buf *inflated_buf =
-            conn_per_message_deflate_buf(conn);
-        ssize_t inflated_sz = inflation_stream_inflate(
-            s->istrm, (char *)msg, payload_len, inflated_buf->data,
-            inflated_buf->cap, true);
-
-        if (inflated_sz > 0) {
-          // printf("%.*s\n", (int)inflated_sz, out);
-          printf("\ninflated_sz = %zi\n", inflated_sz);
-
-          if (!is_bin(conn) &&
-              !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
-            printf("invalid utf\n");
+        if (!is_compressed) {
+          if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
             ws_conn_destroy(conn);
             buf_reset(s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
           }
-          s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
+          s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
           buf_consume(buf, full_frame_len);
-          conn->needed_bytes = 2;
           clear_bin(conn);
-          conn_per_message_deflate_buf_dispose(conn);
+          conn->needed_bytes = 2;
+
         } else {
-          // TODO handle error
-          printf("inflate error\n");
-          ws_conn_destroy(conn);
-          buf_reset(s->shared_recv_buffer);
-          conn_per_message_deflate_buf_dispose(conn);
-          return; // TODO(sah): send a Close frame, & call close callback
+          struct per_message_deflate_buf *inflated_buf =
+              conn_per_message_deflate_buf(conn);
+          ssize_t inflated_sz = inflation_stream_inflate(
+              s->istrm, (char *)msg, payload_len, inflated_buf->data,
+              inflated_buf->cap, true);
+
+          if (inflated_sz > 0) {
+            // printf("%.*s\n", (int)inflated_sz, out);
+            printf("\ninflated_sz = %zi\n", inflated_sz);
+
+            if (!is_bin(conn) &&
+                !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
+              printf("invalid utf\n");
+              ws_conn_destroy(conn);
+              buf_reset(s->shared_recv_buffer);
+              return; // TODO(sah): send a Close frame, & call close callback
+            }
+            s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
+            buf_consume(buf, full_frame_len);
+            conn->needed_bytes = 2;
+            clear_bin(conn);
+            conn_per_message_deflate_buf_dispose(conn);
+          } else {
+            // TODO handle error
+            printf("inflate error\n");
+            ws_conn_destroy(conn);
+            buf_reset(s->shared_recv_buffer);
+            conn_per_message_deflate_buf_dispose(conn);
+            return; // TODO(sah): send a Close frame, & call close callback
+          }
         }
 
 #else
@@ -1604,6 +1650,9 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
       // set the state to fragmented after validation
       set_fragmented(conn);
+      if (is_compressed) {
+        set_fragment_compressed(conn);
+      }
 
       if (!s->on_ws_msg_fragment) {
 
@@ -1626,32 +1675,48 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         if (fin) {
 
 #if WITH_COMPRESSION
-          struct per_message_deflate_buf *inflated_buf =
-              conn_per_message_deflate_buf(conn);
 
-          assert(inflated_buf->len == 0);
-          ssize_t inflated_sz = inflation_stream_inflate(
-              s->istrm, (char *)buf_peek(conn_read_buf(conn)),
-              conn->fragments_len, inflated_buf->data, inflated_buf->cap, true);
+          if (is_fragment_compressed(conn)) {
+            clear_fragment_compressed(conn);
 
-          if (inflated_sz) {
-            inflated_buf->len += inflated_sz;
-            // printf("%s\n", inflated_buf->data);
-            printf("%zu\n", inflated_sz);
-            if (!is_bin(conn) &&
-                !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
+            struct per_message_deflate_buf *inflated_buf =
+                conn_per_message_deflate_buf(conn);
+
+            assert(inflated_buf->len == 0);
+            ssize_t inflated_sz = inflation_stream_inflate(
+                s->istrm, (char *)buf_peek(conn_read_buf(conn)),
+                conn->fragments_len, inflated_buf->data, inflated_buf->cap,
+                true);
+
+            if (inflated_sz) {
+              inflated_buf->len += inflated_sz;
+              // printf("%s\n", inflated_buf->data);
+              printf("%zu\n", inflated_sz);
+              if (!is_bin(conn) &&
+                  !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
+                ws_conn_destroy(conn);
+                buf_reset(s->shared_recv_buffer);
+                conn_per_message_deflate_buf_dispose(conn);
+                return; // TODO(sah): send a Close frame, & call close callback
+              }
+              s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
+            } else {
               ws_conn_destroy(conn);
               buf_reset(s->shared_recv_buffer);
-              conn_per_message_deflate_buf_dispose(conn);
+            }
+
+            conn_per_message_deflate_buf_dispose(conn);
+          } else {
+            if (!is_bin(conn) && !utf8_is_valid(buf_peek(conn_read_buf(conn)),
+                                                conn->fragments_len)) {
+              ws_conn_destroy(conn);
+              buf_reset(s->shared_recv_buffer);
               return; // TODO(sah): send a Close frame, & call close callback
             }
-            s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
-          } else {
-            ws_conn_destroy(conn);
-            buf_reset(s->shared_recv_buffer);
+            s->on_ws_msg(conn, buf_peek(conn_read_buf(conn)),
+                         conn->fragments_len, is_bin(conn));
           }
 
-          conn_per_message_deflate_buf_dispose(conn);
 #else
           if (!is_bin(conn) && !utf8_is_valid(buf_peek(conn_read_buf(conn)),
                                               conn->fragments_len)) {
@@ -2307,4 +2372,10 @@ void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf) {
     p->avb_list[p->avb++] = buf;
     p->inuse--;
   }
+}
+
+
+
+inline bool ws_conn_compression_allowed(ws_conn_t *c){
+  return is_compression_allowed(c);
 }
