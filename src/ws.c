@@ -107,6 +107,8 @@ ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
 
   } while ((istrm->avail_out == 0) & (total <= out_len));
 
+  inflateReset(istrm);
+
   // DON'T FORGET TO DO THIS
   memcpy(tailLocation, preTailBytes, 4);
 
@@ -219,6 +221,24 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
+struct per_message_deflate_buf {
+  size_t len;
+  size_t cap;
+  char data[];
+};
+
+struct pmd_buf_pool {
+  size_t buf_sz;
+  size_t avb;
+  size_t inuse;
+  size_t cap;
+  struct per_message_deflate_buf **avb_list;
+};
+
+struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz);
+struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p);
+void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf);
+
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
   ws_msg_cb_t on_ws_msg;
@@ -242,6 +262,7 @@ typedef struct server {
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct mbuf_pool *buffer_pool;
+  struct pmd_buf_pool *pmd_buf_pool;
   z_stream *istrm;
   z_stream *dstrm;
   struct ws_conn_pool *conn_pool;
@@ -254,26 +275,13 @@ typedef struct server {
   struct conn_list closeable_conns;
 } ws_server_t;
 
-struct per_message_deflate_buf {
-  size_t len;
-  size_t cap;
-  char data[];
-};
-
 buf_t *conn_read_buf(ws_conn_t *c) { return c->data[0]; }
 
 buf_t *conn_write_buf(ws_conn_t *c) { return c->data[1]; }
 
 struct per_message_deflate_buf *conn_per_message_deflate_buf(ws_conn_t *c) {
   if (!c->data[2]) {
-    struct per_message_deflate_buf *b = malloc(
-        sizeof(struct per_message_deflate_buf) + c->base->max_msg_len + 192);
-
-    c->data[2] = b;
-    assert(c->data[2] != NULL);
-
-    b->cap = c->base->max_msg_len + 192;
-    b->len = 0;
+    c->data[2] = pmd_buf_get(c->base->pmd_buf_pool);
   }
 
   return c->data[2];
@@ -281,7 +289,7 @@ struct per_message_deflate_buf *conn_per_message_deflate_buf(ws_conn_t *c) {
 
 void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
   if (c->data[2]) {
-    free(c->data[2]);
+    pmd_buf_put(c->base->pmd_buf_pool, c->data[2]);
     c->data[2] = NULL;
   }
 }
@@ -764,6 +772,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   s->istrm = inflation_stream_init();
   s->dstrm = deflation_stream_init();
+
+  s->pmd_buf_pool =
+      pmd_buf_pool_create(s->max_conns, s->max_msg_len + s->max_msg_len + 16);
+  assert(s->pmd_buf_pool != NULL);
 
   // server resources all ready
   return s;
@@ -1268,7 +1280,7 @@ static void handle_upgrade(ws_conn_t *conn) {
           buf_put(response_buf, accept_key, accept_key_len);
           if (pmd) {
             buf_put(response_buf,
-                    "\r\nSec-WebSocket-Extensions: permessage-deflate", 46);
+                    "\r\nSec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover", 74);
           }
 
           buf_put(response_buf, CRLF2, CRLF2_LEN);
@@ -1581,15 +1593,14 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             inflated_buf->len += inflated_sz;
             // printf("%s\n", inflated_buf->data);
             printf("%zu\n", inflated_sz);
-            if (!is_bin(conn) && !utf8_is_valid((uint8_t *)inflated_buf->data,
-                                                inflated_sz)) {
+            if (!is_bin(conn) &&
+                !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
               ws_conn_destroy(conn);
               buf_reset(s->shared_recv_buffer);
               conn_per_message_deflate_buf_dispose(conn);
               return; // TODO(sah): send a Close frame, & call close callback
             }
-            s->on_ws_msg(conn, inflated_buf->data, inflated_sz,
-                         is_bin(conn));
+            s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
           } else {
             ws_conn_destroy(conn);
             buf_reset(s->shared_recv_buffer);
@@ -1866,14 +1877,16 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat;
   if (compress) {
 
-    struct per_message_deflate_buf *deflate_buf = conn_per_message_deflate_buf(c);
+    struct per_message_deflate_buf *deflate_buf =
+        conn_per_message_deflate_buf(c);
 
-    ssize_t compressed_len =
-        deflation_stream_deflate(c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len, deflate_buf->cap - deflate_buf->len);
+    ssize_t compressed_len = deflation_stream_deflate(
+        c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
+        deflate_buf->cap - deflate_buf->len);
     printf("sending len = %zi\n", compressed_len);
 
-    stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len, compressed_len, OP_TXT | 0x40);
-
+    stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
+                            compressed_len, OP_TXT | 0x40);
 
   } else {
     stat = conn_write_frame(c, msg, n, OP_TXT);
@@ -2208,4 +2221,45 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c) {
 
   p->_buf_nodes[diff].next = p->head;
   p->head = &p->_buf_nodes[diff];
+}
+
+struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz) {
+  struct pmd_buf_pool *p = malloc(sizeof(struct pmd_buf_pool));
+  assert(p != NULL);
+  p->buf_sz = pmd_bufsz;
+  p->avb = 0;
+  p->inuse = 0;
+  p->cap = nmemb;
+
+  p->avb_list = calloc(nmemb, sizeof(struct per_message_deflate_buf *));
+  assert(p->avb_list != NULL);
+
+  return p;
+}
+
+struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p) {
+  while (p->avb) {
+    p->inuse++;
+    return p->avb_list[--p->avb];
+  }
+
+  if (p->inuse + 1 <= p->cap) {
+    struct per_message_deflate_buf *buf =
+        malloc(sizeof(struct per_message_deflate_buf) + p->buf_sz);
+    assert(buf != NULL);
+    buf->cap = p->buf_sz;
+    buf->len = 0;
+    p->inuse++;
+    return buf;
+  }
+
+  return NULL;
+}
+
+void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf) {
+  if (buf) {
+    buf->len = 0;
+    p->avb_list[p->avb++] = buf;
+    p->inuse--;
+  }
 }
