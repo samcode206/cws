@@ -76,7 +76,8 @@ z_stream *inflation_stream_init() {
 }
 
 ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
-                                 char *out, size_t out_len) {
+                                 char *out, size_t out_len,
+                                 bool no_ctx_takeover) {
   // Save off the bytes we're about to overwrite
   char *tailLocation = input + in_len;
   char preTailBytes[4];
@@ -107,7 +108,9 @@ ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
 
   } while ((istrm->avail_out == 0) & (total <= out_len));
 
-  inflateReset(istrm);
+  if (no_ctx_takeover) {
+    inflateReset(istrm);
+  }
 
   // DON'T FORGET TO DO THIS
   memcpy(tailLocation, preTailBytes, 4);
@@ -132,7 +135,8 @@ z_stream *deflation_stream_init() {
 }
 
 ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
-                                 char *out, size_t out_len) {
+                                 char *out, size_t out_len,
+                                 bool no_ctx_takeover) {
 
   dstrm->next_in = (Bytef *)input;
   dstrm->avail_in = (unsigned int)in_len;
@@ -158,7 +162,9 @@ ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
 
   } while (1);
 
-  deflateReset(dstrm);
+  if (no_ctx_takeover) {
+    deflateReset(dstrm);
+  }
 
   return total - 4;
 }
@@ -1280,7 +1286,9 @@ static void handle_upgrade(ws_conn_t *conn) {
           buf_put(response_buf, accept_key, accept_key_len);
           if (pmd) {
             buf_put(response_buf,
-                    "\r\nSec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover", 74);
+                    "\r\nSec-WebSocket-Extensions: permessage-deflate; "
+                    "client_no_context_takeover",
+                    74);
           }
 
           buf_put(response_buf, CRLF2, CRLF2_LEN);
@@ -1490,7 +1498,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             conn_per_message_deflate_buf(conn);
         ssize_t inflated_sz =
             inflation_stream_inflate(s->istrm, (char *)msg, payload_len,
-                                     inflated_buf->data, inflated_buf->cap);
+                                     inflated_buf->data, inflated_buf->cap, true);
 
         if (inflated_sz > 0) {
           // printf("%.*s\n", (int)inflated_sz, out);
@@ -1587,7 +1595,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           assert(inflated_buf->len == 0);
           ssize_t inflated_sz = inflation_stream_inflate(
               s->istrm, (char *)buf_peek(conn_read_buf(conn)),
-              conn->fragments_len, inflated_buf->data, inflated_buf->cap);
+              conn->fragments_len, inflated_buf->data, inflated_buf->cap, true);
 
           if (inflated_sz) {
             inflated_buf->len += inflated_sz;
@@ -1882,7 +1890,7 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
 
     ssize_t compressed_len = deflation_stream_deflate(
         c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
-        deflate_buf->cap - deflate_buf->len);
+        deflate_buf->cap - deflate_buf->len, true);
     printf("sending len = %zi\n", compressed_len);
 
     stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
