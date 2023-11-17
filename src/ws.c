@@ -523,7 +523,7 @@ static inline bool is_compressed_msg(uint8_t const *buf) {
 
 static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
                                                           uint8_t const *buf) {
-  printf("%d\n", is_compression_allowed(c));
+  // printf("%d\n", is_compression_allowed(c));
   bool rsv1 = (buf[0] & 0x40) != 0;
   bool rsv2 = (buf[0] & 0x20) != 0;
   bool rsv3 = (buf[0] & 0x10) != 0;
@@ -1546,7 +1546,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       goto clean_up_buffer;
     }
 
-    buf_debug(buf, "buffer");
+    // buf_debug(buf, "buffer");
 
     uint8_t *msg = frame + mask_offset + 4;
     msg_unmask(msg, frame + mask_offset, payload_len);
@@ -1562,7 +1562,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
 #if WITH_COMPRESSION
 
-        printf("payload len = %zu\n", payload_len);
+        // printf("payload len = %zu\n", payload_len);
 
         if (!is_compressed) {
           if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
