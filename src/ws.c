@@ -188,11 +188,11 @@ typedef struct server {
   struct conn_list closeable_conns;
 } ws_server_t;
 
-buf_t *conn_read_buf(ws_conn_t *c) { return c->data[0]; }
+static buf_t *conn_read_buf(ws_conn_t *c) { return c->data[0]; }
 
-buf_t *conn_write_buf(ws_conn_t *c) { return c->data[1]; }
+static buf_t *conn_write_buf(ws_conn_t *c) { return c->data[1]; }
 
-struct per_message_deflate_buf *conn_per_message_deflate_buf(ws_conn_t *c) {
+static struct per_message_deflate_buf *conn_per_message_deflate_buf(ws_conn_t *c) {
   if (!c->data[2]) {
     c->data[2] = pmd_buf_get(c->base->pmd_buf_pool);
   }
@@ -200,47 +200,47 @@ struct per_message_deflate_buf *conn_per_message_deflate_buf(ws_conn_t *c) {
   return c->data[2];
 }
 
-void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
+static void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
   if (c->data[2]) {
     pmd_buf_put(c->base->pmd_buf_pool, c->data[2]);
     c->data[2] = NULL;
   }
 }
 
-z_stream *conn_inflate_stream(ws_conn_t *c) {
-  if (c->data[3]) {
-    return c->data[3];
-  }
+// z_stream *conn_inflate_stream(ws_conn_t *c) {
+//   if (c->data[3]) {
+//     return c->data[3];
+//   }
 
-  z_stream *strm = inflation_stream_init();
-  c->data[3] = strm;
-  return strm;
-}
+//   z_stream *strm = inflation_stream_init();
+//   c->data[3] = strm;
+//   return strm;
+// }
 
-void conn_inflate_stream_destroy(ws_conn_t *c) {
-  if (c->data[3]) {
-    inflateEnd(c->data[3]);
-    c->data[3] = NULL;
-  }
-}
+// void conn_inflate_stream_destroy(ws_conn_t *c) {
+//   if (c->data[3]) {
+//     inflateEnd(c->data[3]);
+//     c->data[3] = NULL;
+//   }
+// }
 
-z_stream *conn_deflate_stream(ws_conn_t *c) {
-  if (c->data[4]) {
-    return c->data[4];
-  }
+// z_stream *conn_deflate_stream(ws_conn_t *c) {
+//   if (c->data[4]) {
+//     return c->data[4];
+//   }
 
-  z_stream *strm = deflation_stream_init();
-  c->data[4] = strm;
+//   z_stream *strm = deflation_stream_init();
+//   c->data[4] = strm;
 
-  return strm;
-}
+//   return strm;
+// }
 
-void conn_deflate_stream_destroy(ws_conn_t *c) {
-  if (c->data[4]) {
-    deflateEnd(c->data[4]);
-    c->data[4] = NULL;
-  }
-}
+// void conn_deflate_stream_destroy(ws_conn_t *c) {
+//   if (c->data[4]) {
+//     deflateEnd(c->data[4]);
+//     c->data[4] = NULL;
+//   }
+// }
 
 // connection state utils
 
@@ -838,13 +838,13 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
 
         s->ev.data.ptr = conn;
 
-        conn->data = calloc(5, sizeof(void **));
+        conn->data = calloc(3, sizeof(void **));
 
         conn->data[0] = mbuf_get(s->buffer_pool);
         conn->data[1] = mbuf_get(s->buffer_pool);
         conn->data[2] = NULL;
-        conn->data[3] = NULL;
-        conn->data[4] = NULL;
+        // conn->data[3] = NULL;
+        // conn->data[4] = NULL;
 
         assert(conn_read_buf(conn));
         assert(conn_write_buf(conn));
