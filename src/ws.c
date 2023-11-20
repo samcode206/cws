@@ -67,108 +67,6 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-z_stream *inflation_stream_init() {
-  z_stream *istrm = calloc(1, sizeof(z_stream));
-  assert(istrm != NULL);
-
-  inflateInit2(istrm, -15);
-  return istrm;
-}
-
-ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
-                                 char *out, size_t out_len,
-                                 bool no_ctx_takeover) {
-  // Save off the bytes we're about to overwrite
-  char *tailLocation = input + in_len;
-  char preTailBytes[4];
-  memcpy(preTailBytes, tailLocation, 4);
-
-  // Append tail to chunk
-  unsigned char tail[4] = {0x00, 0x00, 0xff, 0xff};
-  memcpy(tailLocation, tail, 4);
-  in_len += 4;
-
-  istrm->next_in = (Bytef *)input;
-  istrm->avail_in = (unsigned int)in_len;
-
-  int err;
-  ssize_t total = 0;
-  do {
-    // printf("inflating...\n");
-    istrm->next_out = (Bytef *)out + total;
-    istrm->avail_out = out_len - total;
-    err = inflate(istrm, Z_SYNC_FLUSH);
-    if ((err == Z_OK) & (istrm->avail_out != 0)) {
-      total += out_len - istrm->avail_out;
-      break;
-    } else {
-      fprintf(stderr, "inflate(): %s\n", istrm->msg);
-      exit(EXIT_FAILURE);
-    }
-
-  } while ((istrm->avail_out == 0) & (total <= out_len));
-
-  if (no_ctx_takeover) {
-    inflateReset(istrm);
-  }
-
-  // DON'T FORGET TO DO THIS
-  memcpy(tailLocation, preTailBytes, 4);
-
-  if ((err < 0) || total > out_len) {
-    fprintf(stderr, "Decompression error or payload too large %d %zu %zu\n",
-            err, total, out_len);
-
-    return err < 0 ? err : -1;
-  }
-
-  return total;
-}
-
-z_stream *deflation_stream_init() {
-  z_stream *dstrm = calloc(1, sizeof(z_stream));
-  assert(dstrm != NULL);
-
-  deflateInit2(dstrm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8,
-               Z_DEFAULT_STRATEGY);
-  return dstrm;
-}
-
-ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
-                                 char *out, size_t out_len,
-                                 bool no_ctx_takeover) {
-
-  dstrm->next_in = (Bytef *)input;
-  dstrm->avail_in = (unsigned int)in_len;
-
-  int err;
-  ssize_t total = 0;
-
-  do {
-    // printf("deflating...\n");
-    assert(out_len - total >= 6);
-    dstrm->next_out = (Bytef *)out + total;
-    dstrm->avail_out = out_len - total;
-
-    err = deflate(dstrm, Z_SYNC_FLUSH);
-    if (err != Z_OK) {
-      break;
-    } else if (err == Z_OK && dstrm->avail_out) {
-      // printf("done\n");
-      total += out_len - dstrm->avail_out;
-      break;
-    }
-    total += out_len - dstrm->avail_out;
-
-  } while (1);
-
-  if (no_ctx_takeover) {
-    deflateReset(dstrm);
-  }
-
-  return total - 4;
-}
-
 struct ws_conn_t {
   int fd;               // socket fd
   unsigned int flags;   // state flags
@@ -241,6 +139,19 @@ struct pmd_buf_pool {
 struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz);
 struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p);
 void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf);
+
+static z_stream *inflation_stream_init();
+
+static ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
+                                 char *out, size_t out_len,
+                                 bool no_ctx_takeover);
+
+static z_stream *deflation_stream_init();
+
+static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
+                                 char *out, size_t out_len,
+                                 bool no_ctx_takeover);
+
 
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
@@ -2369,4 +2280,107 @@ void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf) {
 
 inline bool ws_conn_compression_allowed(ws_conn_t *c) {
   return is_compression_allowed(c);
+}
+
+
+static z_stream *inflation_stream_init() {
+  z_stream *istrm = calloc(1, sizeof(z_stream));
+  assert(istrm != NULL);
+
+  inflateInit2(istrm, -15);
+  return istrm;
+}
+
+static ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
+                                 char *out, size_t out_len,
+                                 bool no_ctx_takeover) {
+  // Save off the bytes we're about to overwrite
+  char *tailLocation = input + in_len;
+  char preTailBytes[4];
+  memcpy(preTailBytes, tailLocation, 4);
+
+  // Append tail to chunk
+  unsigned char tail[4] = {0x00, 0x00, 0xff, 0xff};
+  memcpy(tailLocation, tail, 4);
+  in_len += 4;
+
+  istrm->next_in = (Bytef *)input;
+  istrm->avail_in = (unsigned int)in_len;
+
+  int err;
+  ssize_t total = 0;
+  do {
+    // printf("inflating...\n");
+    istrm->next_out = (Bytef *)out + total;
+    istrm->avail_out = out_len - total;
+    err = inflate(istrm, Z_SYNC_FLUSH);
+    if ((err == Z_OK) & (istrm->avail_out != 0)) {
+      total += out_len - istrm->avail_out;
+      break;
+    } else {
+      fprintf(stderr, "inflate(): %s\n", istrm->msg);
+      exit(EXIT_FAILURE);
+    }
+
+  } while ((istrm->avail_out == 0) & (total <= out_len));
+
+  if (no_ctx_takeover) {
+    inflateReset(istrm);
+  }
+
+  // DON'T FORGET TO DO THIS
+  memcpy(tailLocation, preTailBytes, 4);
+
+  if ((err < 0) || total > out_len) {
+    fprintf(stderr, "Decompression error or payload too large %d %zu %zu\n",
+            err, total, out_len);
+
+    return err < 0 ? err : -1;
+  }
+
+  return total;
+}
+
+static z_stream *deflation_stream_init() {
+  z_stream *dstrm = calloc(1, sizeof(z_stream));
+  assert(dstrm != NULL);
+
+  deflateInit2(dstrm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8,
+               Z_DEFAULT_STRATEGY);
+  return dstrm;
+}
+
+static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
+                                 char *out, size_t out_len,
+                                 bool no_ctx_takeover) {
+
+  dstrm->next_in = (Bytef *)input;
+  dstrm->avail_in = (unsigned int)in_len;
+
+  int err;
+  ssize_t total = 0;
+
+  do {
+    // printf("deflating...\n");
+    assert(out_len - total >= 6);
+    dstrm->next_out = (Bytef *)out + total;
+    dstrm->avail_out = out_len - total;
+
+    err = deflate(dstrm, Z_SYNC_FLUSH);
+    if (err != Z_OK) {
+      break;
+    } else if (err == Z_OK && dstrm->avail_out) {
+      // printf("done\n");
+      total += out_len - dstrm->avail_out;
+      break;
+    }
+    total += out_len - dstrm->avail_out;
+
+  } while (1);
+
+  if (no_ctx_takeover) {
+    deflateReset(dstrm);
+  }
+
+  return total - 4;
 }
