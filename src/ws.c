@@ -142,16 +142,15 @@ void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf);
 
 static z_stream *inflation_stream_init();
 
-static ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
-                                 char *out, size_t out_len,
-                                 bool no_ctx_takeover);
+static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover);
 
 static z_stream *deflation_stream_init();
 
-static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
-                                 char *out, size_t out_len,
-                                 bool no_ctx_takeover);
-
+static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover);
 
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
@@ -949,7 +948,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   s->ev.events = EPOLLIN;
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
 
-  bool do_timers_sweep = false;
 
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
@@ -969,8 +967,37 @@ int ws_server_start(ws_server_t *s, int backlog) {
       if (s->events[i].data.ptr == &tfd) {
         uint64_t _;
         assert(read(tfd, &_, 8) == 8);
-        do_timers_sweep = true;
         (void)_;
+
+        unsigned int now = (unsigned int)time(NULL);
+
+        int timeout_kind = 0;
+        size_t n = s->max_conns;
+
+        ws_on_timeout_t cb = s->on_ws_conn_timeout;
+
+        while (n--) {
+          ws_conn_t *c = &s->conn_pool->base[n];
+
+          timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
+          timeout_kind +=
+              ((c->write_timeout != 0 && c->write_timeout < now) * 2);
+
+          if (timeout_kind) {
+            c->read_timeout = 0;
+            c->write_timeout = 0;
+
+            if (cb) {
+              cb(c, timeout_kind);
+            } else {
+              ws_conn_destroy(c);
+            }
+
+            timeout_kind = 0;
+            ws_conn_destroy(c);
+          }
+        }
+
       } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
@@ -1033,38 +1060,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
     }
 
     server_writeable_conns_drain(s); // drain writes
-
-    if (do_timers_sweep) {
-      unsigned int now = (unsigned int)time(NULL);
-
-      int timeout_kind = 0;
-      size_t n = s->max_conns;
-
-      ws_on_timeout_t cb = s->on_ws_conn_timeout;
-
-      while (n--) {
-        ws_conn_t *c = &s->conn_pool->base[n];
-
-        timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
-        timeout_kind += ((c->write_timeout != 0 && c->write_timeout < now) * 2);
-
-        if (timeout_kind) {
-          c->read_timeout = 0;
-          c->write_timeout = 0;
-
-          if (cb) {
-            cb(c, timeout_kind);
-          } else {
-            ws_conn_destroy(c);
-          }
-
-          timeout_kind = 0;
-          ws_conn_destroy(c);
-        }
-      }
-
-      do_timers_sweep = false;
-    }
 
     bool accept_resumable =
         s->accept_paused &&
@@ -2282,7 +2277,6 @@ inline bool ws_conn_compression_allowed(ws_conn_t *c) {
   return is_compression_allowed(c);
 }
 
-
 static z_stream *inflation_stream_init() {
   z_stream *istrm = calloc(1, sizeof(z_stream));
   assert(istrm != NULL);
@@ -2291,9 +2285,9 @@ static z_stream *inflation_stream_init() {
   return istrm;
 }
 
-static ssize_t inflation_stream_inflate(z_stream *istrm, char *input, size_t in_len,
-                                 char *out, size_t out_len,
-                                 bool no_ctx_takeover) {
+static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover) {
   // Save off the bytes we're about to overwrite
   char *tailLocation = input + in_len;
   char preTailBytes[4];
@@ -2350,9 +2344,9 @@ static z_stream *deflation_stream_init() {
   return dstrm;
 }
 
-static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
-                                 char *out, size_t out_len,
-                                 bool no_ctx_takeover) {
+static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover) {
 
   dstrm->next_in = (Bytef *)input;
   dstrm->avail_in = (unsigned int)in_len;
