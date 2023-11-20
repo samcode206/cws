@@ -154,7 +154,7 @@ ssize_t deflation_stream_deflate(z_stream *dstrm, char *input, size_t in_len,
     if (err != Z_OK) {
       break;
     } else if (err == Z_OK && dstrm->avail_out) {
-      printf("done\n");
+      // printf("done\n");
       total += out_len - dstrm->avail_out;
       break;
     }
@@ -212,16 +212,12 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
 #define CONN_TX_WRITE_QUEUED (1u << 7)
 #define CONN_TX_DISPOSING (1u << 8)
 
-#define CONN_RX_USING_OWN_BUF (1 << 9) 
+#define CONN_RX_USING_OWN_BUF (1 << 9)
 #define CONN_TX_USING_OWN_BUF (1 << 10)
 
 #define CONN_COMPRESSION_ALLOWED (1u << 11)
 #define CONN_RX_COMPRESSED_FRAGMENTS (1U << 12)
 
-// general purpose dynamic array
-// that is used to hold a list of connections
-// used for tracking connections that need closing
-// and connections that need writing
 struct conn_list {
   size_t len;
   size_t cap;
@@ -1584,7 +1580,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
           if (inflated_sz > 0) {
             // printf("%.*s\n", (int)inflated_sz, out);
-            printf("\ninflated_sz = %zi\n", inflated_sz);
+            // printf("\ninflated_sz = %zi\n", inflated_sz);
 
             if (!is_bin(conn) &&
                 !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
@@ -1691,7 +1687,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             if (inflated_sz) {
               inflated_buf->len += inflated_sz;
               // printf("%s\n", inflated_buf->data);
-              printf("%zu\n", inflated_sz);
+              // printf("%zu\n", inflated_sz);
               if (!is_bin(conn) &&
                   !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
                 ws_conn_destroy(conn);
@@ -1985,21 +1981,18 @@ will be called
 */
 inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat;
-  if (compress) {
-
+  if (!compress) {
+    stat = conn_write_frame(c, msg, n, OP_TXT);
+  } else {
     struct per_message_deflate_buf *deflate_buf =
         conn_per_message_deflate_buf(c);
 
     ssize_t compressed_len = deflation_stream_deflate(
         c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
         deflate_buf->cap - deflate_buf->len, true);
-    printf("sending len = %zi\n", compressed_len);
 
     stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
                             compressed_len, OP_TXT | 0x40);
-
-  } else {
-    stat = conn_write_frame(c, msg, n, OP_TXT);
   }
 
   if (stat == -1) {
@@ -2374,8 +2367,6 @@ void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf) {
   }
 }
 
-
-
-inline bool ws_conn_compression_allowed(ws_conn_t *c){
+inline bool ws_conn_compression_allowed(ws_conn_t *c) {
   return is_compression_allowed(c);
 }
