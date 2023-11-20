@@ -1868,7 +1868,7 @@ inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
 
 /**
 * returns:
-     1 data was completely writtena
+     1 data was completely written
 
      0 part of the data was written caller should wait for on_drain event to
 start sending more data or an error occurred in which the corresponding callback
