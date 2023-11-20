@@ -1403,7 +1403,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
          conn->needed_bytes) {
     // payload start
     uint8_t *frame =
-        buf_peek_at(buf, buf->rpos + ((buf == conn_read_buf(conn)) *
+        buf_peek_at(buf, buf->rpos + ((buf != s->shared_recv_buffer) *
                                       (conn->fragments_len + total_trimmed)));
 
     uint8_t fin = frame_get_fin(frame);
@@ -1423,7 +1423,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // make sure we can get the full msg
     size_t payload_len = 0;
     size_t frame_buf_len = buf_len(buf);
-    if (conn_read_buf(conn) == buf) {
+    if (buf != s->shared_recv_buffer) {
       frame_buf_len = frame_buf_len - conn->fragments_len - total_trimmed;
     }
     // check if we need to do more reads to get the msg length
@@ -1564,7 +1564,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       if (!s->on_ws_msg_fragment) {
 
         // we are using the shared buffer
-        if (buf != conn_read_buf(conn)) {
+        if (buf == s->shared_recv_buffer) {
           // trim off the header
           buf_consume(buf, mask_offset + 4);
           buf_move(buf, conn_read_buf(conn), payload_len);
@@ -1667,7 +1667,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         // a bad client can constantly send pings and we would keep replying
         ws_conn_pong(conn, msg, payload_len);
       }
-      if ((conn->fragments_len != 0) & (buf == conn_read_buf(conn))) {
+      if ((conn->fragments_len != 0) & (buf != s->shared_recv_buffer)) {
         total_trimmed += full_frame_len;
         conn->needed_bytes = 2;
       } else {
@@ -1689,7 +1689,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         s->on_ws_pong(conn, msg, payload_len);
       }
 
-      if ((conn->fragments_len != 0) & (buf == conn_read_buf(conn))) {
+      if ((conn->fragments_len != 0) & (buf != s->shared_recv_buffer)) {
         total_trimmed += total_trimmed;
         conn->needed_bytes = 2;
       } else {
@@ -1777,7 +1777,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
   }
 
 clean_up_buffer:
-  if (buf != conn_read_buf(conn)) {
+  if (buf == s->shared_recv_buffer) {
     // move to connection specific buffer
     if (buf_len(buf)) {
       // printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
