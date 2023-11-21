@@ -46,11 +46,12 @@
 #include <sys/uio.h>
 #include <time.h>
 
-#define WITH_COMPRESSION 1
+
+#define WITH_COMPRESSION
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
-#endif
+#endif /* WITH_COMPRESSION */
 
 #define TIMER_GRANULARITY 5
 #define READ_TIMEOUT 60
@@ -140,6 +141,7 @@ struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz);
 struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p);
 void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf);
 
+#ifdef WITH_COMPRESSION
 static z_stream *inflation_stream_init();
 
 static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
@@ -151,6 +153,7 @@ static z_stream *deflation_stream_init();
 static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
                                         size_t in_len, char *out,
                                         size_t out_len, bool no_ctx_takeover);
+#endif /* WITH_COMPRESSION */
 
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
@@ -176,8 +179,10 @@ typedef struct server {
   ws_err_accept_cb_t on_ws_accept_err;
   struct mbuf_pool *buffer_pool;
   struct pmd_buf_pool *pmd_buf_pool;
+#ifdef WITH_COMPRESSION
   z_stream *istrm;
   z_stream *dstrm;
+#endif /* WITH_COMPRESSION */
   struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
@@ -192,7 +197,9 @@ static buf_t *conn_read_buf(ws_conn_t *c) { return c->data[0]; }
 
 static buf_t *conn_write_buf(ws_conn_t *c) { return c->data[1]; }
 
-static struct per_message_deflate_buf *conn_per_message_deflate_buf(ws_conn_t *c) {
+#ifdef WITH_COMPRESSION
+static struct per_message_deflate_buf *
+conn_per_message_deflate_buf(ws_conn_t *c) {
   if (!c->data[2]) {
     c->data[2] = pmd_buf_get(c->base->pmd_buf_pool);
   }
@@ -206,6 +213,7 @@ static void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
     c->data[2] = NULL;
   }
 }
+#endif /* WITH_COMPRESSION */
 
 // z_stream *conn_inflate_stream(ws_conn_t *c) {
 //   if (c->data[3]) {
@@ -747,8 +755,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   // make sure we got the mem needed
   assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL);
 
+#ifdef WITH_COMPRESSION
   s->istrm = inflation_stream_init();
   s->dstrm = deflation_stream_init();
+#endif /* WITH_COMPRESSION */
 
   s->pmd_buf_pool =
       pmd_buf_pool_create(s->max_conns, s->max_msg_len + s->max_msg_len + 16);
@@ -947,7 +957,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   s->ev.data.ptr = &tfd;
   s->ev.events = EPOLLIN;
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
-
 
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
@@ -1462,7 +1471,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // this handles both text and binary hence the fallthrough
       if (fin & (!is_fragmented(conn))) {
 
-#if WITH_COMPRESSION
+#ifdef WITH_COMPRESSION
 
         // printf("payload len = %zu\n", payload_len);
 
@@ -1520,7 +1529,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         buf_consume(buf, full_frame_len);
         clear_bin(conn);
         conn->needed_bytes = 2;
-#endif
+#endif /* WITH_COMPRESSION */
 
         break; /* OP_BIN don't fall through to fragmented msg */
       } else if (fin & (is_fragmented(conn))) {
@@ -1576,7 +1585,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         }
         if (fin) {
 
-#if WITH_COMPRESSION
+#ifdef WITH_COMPRESSION
 
           if (is_fragment_compressed(conn)) {
             clear_fragment_compressed(conn);
@@ -1628,7 +1637,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           }
           s->on_ws_msg(conn, buf_peek(conn_read_buf(conn)), conn->fragments_len,
                        is_bin(conn));
-#endif
+#endif /* WITH_COMPRESSION */
 
           buf_consume(conn_read_buf(conn), conn->fragments_len);
 
@@ -1887,6 +1896,7 @@ will be called
 */
 inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat;
+#ifdef WITH_COMPRESSION
   if (!compress) {
     stat = conn_write_frame(c, msg, n, OP_TXT);
   } else {
@@ -1900,6 +1910,9 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
     stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
                             compressed_len, OP_TXT | 0x40);
   }
+#else
+  stat = conn_write_frame(c, msg, n, OP_TXT);
+#endif /* WITH_COMPRESSION */
 
   if (stat == -1) {
     ws_conn_destroy(c);
@@ -2277,6 +2290,8 @@ inline bool ws_conn_compression_allowed(ws_conn_t *c) {
   return is_compression_allowed(c);
 }
 
+#ifdef WITH_COMPRESSION
+
 static z_stream *inflation_stream_init() {
   z_stream *istrm = calloc(1, sizeof(z_stream));
   assert(istrm != NULL);
@@ -2378,3 +2393,5 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 
   return total - 4;
 }
+
+#endif /* WITH_COMPRESSION */
