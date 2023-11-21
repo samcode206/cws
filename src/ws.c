@@ -46,6 +46,13 @@
 #include <sys/uio.h>
 #include <time.h>
 
+
+#define WITH_COMPRESSION
+
+#ifdef WITH_COMPRESSION
+#include <zlib.h>
+#endif /* WITH_COMPRESSION */
+
 #define TIMER_GRANULARITY 5
 #define READ_TIMEOUT 60
 
@@ -68,13 +75,15 @@ struct ws_conn_t {
                         // fragmentation
 
   size_t needed_bytes; // bytes needed before we can do something with the frame
-  buf_t *read_buf;     // recv buffer structure
-  buf_t *write_buf;
+  void **buffers;
   ws_server_t *base;          // server ptr
   void *ctx;                  // user data pointer
+  void *rsv;                  // not in use
   unsigned int read_timeout;  // seconds
   unsigned int write_timeout; // seconds
 };
+
+static_assert(sizeof(struct ws_conn_t) == 64, "ws_conn_t not 64");
 
 struct ws_conn_pool {
   ws_conn_t *base;
@@ -99,20 +108,49 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
 #define CONN_TX_WRITE_QUEUED (1u << 7)
 #define CONN_TX_DISPOSING (1u << 8)
 
-#define CONN_RX_USING_OWN_BUF                                                  \
-  (1 << 9) // we are using the connection read buffer
-#define CONN_TX_USING_OWN_BUF                                                  \
-  (1 << 10) // we are using the connection write buffer
+#define CONN_RX_USING_OWN_BUF (1 << 9)
+#define CONN_TX_USING_OWN_BUF (1 << 10)
 
-// general purpose dynamic array
-// that is used to hold a list of connections
-// used for tracking connections that need closing
-// and connections that need writing
+#define CONN_COMPRESSION_ALLOWED (1u << 11)
+#define CONN_RX_COMPRESSED_FRAGMENTS (1U << 12)
+
 struct conn_list {
   size_t len;
   size_t cap;
   ws_conn_t **conns;
 };
+
+struct per_message_deflate_buf {
+  size_t len;
+  size_t cap;
+  char data[];
+};
+
+struct pmd_buf_pool {
+  size_t buf_sz;
+  size_t avb;
+  size_t inuse;
+  size_t cap;
+  struct per_message_deflate_buf **avb_list;
+};
+
+struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz);
+struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p);
+void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf);
+
+#ifdef WITH_COMPRESSION
+static z_stream *inflation_stream_init();
+
+static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover);
+
+static z_stream *deflation_stream_init();
+
+static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover);
+#endif /* WITH_COMPRESSION */
 
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
@@ -137,6 +175,11 @@ typedef struct server {
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct mbuf_pool *buffer_pool;
+  struct pmd_buf_pool *pmd_buf_pool;
+#ifdef WITH_COMPRESSION
+  z_stream *istrm;
+  z_stream *dstrm;
+#endif /* WITH_COMPRESSION */
   struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
@@ -146,6 +189,63 @@ typedef struct server {
   struct conn_list writeable_conns;
   struct conn_list closeable_conns;
 } ws_server_t;
+
+static buf_t *conn_read_buf(ws_conn_t *c) { return c->buffers[0]; }
+
+static buf_t *conn_write_buf(ws_conn_t *c) { return c->buffers[1]; }
+
+#ifdef WITH_COMPRESSION
+static struct per_message_deflate_buf *
+conn_per_message_deflate_buf(ws_conn_t *c) {
+  if (!c->buffers[2]) {
+    c->buffers[2] = pmd_buf_get(c->base->pmd_buf_pool);
+  }
+
+  return c->buffers[2];
+}
+
+static void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
+  if (c->buffers[2]) {
+    pmd_buf_put(c->base->pmd_buf_pool, c->buffers[2]);
+    c->buffers[2] = NULL;
+  }
+}
+#endif /* WITH_COMPRESSION */
+
+// z_stream *conn_inflate_stream(ws_conn_t *c) {
+//   if (c->buffers[3]) {
+//     return c->buffers[3];
+//   }
+
+//   z_stream *strm = inflation_stream_init();
+//   c->buffers[3] = strm;
+//   return strm;
+// }
+
+// void conn_inflate_stream_destroy(ws_conn_t *c) {
+//   if (c->buffers[3]) {
+//     inflateEnd(c->buffers[3]);
+//     c->buffers[3] = NULL;
+//   }
+// }
+
+// z_stream *conn_deflate_stream(ws_conn_t *c) {
+//   if (c->buffers[4]) {
+//     return c->buffers[4];
+//   }
+
+//   z_stream *strm = deflation_stream_init();
+//   c->buffers[4] = strm;
+
+//   return strm;
+// }
+
+// void conn_deflate_stream_destroy(ws_conn_t *c) {
+//   if (c->buffers[4]) {
+//     deflateEnd(c->buffers[4]);
+//     c->buffers[4] = NULL;
+//   }
+// }
 
 // connection state utils
 
@@ -263,6 +363,26 @@ static inline void clear_using_own_write_buf(ws_conn_t *c) {
   c->flags &= ~CONN_TX_USING_OWN_BUF;
 }
 
+static inline bool is_compression_allowed(ws_conn_t *c) {
+  return (c->flags & CONN_COMPRESSION_ALLOWED) != 0;
+}
+
+static inline void set_compression_allowed(ws_conn_t *c) {
+  c->flags |= CONN_COMPRESSION_ALLOWED;
+}
+
+static inline bool is_fragment_compressed(ws_conn_t *c) {
+  return (c->flags & CONN_RX_COMPRESSED_FRAGMENTS) != 0;
+}
+
+static inline void set_fragment_compressed(ws_conn_t *c) {
+  c->flags |= CONN_RX_COMPRESSED_FRAGMENTS;
+}
+
+static inline void clear_fragment_compressed(ws_conn_t *c) {
+  c->flags &= ~CONN_RX_COMPRESSED_FRAGMENTS;
+}
+
 // Frame Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
@@ -308,8 +428,17 @@ static int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
   return 0;
 }
 
-static inline int frame_has_reserved_bits_set(uint8_t const *buf) {
-  return (buf[0] & 0x70) != 0;
+static inline bool is_compressed_msg(uint8_t const *buf) {
+  return (buf[0] & 0x40) != 0;
+}
+
+static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
+                                                          uint8_t const *buf) {
+  // printf("%d\n", is_compression_allowed(c));
+  bool rsv1 = (buf[0] & 0x40) != 0;
+  bool rsv2 = (buf[0] & 0x20) != 0;
+  bool rsv3 = (buf[0] & 0x10) != 0;
+  return rsv3 || rsv2 || (rsv1 && !is_compression_allowed(c));
 }
 
 static inline uint32_t frame_is_masked(const unsigned char *buf) {
@@ -400,7 +529,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
   for (size_t i = 0; i < s->writeable_conns.len; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
     if (!is_closing(c->flags)) {
-      if (conn_drain_write_buf(c, c->write_buf) == -1) {
+      if (conn_drain_write_buf(c, conn_write_buf(c)) == -1) {
         ws_conn_destroy(c);
       };
       clear_write_queued(c);
@@ -420,8 +549,8 @@ static void server_closeable_conns_close(ws_server_t *s) {
       ws_conn_t *c = s->closeable_conns.conns[n];
       assert(close(c->fd) == 0);
       s->on_ws_disconnect(c, 0);
-      mbuf_put(s->buffer_pool, c->write_buf);
-      mbuf_put(s->buffer_pool, c->read_buf);
+      mbuf_put(s->buffer_pool, conn_write_buf(c));
+      mbuf_put(s->buffer_pool, conn_read_buf(c));
 
       if (s->shared_send_buffer_owner == c) {
         s->shared_send_buffer_owner = NULL;
@@ -563,7 +692,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   // account for an interleaved control msg during fragmentation
   // since we never dynamically allocate more buffers
   size_t buffer_size =
-      (max_backpressure + 132 + page_size - 1) & ~(page_size - 1);
+      (max_backpressure + 192 + page_size - 1) & ~(page_size - 1);
 
   printf("buffer size = %zu\n", buffer_size);
   printf("max_backpressure = %zu\n", max_backpressure);
@@ -622,6 +751,16 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   // make sure we got the mem needed
   assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL);
+
+#ifdef WITH_COMPRESSION
+  s->istrm = inflation_stream_init();
+  s->dstrm = deflation_stream_init();
+#endif /* WITH_COMPRESSION */
+
+  s->pmd_buf_pool =
+      pmd_buf_pool_create(s->max_conns, s->max_msg_len + s->max_msg_len + 16);
+  assert(s->pmd_buf_pool != NULL);
+
   // server resources all ready
   return s;
 }
@@ -706,11 +845,16 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
 
         s->ev.data.ptr = conn;
 
-        conn->read_buf = mbuf_get(s->buffer_pool);
-        conn->write_buf = mbuf_get(s->buffer_pool);
+        conn->buffers = calloc(3, sizeof(void **));
 
-        assert(conn->read_buf != NULL);
-        assert(conn->write_buf != NULL);
+        conn->buffers[0] = mbuf_get(s->buffer_pool);
+        conn->buffers[1] = mbuf_get(s->buffer_pool);
+        conn->buffers[2] = NULL;
+        // conn->data[3] = NULL;
+        // conn->data[4] = NULL;
+
+        assert(conn_read_buf(conn));
+        assert(conn_write_buf(conn));
 
         conn->read_timeout = now + READ_TIMEOUT;
         ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
@@ -811,8 +955,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   s->ev.events = EPOLLIN;
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
 
-  bool do_timers_sweep = false;
-
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
     if (n_evs < 0) {
@@ -831,8 +973,37 @@ int ws_server_start(ws_server_t *s, int backlog) {
       if (s->events[i].data.ptr == &tfd) {
         uint64_t _;
         assert(read(tfd, &_, 8) == 8);
-        do_timers_sweep = true;
         (void)_;
+
+        unsigned int now = (unsigned int)time(NULL);
+
+        int timeout_kind = 0;
+        size_t n = s->max_conns;
+
+        ws_on_timeout_t cb = s->on_ws_conn_timeout;
+
+        while (n--) {
+          ws_conn_t *c = &s->conn_pool->base[n];
+
+          timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
+          timeout_kind +=
+              ((c->write_timeout != 0 && c->write_timeout < now) * 2);
+
+          if (timeout_kind) {
+            c->read_timeout = 0;
+            c->write_timeout = 0;
+
+            if (cb) {
+              cb(c, timeout_kind);
+            } else {
+              ws_conn_destroy(c);
+            }
+
+            timeout_kind = 0;
+            ws_conn_destroy(c);
+          }
+        }
+
       } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
@@ -843,7 +1014,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
         } else {
           if (s->events[i].events & EPOLLOUT) {
             if (!is_closing(c->flags)) {
-              int ret = conn_drain_write_buf(c, c->write_buf);
+              int ret = conn_drain_write_buf(c, conn_write_buf(c));
               if (ret == 1) {
                 if (!is_write_shutdown(c)) {
                   if (s->on_ws_drain) {
@@ -895,38 +1066,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
     }
 
     server_writeable_conns_drain(s); // drain writes
-
-    if (do_timers_sweep) {
-      unsigned int now = (unsigned int)time(NULL);
-
-      int timeout_kind = 0;
-      size_t n = s->max_conns;
-
-      ws_on_timeout_t cb = s->on_ws_conn_timeout;
-
-      while (n--) {
-        ws_conn_t *c = &s->conn_pool->base[n];
-
-        timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
-        timeout_kind += ((c->write_timeout != 0 && c->write_timeout < now) * 2);
-
-        if (timeout_kind) {
-          c->read_timeout = 0;
-          c->write_timeout = 0;
-
-          if (cb) {
-            cb(c, timeout_kind);
-          } else {
-            ws_conn_destroy(c);
-          }
-
-          timeout_kind = 0;
-          ws_conn_destroy(c);
-        }
-      }
-
-      do_timers_sweep = false;
-    }
 
     bool accept_resumable =
         s->accept_paused &&
@@ -1021,7 +1160,7 @@ static void handle_upgrade(ws_conn_t *conn) {
 
   // pick the recv buffer
   if (is_using_own_recv_buf(conn)) {
-    request_buf = conn->read_buf;
+    request_buf = conn_read_buf(conn);
   } else {
     request_buf = s->shared_recv_buffer;
   }
@@ -1053,9 +1192,9 @@ static void handle_upgrade(ws_conn_t *conn) {
   // if we still have less than needed bytes
   // stop and wait for more
   if (request_buf_len < conn->needed_bytes) {
-    if (request_buf != conn->read_buf) {
+    if (request_buf != conn_read_buf(conn)) {
       set_using_own_recv_buf(conn);
-      buf_move(s->shared_recv_buffer, conn->read_buf,
+      buf_move(s->shared_recv_buffer, conn_read_buf(conn),
                buf_len(s->shared_recv_buffer));
     }
 
@@ -1104,21 +1243,40 @@ static void handle_upgrade(ws_conn_t *conn) {
 
         if (!s->on_ws_upgrade_req) {
           ok = true;
+          bool pmd = false;
+
+          char sec_websocket_extensions[1024];
+
+          int sec_websocket_extensions_ret =
+              get_header((char *)headers, "Sec-WebSocket-Extensions",
+                         sec_websocket_extensions, 1024);
+          if (sec_websocket_extensions_ret > 0) {
+            pmd = true;
+          }
+
           response_buf = request_buf;
           buf_reset(response_buf);
           buf_put(response_buf, switching_protocols,
                   SWITCHING_PROTOCOLS_HDRS_LEN);
           buf_put(response_buf, accept_key, accept_key_len);
+          if (pmd) {
+            set_compression_allowed(conn);
+            buf_put(response_buf,
+                    "\r\nSec-WebSocket-Extensions: permessage-deflate; "
+                    "client_no_context_takeover",
+                    74);
+          }
+
           buf_put(response_buf, CRLF2, CRLF2_LEN);
           resp_len = buf_len(response_buf);
         } else {
-          if (!buf_len(conn->write_buf) &&
+          if (!buf_len(conn_write_buf(conn)) &&
               s->shared_send_buffer_owner == NULL) {
             s->shared_send_buffer_owner = conn;
             set_using_shared(conn);
             response_buf = s->shared_send_buffer;
           } else {
-            response_buf = conn->write_buf;
+            response_buf = conn_write_buf(conn);
           }
 
           size_t max_resp_len = buf_space(response_buf);
@@ -1150,7 +1308,7 @@ static void handle_upgrade(ws_conn_t *conn) {
       // header
       if (request_buf == s->shared_recv_buffer) {
         set_using_own_recv_buf(conn);
-        buf_move(s->shared_recv_buffer, conn->read_buf,
+        buf_move(s->shared_recv_buffer, conn_read_buf(conn),
                  buf_len(s->shared_recv_buffer));
       }
       return;
@@ -1189,13 +1347,13 @@ static void handle_upgrade(ws_conn_t *conn) {
     } else if (ret == -1) {
       ws_conn_destroy(conn);
     } else {
-      if (response_buf != conn->write_buf ||
+      if (response_buf != conn_write_buf(conn) ||
           response_buf != s->shared_send_buffer) {
-        buf_move(response_buf, conn->write_buf, buf_len(response_buf));
+        buf_move(response_buf, conn_write_buf(conn), buf_len(response_buf));
       }
     }
   } else {
-    buf_put(conn->write_buf, bad_request, BAD_REQUEST_LEN);
+    buf_put(conn_write_buf(conn), bad_request, BAD_REQUEST_LEN);
   }
 }
 
@@ -1203,22 +1361,22 @@ static inline buf_t *ws_conn_choose_read_buf(ws_conn_t *conn) {
   if (!is_using_own_recv_buf(conn)) {
     return conn->base->shared_recv_buffer;
   } else {
-    return conn->read_buf;
+    return conn_read_buf(conn);
   }
 
-  // if ((buf_len(conn->read_buf) != 0) &
-  //     !(conn->fragments_len + conn->read_buf->rpos ==
-  //       conn->read_buf->wpos)) {
-  //   // buf_debug(&conn->read_buf, "conn buffer chosen");
+  // if ((buf_len(conn_read_buf(conn)) != 0) &
+  //     !(conn->fragments_len + conn_read_buf(conn)->rpos ==
+  //       conn_read_buf(conn)->wpos)) {
+  //   // buf_debug(&conn_read_buf(conn), "conn buffer chosen");
 
-  //   return conn->read_buf;
+  //   return conn_read_buf(conn);
   // } else {
   //   return conn->base->shared_recv_buffer;
   // }
 }
 
 static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
-  if (buf != conn->read_buf) {
+  if (buf != conn_read_buf(conn)) {
     return buf->wpos - buf->rpos;
   } else {
     return buf->wpos - buf->rpos -
@@ -1246,15 +1404,17 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
          conn->needed_bytes) {
     // payload start
     uint8_t *frame =
-        buf_peek_at(buf, buf->rpos + ((buf == conn->read_buf) *
+        buf_peek_at(buf, buf->rpos + ((buf != s->shared_recv_buffer) *
                                       (conn->fragments_len + total_trimmed)));
 
     uint8_t fin = frame_get_fin(frame);
     uint8_t opcode = frame_get_opcode(frame);
+    bool is_compressed = is_compressed_msg(frame);
+
     // printf("fragments=%zu\n", conn->state.fragments_len);
     // run general validation checks on the header
     if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
-        (frame_has_reserved_bits_set(frame) == 1) |
+        (frame_has_unsupported_reserved_bits_set(conn, frame) == 1) |
         (frame_is_masked(frame) == 0)) {
       buf_reset(s->shared_recv_buffer);
       ws_conn_destroy(conn);
@@ -1264,7 +1424,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     // make sure we can get the full msg
     size_t payload_len = 0;
     size_t frame_buf_len = buf_len(buf);
-    if (conn->read_buf == buf) {
+    if (buf != s->shared_recv_buffer) {
       frame_buf_len = frame_buf_len - conn->fragments_len - total_trimmed;
     }
     // check if we need to do more reads to get the msg length
@@ -1294,11 +1454,10 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       goto clean_up_buffer;
     }
 
+    // buf_debug(buf, "buffer");
+
     uint8_t *msg = frame + mask_offset + 4;
     msg_unmask(msg, frame + mask_offset, payload_len);
-    // printf("buf_len=%zu frame_len=%zu opcode=%d fin=%d\n",
-    // frame_buf_len,
-    //        full_frame_len, opcode, fin);
     conn->read_timeout = next_read_timeout;
     switch (opcode) {
     case OP_TXT:
@@ -1308,6 +1467,56 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       // fin and never fragmented
       // this handles both text and binary hence the fallthrough
       if (fin & (!is_fragmented(conn))) {
+
+#ifdef WITH_COMPRESSION
+
+        // printf("payload len = %zu\n", payload_len);
+
+        if (!is_compressed) {
+          if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
+            ws_conn_destroy(conn);
+            buf_reset(s->shared_recv_buffer);
+            return; // TODO(sah): send a Close frame, & call close callback
+          }
+          s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
+          buf_consume(buf, full_frame_len);
+          clear_bin(conn);
+          conn->needed_bytes = 2;
+
+        } else {
+          struct per_message_deflate_buf *inflated_buf =
+              conn_per_message_deflate_buf(conn);
+          ssize_t inflated_sz = inflation_stream_inflate(
+              s->istrm, (char *)msg, payload_len, inflated_buf->data,
+              inflated_buf->cap, true);
+
+          if (inflated_sz > 0) {
+            // printf("%.*s\n", (int)inflated_sz, out);
+            // printf("\ninflated_sz = %zi\n", inflated_sz);
+
+            if (!is_bin(conn) &&
+                !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
+              printf("invalid utf\n");
+              ws_conn_destroy(conn);
+              buf_reset(s->shared_recv_buffer);
+              return; // TODO(sah): send a Close frame, & call close callback
+            }
+            s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
+            buf_consume(buf, full_frame_len);
+            conn->needed_bytes = 2;
+            clear_bin(conn);
+            conn_per_message_deflate_buf_dispose(conn);
+          } else {
+            // TODO handle error
+            printf("inflate error\n");
+            ws_conn_destroy(conn);
+            buf_reset(s->shared_recv_buffer);
+            conn_per_message_deflate_buf_dispose(conn);
+            return; // TODO(sah): send a Close frame, & call close callback
+          }
+        }
+
+#else
         if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
           ws_conn_destroy(conn);
           buf_reset(s->shared_recv_buffer);
@@ -1317,6 +1526,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         buf_consume(buf, full_frame_len);
         clear_bin(conn);
         conn->needed_bytes = 2;
+#endif /* WITH_COMPRESSION */
 
         break; /* OP_BIN don't fall through to fragmented msg */
       } else if (fin & (is_fragmented(conn))) {
@@ -1348,14 +1558,17 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
       // set the state to fragmented after validation
       set_fragmented(conn);
+      if (is_compressed) {
+        set_fragment_compressed(conn);
+      }
 
       if (!s->on_ws_msg_fragment) {
 
         // we are using the shared buffer
-        if (buf != conn->read_buf) {
+        if (buf == s->shared_recv_buffer) {
           // trim off the header
           buf_consume(buf, mask_offset + 4);
-          buf_move(buf, conn->read_buf, payload_len);
+          buf_move(buf, conn_read_buf(conn), payload_len);
           conn->fragments_len += payload_len;
           conn->needed_bytes = 2;
         } else {
@@ -1368,15 +1581,62 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           conn->needed_bytes = 2;
         }
         if (fin) {
-          if (!is_bin(conn) &&
-              !utf8_is_valid(buf_peek(conn->read_buf), conn->fragments_len)) {
+
+#ifdef WITH_COMPRESSION
+
+          if (is_fragment_compressed(conn)) {
+            clear_fragment_compressed(conn);
+
+            struct per_message_deflate_buf *inflated_buf =
+                conn_per_message_deflate_buf(conn);
+
+            assert(inflated_buf->len == 0);
+            ssize_t inflated_sz = inflation_stream_inflate(
+                s->istrm, (char *)buf_peek(conn_read_buf(conn)),
+                conn->fragments_len, inflated_buf->data, inflated_buf->cap,
+                true);
+
+            if (inflated_sz) {
+              inflated_buf->len += inflated_sz;
+              // printf("%s\n", inflated_buf->data);
+              // printf("%zu\n", inflated_sz);
+              if (!is_bin(conn) &&
+                  !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
+                ws_conn_destroy(conn);
+                buf_reset(s->shared_recv_buffer);
+                conn_per_message_deflate_buf_dispose(conn);
+                return; // TODO(sah): send a Close frame, & call close callback
+              }
+              s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
+            } else {
+              ws_conn_destroy(conn);
+              buf_reset(s->shared_recv_buffer);
+            }
+
+            conn_per_message_deflate_buf_dispose(conn);
+          } else {
+            if (!is_bin(conn) && !utf8_is_valid(buf_peek(conn_read_buf(conn)),
+                                                conn->fragments_len)) {
+              ws_conn_destroy(conn);
+              buf_reset(s->shared_recv_buffer);
+              return; // TODO(sah): send a Close frame, & call close callback
+            }
+            s->on_ws_msg(conn, buf_peek(conn_read_buf(conn)),
+                         conn->fragments_len, is_bin(conn));
+          }
+
+#else
+          if (!is_bin(conn) && !utf8_is_valid(buf_peek(conn_read_buf(conn)),
+                                              conn->fragments_len)) {
             ws_conn_destroy(conn);
             buf_reset(s->shared_recv_buffer);
             return; // TODO(sah): send a Close frame, & call close callback
           }
-          s->on_ws_msg(conn, buf_peek(conn->read_buf), conn->fragments_len,
+          s->on_ws_msg(conn, buf_peek(conn_read_buf(conn)), conn->fragments_len,
                        is_bin(conn));
-          buf_consume(conn->read_buf, conn->fragments_len);
+#endif /* WITH_COMPRESSION */
+
+          buf_consume(conn_read_buf(conn), conn->fragments_len);
 
           conn->fragments_len = 0;
           clear_fragmented(conn);
@@ -1408,7 +1668,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         // a bad client can constantly send pings and we would keep replying
         ws_conn_pong(conn, msg, payload_len);
       }
-      if ((conn->fragments_len != 0) & (buf == conn->read_buf)) {
+      if ((conn->fragments_len != 0) & (buf != s->shared_recv_buffer)) {
         total_trimmed += full_frame_len;
         conn->needed_bytes = 2;
       } else {
@@ -1430,7 +1690,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         s->on_ws_pong(conn, msg, payload_len);
       }
 
-      if ((conn->fragments_len != 0) & (buf == conn->read_buf)) {
+      if ((conn->fragments_len != 0) & (buf != s->shared_recv_buffer)) {
         total_trimmed += total_trimmed;
         conn->needed_bytes = 2;
       } else {
@@ -1518,16 +1778,16 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
   }
 
 clean_up_buffer:
-  if (buf != conn->read_buf) {
+  if (buf == s->shared_recv_buffer) {
     // move to connection specific buffer
     if (buf_len(buf)) {
       // printf("moving from shared to socket buffer: %zu\n", buf_len(buf));
-      buf_move(buf, conn->read_buf, buf_len(buf));
+      buf_move(buf, conn_read_buf(conn), buf_len(buf));
       set_using_own_recv_buf(conn);
     }
   } else {
 
-    if (buf_len(buf)) {
+    if (buf->wpos - buf->rpos + conn->fragments_len + total_trimmed) {
       memmove(buf->buf + buf->rpos + conn->fragments_len,
               buf->buf + buf->rpos + conn->fragments_len + total_trimmed,
               buf->wpos - buf->rpos + conn->fragments_len + total_trimmed);
@@ -1566,7 +1826,7 @@ static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
     if (is_using_shared(conn)) {
       // worst case
       clear_using_shared(conn);
-      buf_move(conn->base->shared_send_buffer, conn->write_buf,
+      buf_move(conn->base->shared_send_buffer, conn_write_buf(conn),
                buf_len(conn->base->shared_send_buffer));
       conn->base->shared_send_buffer_owner = NULL;
     }
@@ -1609,13 +1869,13 @@ inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
 
 /**
 * returns:
-     1 data was completely writtena
+     1 data was completely written
 
      0 part of the data was written caller should wait for on_drain event to
 start sending more data or an error occurred in which the corresponding callback
 will be called
 */
-inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
+inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_frame(c, msg, n, OP_BIN);
   if (stat == -1) {
     ws_conn_destroy(c);
@@ -1631,8 +1891,26 @@ inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n) {
 start sending more data or an error occurred in which the corresponding callback
 will be called
 */
-inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(c, msg, n, OP_TXT);
+inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
+  int stat;
+#ifdef WITH_COMPRESSION
+  if (!compress) {
+    stat = conn_write_frame(c, msg, n, OP_TXT);
+  } else {
+    struct per_message_deflate_buf *deflate_buf =
+        conn_per_message_deflate_buf(c);
+
+    ssize_t compressed_len = deflation_stream_deflate(
+        c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
+        deflate_buf->cap - deflate_buf->len, true);
+
+    stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
+                            compressed_len, OP_TXT | 0x40);
+  }
+#else
+  stat = conn_write_frame(c, msg, n, OP_TXT);
+#endif /* WITH_COMPRESSION */
+
   if (stat == -1) {
     ws_conn_destroy(c);
   }
@@ -1642,7 +1920,7 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n) {
 static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
   if (send_len > 65535 || is_using_own_write_buf(conn) || !is_writeable(conn)) {
     set_using_own_write_buf(conn);
-    return conn->write_buf;
+    return conn_write_buf(conn);
   } else {
     if (!is_using_shared(conn)) {
       ws_conn_t *owner = conn->base->shared_send_buffer_owner;
@@ -1840,7 +2118,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       }
 
       // queue up for writing if not using shared buffer
-      if (wbuf == conn->write_buf) {
+      if (wbuf == conn_write_buf(conn)) {
         // queue it up for writing
         server_writeable_conns_append(conn);
       }
@@ -1963,3 +2241,154 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c) {
   p->_buf_nodes[diff].next = p->head;
   p->head = &p->_buf_nodes[diff];
 }
+
+struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz) {
+  struct pmd_buf_pool *p = malloc(sizeof(struct pmd_buf_pool));
+  assert(p != NULL);
+  p->buf_sz = pmd_bufsz;
+  p->avb = 0;
+  p->inuse = 0;
+  p->cap = nmemb;
+
+  p->avb_list = calloc(nmemb, sizeof(struct per_message_deflate_buf *));
+  assert(p->avb_list != NULL);
+
+  return p;
+}
+
+struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p) {
+  while (p->avb) {
+    p->inuse++;
+    return p->avb_list[--p->avb];
+  }
+
+  if (p->inuse + 1 <= p->cap) {
+    struct per_message_deflate_buf *buf =
+        malloc(sizeof(struct per_message_deflate_buf) + p->buf_sz);
+    assert(buf != NULL);
+    buf->cap = p->buf_sz;
+    buf->len = 0;
+    p->inuse++;
+    return buf;
+  }
+
+  return NULL;
+}
+
+void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf) {
+  if (buf) {
+    buf->len = 0;
+    p->avb_list[p->avb++] = buf;
+    p->inuse--;
+  }
+}
+
+inline bool ws_conn_compression_allowed(ws_conn_t *c) {
+  return is_compression_allowed(c);
+}
+
+#ifdef WITH_COMPRESSION
+
+static z_stream *inflation_stream_init() {
+  z_stream *istrm = calloc(1, sizeof(z_stream));
+  assert(istrm != NULL);
+
+  inflateInit2(istrm, -15);
+  return istrm;
+}
+
+static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover) {
+  // Save off the bytes we're about to overwrite
+  char *tail_addr = input + in_len;
+  char pre_tail[4];
+  memcpy(pre_tail, tail_addr, 4);
+
+  // Append tail to chunk
+  unsigned char tail[4] = {0x00, 0x00, 0xff, 0xff};
+  memcpy(tail_addr, tail, 4);
+  in_len += 4;
+
+  istrm->next_in = (Bytef *)input;
+  istrm->avail_in = (unsigned int)in_len;
+
+  int err;
+  ssize_t total = 0;
+  do {
+    // printf("inflating...\n");
+    istrm->next_out = (Bytef *)out + total;
+    istrm->avail_out = out_len - total;
+    err = inflate(istrm, Z_SYNC_FLUSH);
+    if ((err == Z_OK) & (istrm->avail_out != 0)) {
+      total += out_len - istrm->avail_out;
+      break;
+    } else {
+      fprintf(stderr, "inflate(): %s\n", istrm->msg);
+      exit(EXIT_FAILURE);
+    }
+
+  } while ((istrm->avail_out == 0) & (total <= out_len));
+
+  if (no_ctx_takeover) {
+    inflateReset(istrm);
+  }
+
+  // DON'T FORGET TO DO THIS
+  memcpy(tail_addr, pre_tail, 4);
+
+  if ((err < 0) || total > out_len) {
+    fprintf(stderr, "Decompression error or payload too large %d %zu %zu\n",
+            err, total, out_len);
+
+    return err < 0 ? err : -1;
+  }
+
+  return total;
+}
+
+static z_stream *deflation_stream_init() {
+  z_stream *dstrm = calloc(1, sizeof(z_stream));
+  assert(dstrm != NULL);
+
+  deflateInit2(dstrm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8,
+               Z_DEFAULT_STRATEGY);
+  return dstrm;
+}
+
+static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover) {
+
+  dstrm->next_in = (Bytef *)input;
+  dstrm->avail_in = (unsigned int)in_len;
+
+  int err;
+  ssize_t total = 0;
+
+  do {
+    // printf("deflating...\n");
+    assert(out_len - total >= 6);
+    dstrm->next_out = (Bytef *)out + total;
+    dstrm->avail_out = out_len - total;
+
+    err = deflate(dstrm, Z_SYNC_FLUSH);
+    if (err != Z_OK) {
+      break;
+    } else if (err == Z_OK && dstrm->avail_out) {
+      // printf("done\n");
+      total += out_len - dstrm->avail_out;
+      break;
+    }
+    total += out_len - dstrm->avail_out;
+
+  } while (1);
+
+  if (no_ctx_takeover) {
+    deflateReset(dstrm);
+  }
+
+  return total - 4;
+}
+
+#endif /* WITH_COMPRESSION */

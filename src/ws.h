@@ -257,8 +257,8 @@ int ws_conn_pong(ws_conn_t *c, void *msg, size_t n);
 int ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
 void ws_conn_close(ws_conn_t *c, void *msg, size_t n, uint16_t code);
 void ws_conn_destroy(ws_conn_t *c);
-int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n);
-int ws_conn_send(ws_conn_t *c, void *msg, size_t n);
+int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
+int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress);
 
 ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
@@ -275,6 +275,10 @@ size_t ws_server_open_conns(ws_server_t *s);
 // is this a binary message?
 // only valid during on_ws_msg_fragment or on_ws_msg called
 bool ws_conn_msg_bin(ws_conn_t *c);
+
+
+bool ws_conn_compression_allowed(ws_conn_t *c);
+
 
 bool ws_server_accept_paused(ws_server_t *s);
 
