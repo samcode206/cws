@@ -46,7 +46,6 @@
 #include <sys/uio.h>
 #include <time.h>
 
-
 #define WITH_COMPRESSION
 
 #ifdef WITH_COMPRESSION
@@ -1766,17 +1765,6 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     }
   } /* loop end */
 
-  // if we own the shared buffer drain it right now to allow next conn to
-  // reuse it
-  if (is_using_shared(conn)) {
-    if (conn_drain_write_buf(conn, s->shared_send_buffer) == -1) {
-      buf_reset(s->shared_recv_buffer);
-      ws_conn_destroy(conn);
-    };
-    clear_using_shared(conn);
-    conn->base->shared_send_buffer_owner = NULL;
-  }
-
 clean_up_buffer:
   if (buf == s->shared_recv_buffer) {
     // move to connection specific buffer
@@ -2121,6 +2109,13 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       if (wbuf == conn_write_buf(conn)) {
         // queue it up for writing
         server_writeable_conns_append(conn);
+      } else if (is_using_shared(conn)) {
+        if (conn_drain_write_buf(conn, s->shared_send_buffer) == -1) {
+          buf_reset(s->shared_recv_buffer);
+          ws_conn_destroy(conn);
+        };
+        clear_using_shared(conn);
+        conn->base->shared_send_buffer_owner = NULL;
       }
 
       return 1;

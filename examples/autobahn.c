@@ -1,4 +1,4 @@
-#include "ws.h"
+#include "../src/ws.h"
 
 #include <arpa/inet.h>
 #include <assert.h>
@@ -34,46 +34,46 @@ void on_open(ws_conn_t *c) {
 //   }
 // }
 
-void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n, bool fin) {
+// void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n, bool fin) {
 
-  frag_t *ctx = ws_conn_ctx(c);
-  if (!ctx) {
-    ws_conn_set_ctx(c, malloc(sizeof(frag_t) + 512));
-    assert((ctx = ws_conn_ctx(c)) != NULL);
-    memset(ctx, 0, 16);
-  }
+//   frag_t *ctx = ws_conn_ctx(c);
+//   if (!ctx) {
+//     ws_conn_set_ctx(c, malloc(sizeof(frag_t) + 512));
+//     assert((ctx = ws_conn_ctx(c)) != NULL);
+//     memset(ctx, 0, 16);
+//   }
 
-  if (ctx->len + n > ctx->cap) {
-    size_t new_cap =
-        ctx->cap + ctx->cap - ctx->len > n ? ctx->cap + ctx->cap : n + ctx->cap;
-    ws_conn_set_ctx(c, realloc(ctx, 16 + new_cap));
-    assert((ctx = ws_conn_ctx(c)) != NULL);
-    ctx->cap = new_cap;
-  }
+//   if (ctx->len + n > ctx->cap) {
+//     size_t new_cap =
+//         ctx->cap + ctx->cap - ctx->len > n ? ctx->cap + ctx->cap : n + ctx->cap;
+//     ws_conn_set_ctx(c, realloc(ctx, 16 + new_cap));
+//     assert((ctx = ws_conn_ctx(c)) != NULL);
+//     ctx->cap = new_cap;
+//   }
 
-  memcpy(ctx->data + ctx->len, fragment, n);
-  ctx->len += n;
+//   memcpy(ctx->data + ctx->len, fragment, n);
+//   ctx->len += n;
 
-  if (!fin) {
-    // printf("received fragment: %.*s\n", (int)n, (char *)fragment);
-  } else {
-    if (!ws_conn_msg_bin(c)) {
-      if (!utf8_is_valid(ctx->data, ctx->len)) {
-        ws_conn_close(c, NULL, 0, WS_CLOSE_INVALID);
-        return;
-      }
-      ws_conn_send_txt(c, ctx->data, ctx->len, true);
-    } else {
-      ws_conn_send(c, ctx->data, ctx->len, false);
-    }
+//   if (!fin) {
+//     // printf("received fragment: %.*s\n", (int)n, (char *)fragment);
+//   } else {
+//     if (!ws_conn_msg_bin(c)) {
+//       if (!utf8_is_valid(ctx->data, ctx->len)) {
+//         ws_conn_close(c, NULL, 0, WS_CLOSE_INVALID);
+//         return;
+//       }
+//       ws_conn_send_txt(c, ctx->data, ctx->len, true);
+//     } else {
+//       ws_conn_send(c, ctx->data, ctx->len, false);
+//     }
 
-    // printf("received final fragment: %.*s\n", (int)n, (char *)fragment);
-    // printf("full message: %.*s\n", (int)ctx->len, ctx->data);
+//     // printf("received final fragment: %.*s\n", (int)n, (char *)fragment);
+//     // printf("full message: %.*s\n", (int)ctx->len, ctx->data);
 
-    free(ws_conn_ctx(c));
-    ws_conn_set_ctx(c, NULL);
-  }
-}
+//     free(ws_conn_ctx(c));
+//     ws_conn_set_ctx(c, NULL);
+//   }
+// }
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
   // size_t *count = (size_t*)ws_conn_ctx(c);
