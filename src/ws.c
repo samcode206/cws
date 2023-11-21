@@ -75,10 +75,7 @@ struct ws_conn_t {
                         // fragmentation
 
   size_t needed_bytes; // bytes needed before we can do something with the frame
-  void **data;
-
-  // buf_t *read_buf;     // recv buffer structure
-  // buf_t *write_buf;
+  void **buffers;
   ws_server_t *base;          // server ptr
   void *ctx;                  // user data pointer
   void *rsv;                  // not in use
@@ -193,60 +190,60 @@ typedef struct server {
   struct conn_list closeable_conns;
 } ws_server_t;
 
-static buf_t *conn_read_buf(ws_conn_t *c) { return c->data[0]; }
+static buf_t *conn_read_buf(ws_conn_t *c) { return c->buffers[0]; }
 
-static buf_t *conn_write_buf(ws_conn_t *c) { return c->data[1]; }
+static buf_t *conn_write_buf(ws_conn_t *c) { return c->buffers[1]; }
 
 #ifdef WITH_COMPRESSION
 static struct per_message_deflate_buf *
 conn_per_message_deflate_buf(ws_conn_t *c) {
-  if (!c->data[2]) {
-    c->data[2] = pmd_buf_get(c->base->pmd_buf_pool);
+  if (!c->buffers[2]) {
+    c->buffers[2] = pmd_buf_get(c->base->pmd_buf_pool);
   }
 
-  return c->data[2];
+  return c->buffers[2];
 }
 
 static void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
-  if (c->data[2]) {
-    pmd_buf_put(c->base->pmd_buf_pool, c->data[2]);
-    c->data[2] = NULL;
+  if (c->buffers[2]) {
+    pmd_buf_put(c->base->pmd_buf_pool, c->buffers[2]);
+    c->buffers[2] = NULL;
   }
 }
 #endif /* WITH_COMPRESSION */
 
 // z_stream *conn_inflate_stream(ws_conn_t *c) {
-//   if (c->data[3]) {
-//     return c->data[3];
+//   if (c->buffers[3]) {
+//     return c->buffers[3];
 //   }
 
 //   z_stream *strm = inflation_stream_init();
-//   c->data[3] = strm;
+//   c->buffers[3] = strm;
 //   return strm;
 // }
 
 // void conn_inflate_stream_destroy(ws_conn_t *c) {
-//   if (c->data[3]) {
-//     inflateEnd(c->data[3]);
-//     c->data[3] = NULL;
+//   if (c->buffers[3]) {
+//     inflateEnd(c->buffers[3]);
+//     c->buffers[3] = NULL;
 //   }
 // }
 
 // z_stream *conn_deflate_stream(ws_conn_t *c) {
-//   if (c->data[4]) {
-//     return c->data[4];
+//   if (c->buffers[4]) {
+//     return c->buffers[4];
 //   }
 
 //   z_stream *strm = deflation_stream_init();
-//   c->data[4] = strm;
+//   c->buffers[4] = strm;
 
 //   return strm;
 // }
 
 // void conn_deflate_stream_destroy(ws_conn_t *c) {
-//   if (c->data[4]) {
-//     deflateEnd(c->data[4]);
-//     c->data[4] = NULL;
+//   if (c->buffers[4]) {
+//     deflateEnd(c->buffers[4]);
+//     c->buffers[4] = NULL;
 //   }
 // }
 
@@ -848,11 +845,11 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
 
         s->ev.data.ptr = conn;
 
-        conn->data = calloc(3, sizeof(void **));
+        conn->buffers = calloc(3, sizeof(void **));
 
-        conn->data[0] = mbuf_get(s->buffer_pool);
-        conn->data[1] = mbuf_get(s->buffer_pool);
-        conn->data[2] = NULL;
+        conn->buffers[0] = mbuf_get(s->buffer_pool);
+        conn->buffers[1] = mbuf_get(s->buffer_pool);
+        conn->buffers[2] = NULL;
         // conn->data[3] = NULL;
         // conn->data[4] = NULL;
 
