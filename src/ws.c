@@ -1781,7 +1781,7 @@ clean_up_buffer:
     }
   } else {
 
-    if (buf_len(buf)) {
+    if (buf->wpos - buf->rpos + conn->fragments_len + total_trimmed) {
       memmove(buf->buf + buf->rpos + conn->fragments_len,
               buf->buf + buf->rpos + conn->fragments_len + total_trimmed,
               buf->wpos - buf->rpos + conn->fragments_len + total_trimmed);
@@ -2289,13 +2289,13 @@ static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
                                         size_t in_len, char *out,
                                         size_t out_len, bool no_ctx_takeover) {
   // Save off the bytes we're about to overwrite
-  char *tailLocation = input + in_len;
-  char preTailBytes[4];
-  memcpy(preTailBytes, tailLocation, 4);
+  char *tail_addr = input + in_len;
+  char pre_tail[4];
+  memcpy(pre_tail, tail_addr, 4);
 
   // Append tail to chunk
   unsigned char tail[4] = {0x00, 0x00, 0xff, 0xff};
-  memcpy(tailLocation, tail, 4);
+  memcpy(tail_addr, tail, 4);
   in_len += 4;
 
   istrm->next_in = (Bytef *)input;
@@ -2323,7 +2323,7 @@ static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
   }
 
   // DON'T FORGET TO DO THIS
-  memcpy(tailLocation, preTailBytes, 4);
+  memcpy(tail_addr, pre_tail, 4);
 
   if ((err < 0) || total > out_len) {
     fprintf(stderr, "Decompression error or payload too large %d %zu %zu\n",
