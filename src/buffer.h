@@ -87,11 +87,7 @@ static inline void buf_debug(buf_t *r, const char *label) {
 }
 
 static inline ssize_t buf_recv(buf_t *r, int fd, int flags) {
-#ifdef WITH_COMPRESSION
-  ssize_t n = recv(fd, r->buf + r->wpos, buf_space(r)-4, flags);
-#else
   ssize_t n = recv(fd, r->buf + r->wpos, buf_space(r), flags);
-#endif /* WITH_COMPRESSION */
 
   r->wpos += (n > 0) * n;
   return n;
