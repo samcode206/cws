@@ -1,5 +1,6 @@
 #ifndef __X_BUFFPOOL_LIB_14
 #define __X_BUFFPOOL_LIB_14
+#include <assert.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -12,8 +13,6 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
-#include <assert.h>
-
 
 typedef struct {
   size_t rpos;
@@ -21,7 +20,6 @@ typedef struct {
   size_t buf_sz;
   uint8_t *buf;
 } buf_t;
-
 
 static inline size_t buf_len(buf_t *r) { return r->wpos - r->rpos; }
 
@@ -89,7 +87,12 @@ static inline void buf_debug(buf_t *r, const char *label) {
 }
 
 static inline ssize_t buf_recv(buf_t *r, int fd, int flags) {
+#ifdef WITH_COMPRESSION
+  ssize_t n = recv(fd, r->buf + r->wpos, buf_space(r)-4, flags);
+#else
   ssize_t n = recv(fd, r->buf + r->wpos, buf_space(r), flags);
+#endif /* WITH_COMPRESSION */
+
   r->wpos += (n > 0) * n;
   return n;
 }
@@ -199,13 +202,10 @@ static inline ssize_t buf_drain_write2v(buf_t *r, struct iovec const *iovs,
   return n;
 }
 
-
-
 struct buf_node {
   void *b;
   struct buf_node *next;
 };
-
 
 struct mbuf_pool {
   size_t avb;

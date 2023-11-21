@@ -692,7 +692,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   // account for an interleaved control msg during fragmentation
   // since we never dynamically allocate more buffers
   size_t buffer_size =
-      (max_backpressure + 132 + page_size - 1) & ~(page_size - 1);
+      (max_backpressure + 192 + page_size - 1) & ~(page_size - 1);
 
   printf("buffer size = %zu\n", buffer_size);
   printf("max_backpressure = %zu\n", max_backpressure);
