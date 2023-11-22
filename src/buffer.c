@@ -141,12 +141,19 @@ struct mbuf_pool *mbuf_pool_create(uint32_t nmemb, size_t buf_sz) {
   struct mbuf_pool *p = (struct mbuf_pool *)calloc(1, sizeof(struct mbuf_pool));
   p->avb = nmemb;
   p->cap = nmemb;
-  assert(posix_memalign((void **)&p->mirrored_bufs, 64,
-                        sizeof(buf_t) * nmemb) == 0);
-  p->avb_list = (buf_t **)calloc(nmemb, sizeof(buf_t *));
+  
+
+  p->mirrored_bufs = calloc(nmemb, sizeof (buf_t));
+  assert(p->mirrored_bufs != NULL);
+
+  p->avb_list = calloc(nmemb, sizeof(buf_t *));
   assert(p->avb_list != NULL);
   p->pool = buf_pool_create(nmemb, buf_sz);
-  assert(p->pool != NULL);
+  if (p->pool == NULL){
+    perror("mmap");
+    exit(EXIT_FAILURE);
+  }
+
 
   size_t i = nmemb;
 

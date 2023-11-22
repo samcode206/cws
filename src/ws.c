@@ -2183,16 +2183,16 @@ int utf8_is_valid(uint8_t *s, size_t n) {
 }
 
 struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
-  size_t conns_size = nmemb * sizeof(ws_conn_t);
+  int page_size = getpagesize();
+  size_t conns_size = (nmemb * sizeof(ws_conn_t) + page_size -1) & ~(page_size -1);
   size_t pool_sz = (sizeof(struct ws_conn_pool) +
-                    (nmemb * sizeof(struct buf_node)) + 64 - 1) &
-                   ~(64 - 1);
+                    (nmemb * sizeof(struct buf_node)) + page_size - 1) &
+                   ~(page_size - 1);
 
   struct ws_conn_pool *pool;
+  pool = mmap(NULL, conns_size + pool_sz, PROT_READ|PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+  assert(pool != MAP_FAILED);
 
-  assert(posix_memalign((void **)&pool, 64, conns_size + pool_sz) == 0);
-
-  memset(pool, 0, conns_size + pool_sz);
 
   uintptr_t base_ptr = (uintptr_t)pool + pool_sz;
 
