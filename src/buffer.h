@@ -86,8 +86,8 @@ static inline void buf_debug(buf_t *r, const char *label) {
   printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
 }
 
-static inline ssize_t buf_recv(buf_t *r, int fd, int flags) {
-  ssize_t n = recv(fd, r->buf + r->wpos, buf_space(r), flags);
+static inline ssize_t buf_recv(buf_t *r, int fd, size_t len, int flags) {
+  ssize_t n = recv(fd, r->buf + r->wpos, len, flags);
 
   r->wpos += (n > 0) * n;
   return n;

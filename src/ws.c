@@ -1083,7 +1083,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
 }
 
 static int conn_read(ws_conn_t *conn, buf_t *buf) {
-  ssize_t n = buf_recv(buf, conn->fd, 0);
+  size_t space = buf_space(buf);
+
+#ifdef WITH_COMPRESSION
+  space = space > 4 ? space - 4 : 0;
+#endif
+
+  ssize_t n = buf_recv(buf, conn->fd, space, 0);
   if (n == -1) {
     if ((errno == EAGAIN || errno == EINTR)) {
       return 0;
@@ -2185,7 +2191,7 @@ int utf8_is_valid(uint8_t *s, size_t n) {
 
 struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   struct ws_conn_pool *pool = calloc(1, sizeof(struct ws_conn_pool) +
-                       (nmemb * sizeof(struct buf_node)));
+                                            (nmemb * sizeof(struct buf_node)));
   assert(pool != NULL);
   pool->base = calloc(nmemb, sizeof(ws_conn_t));
   assert(pool->base != NULL);
