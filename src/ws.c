@@ -1087,7 +1087,7 @@ static int conn_read(ws_conn_t *conn, buf_t *buf) {
 
 #ifdef WITH_COMPRESSION
   space = space > 4 ? space - 4 : 0;
-#endif
+#endif /* WITH_COMPRESSION */
 
   ssize_t n = buf_recv(buf, conn->fd, space, 0);
   if (n == -1) {
