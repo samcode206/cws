@@ -119,7 +119,9 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
 #define CONN_TX_USING_OWN_BUF (1 << 10)
 
 #define CONN_COMPRESSION_ALLOWED (1u << 11)
-#define CONN_RX_COMPRESSED_FRAGMENTS (1U << 12)
+#define CONN_RX_COMPRESSED_FRAGMENTS (1u << 12)
+
+#define CONN_TIMER_QUEUED (1u << 13)
 
 struct conn_list {
   size_t len;
@@ -187,6 +189,7 @@ typedef struct server {
   bool accept_paused; // are we paused on accepting new connections
   struct epoll_event ev;
   struct epoll_event events[1024];
+  struct conn_list pending_timers;
   struct conn_list writeable_conns;
   struct conn_list closeable_conns;
 } ws_server_t;
@@ -385,6 +388,18 @@ static inline void clear_fragment_compressed(ws_conn_t *c) {
   c->flags &= ~CONN_RX_COMPRESSED_FRAGMENTS;
 }
 
+static inline bool has_pending_timers(ws_conn_t *c) {
+  return (c->flags & CONN_TIMER_QUEUED) != 0;
+}
+
+static inline void set_has_pending_timers(ws_conn_t *c) {
+  c->flags |= CONN_TIMER_QUEUED;
+}
+
+static inline void clear_has_pending_timers(ws_conn_t *c) {
+  c->flags &= ~CONN_TIMER_QUEUED;
+}
+
 // Frame Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
@@ -500,6 +515,32 @@ static void server_writeable_conns_append(ws_conn_t *c) {
   }
 }
 
+static void server_pending_timers_append(ws_conn_t *c) {
+  if (!has_pending_timers(c)) {
+    conn_list_append(&c->base->pending_timers, c);
+    set_has_pending_timers(c);
+  }
+}
+
+static void server_pending_timers_remove(ws_conn_t *c) {
+  if (has_pending_timers(c)) {
+    // go through all timers in list and swap with the last
+    while (c->base->pending_timers.len) {
+      size_t i = c->base->pending_timers.len;
+      while (i--) {
+        if (c->base->pending_timers.conns[i] == c) {
+          clear_has_pending_timers(c);
+          ws_conn_t *tmp =
+              c->base->pending_timers.conns[--c->base->pending_timers.len];
+          c->base->pending_timers.conns[i] = tmp;
+          break;
+        }
+      }
+      break;
+    }
+  }
+}
+
 static void server_closeable_conns_append(ws_conn_t *c) {
   // clear the shared buffer first if owned by this connection
   if (is_using_shared(c)) {
@@ -511,6 +552,39 @@ static void server_closeable_conns_append(ws_conn_t *c) {
   ws_server_epoll_ctl(c->base, EPOLL_CTL_DEL, c->fd);
   conn_list_append(&c->base->closeable_conns, c);
   mark_closing(c);
+  server_pending_timers_remove(c);
+}
+
+static void server_check_pending_timers(ws_server_t *s) {
+  int timeout_kind = 0;
+  ws_on_timeout_t cb = s->on_ws_conn_timeout;
+  unsigned int now = (unsigned int)time(NULL);
+
+  while (s->pending_timers.len) {
+    size_t i = s->pending_timers.len;
+    while (i--) {
+      ws_conn_t *c = s->pending_timers.conns[i];
+
+      timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
+      timeout_kind += ((c->write_timeout != 0 && c->write_timeout < now) * 2);
+
+      if (timeout_kind) {
+        c->read_timeout = 0;
+        c->write_timeout = 0;
+
+        if (cb) {
+          cb(c, timeout_kind);
+        } else {
+          ws_conn_destroy(c);
+        }
+
+        timeout_kind = 0;
+        ws_conn_destroy(c);
+      }
+    }
+
+    break;
+  }
 }
 
 static void server_writeable_conns_drain(ws_server_t *s) {
@@ -751,8 +825,14 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->closeable_conns.len = 0;
   s->closeable_conns.cap = s->max_conns;
 
+  s->pending_timers.conns =
+      calloc(s->max_conns, sizeof s->pending_timers.conns);
+  s->pending_timers.len = 0;
+  s->pending_timers.cap = s->max_conns;
+
   // make sure we got the mem needed
-  assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL);
+  assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL &&
+         s->pending_timers.conns != NULL);
 
 #ifdef WITH_COMPRESSION
   s->istrm = inflation_stream_init();
@@ -859,6 +939,8 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
         conn->read_timeout = now + READ_TIMEOUT;
         ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
         ++s->open_conns;
+
+        server_pending_timers_append(conn);
 
       } else {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -975,34 +1057,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
         assert(read(tfd, &_, 8) == 8);
         (void)_;
 
-        unsigned int now = (unsigned int)time(NULL);
-
-        int timeout_kind = 0;
-        size_t n = s->max_conns;
-
-        ws_on_timeout_t cb = s->on_ws_conn_timeout;
-
-        while (n--) {
-          ws_conn_t *c = &s->conn_pool->base[n];
-
-          timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
-          timeout_kind +=
-              ((c->write_timeout != 0 && c->write_timeout < now) * 2);
-
-          if (timeout_kind) {
-            c->read_timeout = 0;
-            c->write_timeout = 0;
-
-            if (cb) {
-              cb(c, timeout_kind);
-            } else {
-              ws_conn_destroy(c);
-            }
-
-            timeout_kind = 0;
-            ws_conn_destroy(c);
-          }
-        }
+        server_check_pending_timers(s);
 
       } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
