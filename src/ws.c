@@ -67,6 +67,12 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
+struct per_message_deflate_buf {
+  size_t len;
+  size_t cap;
+  char data[];
+};
+
 struct ws_conn_t {
   int fd;               // socket fd
   unsigned int flags;   // state flags
@@ -74,15 +80,17 @@ struct ws_conn_t {
                         // fragmentation
 
   size_t needed_bytes; // bytes needed before we can do something with the frame
-  void **buffers;
+  buf_t *recv_buf;
+  buf_t *send_buf;
   ws_server_t *base;          // server ptr
   void *ctx;                  // user data pointer
-  void *rsv;                  // not in use
   unsigned int read_timeout;  // seconds
   unsigned int write_timeout; // seconds
-};
 
-static_assert(sizeof(struct ws_conn_t) == 64, "ws_conn_t not 64");
+#ifdef WITH_COMPRESSION
+  struct per_message_deflate_buf *pmd_buf;
+#endif /* WITH_COMPRESSION */
+};
 
 struct ws_conn_pool {
   ws_conn_t *base;
@@ -117,12 +125,6 @@ struct conn_list {
   size_t len;
   size_t cap;
   ws_conn_t **conns;
-};
-
-struct per_message_deflate_buf {
-  size_t len;
-  size_t cap;
-  char data[];
 };
 
 struct pmd_buf_pool {
@@ -189,24 +191,25 @@ typedef struct server {
   struct conn_list closeable_conns;
 } ws_server_t;
 
-static buf_t *conn_read_buf(ws_conn_t *c) { return c->buffers[0]; }
+static inline buf_t *conn_read_buf(ws_conn_t *c) { return c->recv_buf; }
 
-static buf_t *conn_write_buf(ws_conn_t *c) { return c->buffers[1]; }
+static inline buf_t *conn_write_buf(ws_conn_t *c) { return c->send_buf; }
 
 #ifdef WITH_COMPRESSION
 static struct per_message_deflate_buf *
 conn_per_message_deflate_buf(ws_conn_t *c) {
-  if (!c->buffers[2]) {
-    c->buffers[2] = pmd_buf_get(c->base->pmd_buf_pool);
+  if (!c->pmd_buf) {
+    c->pmd_buf = pmd_buf_get(c->base->pmd_buf_pool);
+    return c->pmd_buf;
+  } else {
+    return c->pmd_buf;
   }
-
-  return c->buffers[2];
 }
 
 static void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
-  if (c->buffers[2]) {
-    pmd_buf_put(c->base->pmd_buf_pool, c->buffers[2]);
-    c->buffers[2] = NULL;
+  if (c->pmd_buf) {
+    pmd_buf_put(c->base->pmd_buf_pool, c->pmd_buf);
+    c->pmd_buf = NULL;
   }
 }
 #endif /* WITH_COMPRESSION */
@@ -844,13 +847,11 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
 
         s->ev.data.ptr = conn;
 
-        conn->buffers = calloc(3, sizeof(void **));
-
-        conn->buffers[0] = mbuf_get(s->buffer_pool);
-        conn->buffers[1] = mbuf_get(s->buffer_pool);
-        conn->buffers[2] = NULL;
-        // conn->data[3] = NULL;
-        // conn->data[4] = NULL;
+        conn->recv_buf = mbuf_get(s->buffer_pool);
+        conn->send_buf = mbuf_get(s->buffer_pool);
+#ifdef WITH_COMPRESSION
+        conn->pmd_buf = NULL;
+#endif /* WITH_COMPRESSION*/
 
         assert(conn_read_buf(conn));
         assert(conn_write_buf(conn));
@@ -2183,21 +2184,11 @@ int utf8_is_valid(uint8_t *s, size_t n) {
 }
 
 struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
-  int page_size = getpagesize();
-  size_t conns_size = (nmemb * sizeof(ws_conn_t) + page_size -1) & ~(page_size -1);
-  size_t pool_sz = (sizeof(struct ws_conn_pool) +
-                    (nmemb * sizeof(struct buf_node)) + page_size - 1) &
-                   ~(page_size - 1);
-
-  struct ws_conn_pool *pool;
-  pool = mmap(NULL, conns_size + pool_sz, PROT_READ|PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-  assert(pool != MAP_FAILED);
-
-
-  uintptr_t base_ptr = (uintptr_t)pool + pool_sz;
-
-  pool->base = (ws_conn_t *)base_ptr;
-
+  struct ws_conn_pool *pool = calloc(1, sizeof(struct ws_conn_pool) +
+                       (nmemb * sizeof(struct buf_node)));
+  assert(pool != NULL);
+  pool->base = calloc(nmemb, sizeof(ws_conn_t));
+  assert(pool->base != NULL);
   ws_conn_t *cur = pool->base;
 
   for (size_t i = 0; i < nmemb; ++i) {
