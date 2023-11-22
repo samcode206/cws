@@ -1375,7 +1375,7 @@ static inline buf_t *ws_conn_choose_read_buf(ws_conn_t *conn) {
 }
 
 static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
-  if (buf != conn_read_buf(conn)) {
+  if (buf == conn->base->shared_recv_buffer) {
     return buf->wpos - buf->rpos;
   } else {
     return buf->wpos - buf->rpos -
