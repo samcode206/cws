@@ -25,8 +25,6 @@
 
 #ifndef WS_PROTOCOL_PARSING23_H
 #define WS_PROTOCOL_PARSING23_H
-
-#include "base64.h"
 #include <errno.h>
 #include <netinet/in.h>
 #include <openssl/sha.h>

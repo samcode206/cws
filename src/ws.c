@@ -25,7 +25,6 @@
 
 #define _GNU_SOURCE
 #include "ws.h"
-#include "buffer.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
@@ -72,6 +71,212 @@ struct per_message_deflate_buf {
   size_t cap;
   char data[];
 };
+
+
+
+typedef struct {
+  size_t rpos;
+  size_t wpos;
+  size_t buf_sz;
+  uint8_t *buf;
+} buf_t;
+
+static inline size_t buf_len(buf_t *r) { return r->wpos - r->rpos; }
+
+static inline void buf_reset(buf_t *r) {
+  // we can do this because indexes are in the beginning
+  memset(r, 0, sizeof(size_t) * 2);
+}
+
+static inline size_t buf_space(buf_t *r) {
+  return r->buf_sz - (r->wpos - r->rpos);
+}
+
+static inline int buf_put(buf_t *r, const void *data, size_t n) {
+  if (buf_space(r) < n) {
+    return -1;
+  }
+  memcpy(r->buf + r->wpos, data, n);
+  r->wpos += n;
+  return 0;
+}
+
+static inline uint8_t *buf_peek(buf_t *r) { return r->buf + r->rpos; }
+
+static inline uint8_t *buf_peek_at(buf_t *r, size_t at) { return r->buf + at; }
+
+static inline uint8_t *buf_peekn(buf_t *r, size_t n) {
+  if (buf_len(r) < n) {
+    return NULL;
+  }
+
+  return r->buf + r->rpos;
+}
+
+// static inline void buf_reset(buf_t *r) {
+//   size_t eq_mask = -((r->rpos ^ r->wpos) == 0);
+//   r->rpos &= ~eq_mask;
+//   r->wpos &= ~eq_mask;
+// }
+
+static inline int buf_consume(buf_t *r, size_t n) {
+  if (buf_len(r) < n) {
+    return -1;
+  }
+
+  r->rpos += n;
+
+  if (r->rpos == r->wpos) {
+    buf_reset(r);
+  } else {
+    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    r->rpos -= ovf;
+    r->wpos -= ovf;
+  }
+
+  return 0;
+}
+
+static inline void buf_move(buf_t *src_b, buf_t *dst_b, size_t n) {
+  buf_put(dst_b, src_b->buf + src_b->rpos, n);
+  buf_consume(src_b, n);
+}
+
+static inline void buf_debug(buf_t *r, const char *label) {
+  printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
+}
+
+static inline ssize_t buf_recv(buf_t *r, int fd, size_t len, int flags) {
+  ssize_t n = recv(fd, r->buf + r->wpos, len, flags);
+
+  r->wpos += (n > 0) * n;
+  return n;
+}
+
+static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
+  ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
+  r->rpos += (n > 0) * n;
+
+  if (r->rpos == r->wpos) {
+    buf_reset(r);
+  } else {
+    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    r->rpos -= ovf;
+    r->wpos -= ovf;
+  }
+
+  return n;
+}
+
+/*
+ * writes two io vectors first is a header and the second is a payload
+ * returns total written and copies any leftover if we didn't drain the buffer
+ */
+static inline ssize_t buf_write2v(buf_t *r, int fd, struct iovec const *iovs,
+                                  size_t const total) {
+  ssize_t n = writev(fd, iovs, 2);
+  // everything was written
+  if (n == total) {
+    return n;
+    // some error happened
+  } else if (n == 0 || n == -1) {
+    // if temporary error do a copy
+    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
+      buf_put(r, iovs[0].iov_base, iovs[0].iov_len);
+      buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
+    }
+
+    return n;
+    // less than the header was written
+  } else if (n < iovs[0].iov_len) {
+    buf_put(r, (uint8_t *)iovs[0].iov_base + n, iovs[0].iov_len - n);
+    buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
+    return n;
+  } else {
+    // header was written but only part of the payload
+    size_t leftover = n - iovs[0].iov_len;
+    buf_put(r, (uint8_t *)iovs[1].iov_base + leftover,
+            iovs[1].iov_len - leftover);
+    return n;
+  }
+}
+
+static inline ssize_t buf_drain_write2v(buf_t *r, struct iovec const *iovs,
+                                        size_t const total, buf_t *rem_dst,
+                                        int fd) {
+
+  buf_t *dst;
+  if (rem_dst) {
+    dst = rem_dst;
+  } else {
+    dst = r;
+  }
+
+  ssize_t n = writev(fd, iovs, 3);
+  // everything was written
+  if (n == total) {
+    // consume what we drained from the buffer
+    buf_consume(r, iovs[0].iov_len);
+    return n;
+    // some error happened
+  } else if (n == 0 || n == -1) {
+    // if temporary error do a copy
+    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
+      // copy both header and payload first iov already in the buffer
+      buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
+      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
+    }
+    return n;
+    // couldn't drain the buffer copy the header and payload
+  } else if (n < iovs[0].iov_len) {
+    buf_consume(r, n);
+    if (rem_dst) {
+      buf_move(r, dst, buf_len(r));
+    }
+
+    buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
+    buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
+  }
+  // drained the buffer but only wrote parts of the new frame
+  else if (n > iovs[0].iov_len) {
+    ssize_t wrote = n - iovs[0].iov_len;
+    buf_consume(r, iovs[0].iov_len);
+
+    // less than header was written
+    if (wrote < iovs[1].iov_len) {
+      buf_put(dst, (uint8_t *)iovs[1].iov_base + wrote,
+              iovs[1].iov_len - wrote);
+      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
+    } else {
+      // parts of payload were written
+      size_t leftover = wrote - iovs[1].iov_len;
+      buf_put(dst, (uint8_t *)iovs[2].iov_base + leftover,
+              iovs[2].iov_len - leftover);
+    }
+  }
+
+  return n;
+}
+
+struct buf_node {
+  void *b;
+  struct buf_node *next;
+};
+
+struct mbuf_pool {
+  size_t avb;
+  size_t cap;
+  struct buf_pool *pool;
+  buf_t **avb_list;
+  buf_t *mirrored_bufs;
+};
+
+struct mbuf_pool *mbuf_pool_create(uint32_t nmemb, size_t buf_sz);
+
+buf_t *mbuf_get(struct mbuf_pool *bp);
+
+void mbuf_put(struct mbuf_pool *bp, buf_t *buf);
+
 
 struct ws_conn_t {
   int fd;               // socket fd
@@ -449,6 +654,9 @@ static int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
 static inline bool is_compressed_msg(uint8_t const *buf) {
   return (buf[0] & 0x40) != 0;
 }
+
+static int base64_encode(char *coded_dst, const char *plain_src,
+                         int len_plain_src);
 
 static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
                                                           uint8_t const *buf) {
@@ -1231,7 +1439,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
   unsigned char hash[20] = {0};
   SHA1(buf, len, hash);
 
-  return Base64encode(derived_val, (const char *)hash, sizeof hash);
+  return base64_encode(derived_val, (const char *)hash, sizeof hash);
 }
 
 static void handle_upgrade(ws_conn_t *conn) {
@@ -2461,6 +2669,187 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 
 #endif /* WITH_COMPRESSION */
 
+
+struct buf_pool {
+  int fd;
+  uint32_t nmemb;
+  size_t buf_sz;
+  void *base;
+  struct buf_node *head;
+  struct buf_node _buf_nodes[];
+};
+
+static struct buf_pool *buf_pool_create(uint32_t nmemb, size_t buf_sz) {
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size == -1) {
+    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+    exit(1);
+  }
+
+  if (buf_sz % page_size) {
+    return NULL;
+  }
+
+  size_t pool_sz = (sizeof(struct buf_pool) +
+                    (nmemb * sizeof(struct buf_node)) + page_size - 1) &
+                   ~(page_size - 1);
+  size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
+
+  void *pool_mem = mmap(NULL, pool_sz + buf_pool_sz, PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+  if (pool_mem == MAP_FAILED) {
+    return NULL;
+  }
+
+  if (mprotect(pool_mem, pool_sz, PROT_READ | PROT_WRITE) == -1) {
+    return NULL;
+  };
+
+  struct buf_pool *pool = pool_mem;
+
+  pool->fd = memfd_create("buf", 0);
+  pool->buf_sz = buf_sz;
+  pool->nmemb = nmemb;
+  pool->base = ((uint8_t *)pool_mem) + pool_sz;
+
+  if (ftruncate(pool->fd, buf_sz * nmemb) == -1) {
+    return NULL;
+  };
+
+  uint32_t i;
+
+  uint8_t *pos = pool->base;
+  size_t offset = 0;
+
+  for (i = 0; i < nmemb; ++i) {
+    if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+             pool->fd, offset) == MAP_FAILED) {
+      close(pool->fd);
+      return NULL;
+    };
+
+    if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
+             MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
+      close(pool->fd);
+      return NULL;
+    };
+
+    pool->_buf_nodes[i].b = pos;
+
+    offset += buf_sz;
+    pos = pos + buf_sz + buf_sz;
+  }
+
+  for (i = 0; i < nmemb - 1; i++) {
+    pool->_buf_nodes[i].next = &pool->_buf_nodes[i + 1];
+  }
+
+  pool->_buf_nodes[nmemb - 1].next = NULL;
+
+  pool->head = &pool->_buf_nodes[0];
+
+  return pool;
+}
+
+static void *buf_pool_alloc(struct buf_pool *p) {
+  if (p->head) {
+    struct buf_node *bn = p->head;
+    p->head = p->head->next;
+    bn->next = NULL; // unlink the buf_node mainly useful for debugging
+    return bn->b;
+  } else {
+    return NULL;
+  }
+}
+
+// static void buf_pool_destroy(struct buf_pool *p) {
+//   long page_size = sysconf(_SC_PAGESIZE);
+
+//   size_t pool_sz = (sizeof(struct buf_pool) +
+//                     (p->nmemb * sizeof(struct buf_node)) + page_size - 1) &
+//                    ~(page_size - 1);
+
+//   size_t buf_pool_sz = p->buf_sz * p->nmemb * 2;
+
+//   void *pool_mem_addr = ((uint8_t *)p->base) - pool_sz;
+
+//   assert(close(p->fd) == 0);
+//   assert(munmap(pool_mem_addr, pool_sz + buf_pool_sz) == 0);
+// }
+
+// static void buf_pool_free(struct buf_pool *p, void *buf) {
+//   uintptr_t diff =
+//       ((uintptr_t)buf - (uintptr_t)p->base) / (p->buf_sz + p->buf_sz);
+
+//   p->_buf_nodes[diff].next = p->head;
+//   p->head = &p->_buf_nodes[diff];
+// }
+
+static inline int buf_init(struct buf_pool *p, buf_t *r) {
+
+  r->buf = (uint8_t *)buf_pool_alloc(p);
+  if (r->buf == NULL) {
+    return -1;
+  }
+
+  memset(r, 0, sizeof(buf_t) - offsetof(buf_t, buf_sz));
+  r->buf_sz = p->buf_sz;
+
+  return 0;
+}
+
+struct mbuf_pool *mbuf_pool_create(uint32_t nmemb, size_t buf_sz) {
+
+  struct mbuf_pool *p = (struct mbuf_pool *)calloc(1, sizeof(struct mbuf_pool));
+  p->avb = nmemb;
+  p->cap = nmemb;
+  
+
+  p->mirrored_bufs = calloc(nmemb, sizeof (buf_t));
+  assert(p->mirrored_bufs != NULL);
+
+  p->avb_list = calloc(nmemb, sizeof(buf_t *));
+  assert(p->avb_list != NULL);
+  p->pool = buf_pool_create(nmemb, buf_sz);
+  if (p->pool == NULL){
+    perror("mmap");
+    exit(EXIT_FAILURE);
+  }
+
+
+  size_t i = nmemb;
+
+  while (i--) {
+    assert(buf_init(p->pool, &p->mirrored_bufs[i]) == 0);
+  }
+
+  i = nmemb;
+
+  while (i--) {
+    p->avb_list[i] = &p->mirrored_bufs[i];
+  }
+
+  return p;
+}
+
+buf_t *mbuf_get(struct mbuf_pool *bp) {
+  while (bp->avb) {
+    return bp->avb_list[--bp->avb];
+  }
+
+  return NULL;
+}
+
+void mbuf_put(struct mbuf_pool *bp, buf_t *buf) {
+  if (buf) {
+    buf->rpos = 0;
+    buf->wpos = 0;
+    bp->avb_list[bp->avb++] = buf;
+  }
+}
+
+
 int ws_poller_init(ws_server_t *s) {
   if (!s->user_epoll) {
     s->user_epoll = epoll_create1(O_CLOEXEC);
@@ -2511,3 +2900,37 @@ int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
 
   return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &s->ev);
 }
+
+static int base64_encode(char *encoded, const char *string, int len) {
+  int i;
+  char *p;
+
+  const char b64_table[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+  p = encoded;
+  for (i = 0; i < len - 2; i += 3) {
+    *p++ = b64_table[(string[i] >> 2) & 0x3F];
+    *p++ = b64_table[((string[i] & 0x3) << 4) |
+                     ((int)(string[i + 1] & 0xF0) >> 4)];
+    *p++ = b64_table[((string[i + 1] & 0xF) << 2) |
+                     ((int)(string[i + 2] & 0xC0) >> 6)];
+    *p++ = b64_table[string[i + 2] & 0x3F];
+  }
+  if (i < len) {
+    *p++ = b64_table[(string[i] >> 2) & 0x3F];
+    if (i == (len - 1)) {
+      *p++ = b64_table[((string[i] & 0x3) << 4)];
+      *p++ = '=';
+    } else {
+      *p++ = b64_table[((string[i] & 0x3) << 4) |
+                       ((int)(string[i + 1] & 0xF0) >> 4)];
+      *p++ = b64_table[((string[i + 1] & 0xF) << 2)];
+    }
+    *p++ = '=';
+  }
+
+  *p++ = '\0';
+  return p - encoded;
+}
+
