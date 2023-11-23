@@ -76,7 +76,7 @@ void onDisconnect(ws_conn_t *conn, int err) {
 
 
 int main(void) {
-  printf("broadcast example starting on 9919\n");
+  printf("interval example starting on 9919\n");
 
 
   struct ws_server_params p = {

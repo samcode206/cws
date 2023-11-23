@@ -9,5 +9,5 @@ autobahn:
 broadcast: 
 	gcc ./src/** ./examples/broadcast.c -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
-poller:
-	gcc ./src/** ./examples/poller.c -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+interval:
+	gcc ./src/** ./examples/interval.c -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
