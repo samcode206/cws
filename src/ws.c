@@ -66,46 +66,46 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-struct per_message_deflate_buf {
+
+struct basic_buffer {
   size_t len;
   size_t cap;
   char data[];
 };
 
-
+// mirrored buffer defintion and helpers 
+// this one is a ring buffer with hardware handled wrap around
+// uses two memory mappings that are backed by the same physical memory (memfd)
+// the two mapping are contigious in the virtual address space but both start at the 
+// beginning of the physical buffer to allow contigious access in all cases
+// used for socket IO and HTTP/Websocket protocol parsing
 
 typedef struct {
   size_t rpos;
   size_t wpos;
   size_t buf_sz;
   uint8_t *buf;
-} buf_t;
+} mirrored_buf_t;
 
-static inline size_t buf_len(buf_t *r) { return r->wpos - r->rpos; }
+static inline size_t buf_len(mirrored_buf_t *r) { return r->wpos - r->rpos; }
 
-static inline void buf_reset(buf_t *r) {
+static inline void buf_reset(mirrored_buf_t *r) {
   // we can do this because indexes are in the beginning
   memset(r, 0, sizeof(size_t) * 2);
 }
 
-static inline size_t buf_space(buf_t *r) {
+static inline size_t buf_space(mirrored_buf_t *r) {
   return r->buf_sz - (r->wpos - r->rpos);
 }
 
-static inline int buf_put(buf_t *r, const void *data, size_t n) {
-  if (buf_space(r) < n) {
-    return -1;
-  }
-  memcpy(r->buf + r->wpos, data, n);
-  r->wpos += n;
-  return 0;
-}
+static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n);
 
-static inline uint8_t *buf_peek(buf_t *r) { return r->buf + r->rpos; }
 
-static inline uint8_t *buf_peek_at(buf_t *r, size_t at) { return r->buf + at; }
+static inline uint8_t *buf_peek(mirrored_buf_t *r) { return r->buf + r->rpos; }
 
-static inline uint8_t *buf_peekn(buf_t *r, size_t n) {
+static inline uint8_t *buf_peek_at(mirrored_buf_t *r, size_t at) { return r->buf + at; }
+
+static inline uint8_t *buf_peekn(mirrored_buf_t *r, size_t n) {
   if (buf_len(r) < n) {
     return NULL;
   }
@@ -113,150 +113,28 @@ static inline uint8_t *buf_peekn(buf_t *r, size_t n) {
   return r->buf + r->rpos;
 }
 
-// static inline void buf_reset(buf_t *r) {
-//   size_t eq_mask = -((r->rpos ^ r->wpos) == 0);
-//   r->rpos &= ~eq_mask;
-//   r->wpos &= ~eq_mask;
-// }
+static inline int buf_consume(mirrored_buf_t *r, size_t n);
 
-static inline int buf_consume(buf_t *r, size_t n) {
-  if (buf_len(r) < n) {
-    return -1;
-  }
-
-  r->rpos += n;
-
-  if (r->rpos == r->wpos) {
-    buf_reset(r);
-  } else {
-    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
-    r->rpos -= ovf;
-    r->wpos -= ovf;
-  }
-
-  return 0;
-}
-
-static inline void buf_move(buf_t *src_b, buf_t *dst_b, size_t n) {
+static inline void buf_move(mirrored_buf_t *src_b, mirrored_buf_t *dst_b, size_t n) {
   buf_put(dst_b, src_b->buf + src_b->rpos, n);
   buf_consume(src_b, n);
 }
 
-static inline void buf_debug(buf_t *r, const char *label) {
+static inline void buf_debug(mirrored_buf_t *r, const char *label) {
   printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
 }
 
-static inline ssize_t buf_recv(buf_t *r, int fd, size_t len, int flags) {
-  ssize_t n = recv(fd, r->buf + r->wpos, len, flags);
+static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len, int flags);
 
-  r->wpos += (n > 0) * n;
-  return n;
-}
+static inline ssize_t buf_send(mirrored_buf_t *r, int fd, int flags);
 
-static inline ssize_t buf_send(buf_t *r, int fd, int flags) {
-  ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
-  r->rpos += (n > 0) * n;
+static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd, struct iovec const *iovs,
+                                  size_t const total);
 
-  if (r->rpos == r->wpos) {
-    buf_reset(r);
-  } else {
-    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
-    r->rpos -= ovf;
-    r->wpos -= ovf;
-  }
+static inline ssize_t buf_drain_write2v(mirrored_buf_t *r, struct iovec const *iovs,
+                                        size_t const total, mirrored_buf_t *rem_dst,
+                                        int fd);
 
-  return n;
-}
-
-/*
- * writes two io vectors first is a header and the second is a payload
- * returns total written and copies any leftover if we didn't drain the buffer
- */
-static inline ssize_t buf_write2v(buf_t *r, int fd, struct iovec const *iovs,
-                                  size_t const total) {
-  ssize_t n = writev(fd, iovs, 2);
-  // everything was written
-  if (n == total) {
-    return n;
-    // some error happened
-  } else if (n == 0 || n == -1) {
-    // if temporary error do a copy
-    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
-      buf_put(r, iovs[0].iov_base, iovs[0].iov_len);
-      buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
-    }
-
-    return n;
-    // less than the header was written
-  } else if (n < iovs[0].iov_len) {
-    buf_put(r, (uint8_t *)iovs[0].iov_base + n, iovs[0].iov_len - n);
-    buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
-    return n;
-  } else {
-    // header was written but only part of the payload
-    size_t leftover = n - iovs[0].iov_len;
-    buf_put(r, (uint8_t *)iovs[1].iov_base + leftover,
-            iovs[1].iov_len - leftover);
-    return n;
-  }
-}
-
-static inline ssize_t buf_drain_write2v(buf_t *r, struct iovec const *iovs,
-                                        size_t const total, buf_t *rem_dst,
-                                        int fd) {
-
-  buf_t *dst;
-  if (rem_dst) {
-    dst = rem_dst;
-  } else {
-    dst = r;
-  }
-
-  ssize_t n = writev(fd, iovs, 3);
-  // everything was written
-  if (n == total) {
-    // consume what we drained from the buffer
-    buf_consume(r, iovs[0].iov_len);
-    return n;
-    // some error happened
-  } else if (n == 0 || n == -1) {
-    // if temporary error do a copy
-    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
-      // copy both header and payload first iov already in the buffer
-      buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
-      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
-    }
-    return n;
-    // couldn't drain the buffer copy the header and payload
-  } else if (n < iovs[0].iov_len) {
-    buf_consume(r, n);
-    if (rem_dst) {
-      buf_move(r, dst, buf_len(r));
-    }
-
-    buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
-    buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
-  }
-  // drained the buffer but only wrote parts of the new frame
-  else if (n > iovs[0].iov_len) {
-    ssize_t wrote = n - iovs[0].iov_len;
-    buf_consume(r, iovs[0].iov_len);
-
-    // less than header was written
-    if (wrote < iovs[1].iov_len) {
-      buf_put(dst, (uint8_t *)iovs[1].iov_base + wrote,
-              iovs[1].iov_len - wrote);
-      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
-    } else {
-      // parts of payload were written
-      size_t leftover = wrote - iovs[1].iov_len;
-      buf_put(dst, (uint8_t *)iovs[2].iov_base + leftover,
-              iovs[2].iov_len - leftover);
-    }
-  }
-
-  return n;
-}
 
 struct buf_node {
   void *b;
@@ -267,15 +145,15 @@ struct mbuf_pool {
   size_t avb;
   size_t cap;
   struct buf_pool *pool;
-  buf_t **avb_list;
-  buf_t *mirrored_bufs;
+  mirrored_buf_t **avb_list;
+  mirrored_buf_t *mirrored_bufs;
 };
 
 struct mbuf_pool *mbuf_pool_create(uint32_t nmemb, size_t buf_sz);
 
-buf_t *mbuf_get(struct mbuf_pool *bp);
+mirrored_buf_t *mbuf_get(struct mbuf_pool *bp);
 
-void mbuf_put(struct mbuf_pool *bp, buf_t *buf);
+void mbuf_put(struct mbuf_pool *bp, mirrored_buf_t *buf);
 
 
 struct ws_conn_t {
@@ -285,15 +163,15 @@ struct ws_conn_t {
                         // fragmentation
 
   size_t needed_bytes; // bytes needed before we can do something with the frame
-  buf_t *recv_buf;
-  buf_t *send_buf;
+  mirrored_buf_t *recv_buf;
+  mirrored_buf_t *send_buf;
   ws_server_t *base;          // server ptr
   void *ctx;                  // user data pointer
   unsigned int read_timeout;  // seconds
   unsigned int write_timeout; // seconds
 
 #ifdef WITH_COMPRESSION
-  struct per_message_deflate_buf *pmd_buf;
+  struct basic_buffer *pmd_buf;
 #endif /* WITH_COMPRESSION */
 };
 
@@ -334,17 +212,25 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
+
+// per message deflate buffer pool
+// this one will be use malloc/calloc but only when needed
+// once buffer usage is done it will stay in the pool until another
+// buffer is needed in which we can skip going through the allocator and reuse 
+// a previously allocated buffer
+
 struct pmd_buf_pool {
   size_t buf_sz;
   size_t avb;
   size_t inuse;
   size_t cap;
-  struct per_message_deflate_buf **avb_list;
+  struct basic_buffer **avb_list;
 };
 
 struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz);
-struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p);
-void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf);
+struct basic_buffer *pmd_buf_get(struct pmd_buf_pool *p);
+void pmd_buf_put(struct pmd_buf_pool *p, struct basic_buffer *buf);
+
 
 #ifdef WITH_COMPRESSION
 static z_stream *inflation_stream_init();
@@ -363,11 +249,11 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
   ws_msg_cb_t on_ws_msg;
-  buf_t *shared_recv_buffer;
+  mirrored_buf_t *shared_recv_buffer;
   ws_msg_fragment_cb_t on_ws_msg_fragment;
   ws_ping_cb_t on_ws_ping;
   ws_conn_t *shared_send_buffer_owner;
-  buf_t *shared_send_buffer;
+  mirrored_buf_t *shared_send_buffer;
   ws_pong_cb_t on_ws_pong;
 
   ws_drain_cb_t on_ws_drain;
@@ -400,13 +286,14 @@ typedef struct server {
   int user_epoll;
 } ws_server_t;
 
-static inline buf_t *conn_read_buf(ws_conn_t *c) { return c->recv_buf; }
 
-static inline buf_t *conn_write_buf(ws_conn_t *c) { return c->send_buf; }
+static inline mirrored_buf_t *conn_read_buf(ws_conn_t *c) { return c->recv_buf; }
+
+static inline mirrored_buf_t *conn_write_buf(ws_conn_t *c) { return c->send_buf; }
 
 #ifdef WITH_COMPRESSION
-static struct per_message_deflate_buf *
-conn_per_message_deflate_buf(ws_conn_t *c) {
+static struct basic_buffer *
+conn_basic_buffer(ws_conn_t *c) {
   if (!c->pmd_buf) {
     c->pmd_buf = pmd_buf_get(c->base->pmd_buf_pool);
     return c->pmd_buf;
@@ -415,7 +302,7 @@ conn_per_message_deflate_buf(ws_conn_t *c) {
   }
 }
 
-static void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
+static void conn_basic_buffer_dispose(ws_conn_t *c) {
   if (c->pmd_buf) {
     pmd_buf_put(c->base->pmd_buf_pool, c->pmd_buf);
     c->pmd_buf = NULL;
@@ -423,6 +310,8 @@ static void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
 }
 #endif /* WITH_COMPRESSION */
 
+
+// maybe later we can support dedicated compression
 // z_stream *conn_inflate_stream(ws_conn_t *c) {
 //   if (c->buffers[3]) {
 //     return c->buffers[3];
@@ -458,7 +347,7 @@ static void conn_per_message_deflate_buf_dispose(ws_conn_t *c) {
 //   }
 // }
 
-// connection state utils
+// connection state utils so we don't fill the code with bit manipulation
 
 static inline bool is_closing(unsigned int const flags) {
   return (flags & CONN_CLOSE_QUEUED) != 0;
@@ -606,7 +495,7 @@ static inline void clear_has_pending_timers(ws_conn_t *c) {
   c->flags &= ~CONN_TIMER_QUEUED;
 }
 
-// Frame Utils
+// Frame Parsing Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
 }
@@ -698,9 +587,10 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd);
 static void ws_conn_handle(ws_conn_t *conn);
 
 static void handle_upgrade(ws_conn_t *conn);
-static inline int conn_read(ws_conn_t *conn, buf_t *buf);
 
-static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf);
+static inline int conn_read(ws_conn_t *conn, mirrored_buf_t *buf);
+
+static int conn_drain_write_buf(ws_conn_t *conn, mirrored_buf_t *wbuf);
 
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op);
@@ -709,6 +599,8 @@ static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
   if (cl->len + 1 < cl->cap) {
     cl->conns[cl->len++] = conn;
   } else {
+    // this would be a serious bug, we should always have enough space unless we are adding
+    // duplicates and theres a nasty bug so we can keep this check maybe ??
     fprintf(stderr, "%s: would overflow\n", "conn_list_append");
     exit(EXIT_FAILURE);
   }
@@ -821,8 +713,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
     }
   }
 
-  // looping from the back while decrementing len might be faster, just have to
-  // keep FIFO
+
   s->writeable_conns.len = 0;
 }
 
@@ -847,6 +738,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
     s->closeable_conns.len = 0;
   }
 }
+
 
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
@@ -1209,8 +1101,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
     return ret;
   }
 
-  buf_t *shared_rxb = mbuf_get(s->buffer_pool);
-  buf_t *shared_txb = mbuf_get(s->buffer_pool);
+  mirrored_buf_t *shared_rxb = mbuf_get(s->buffer_pool);
+  mirrored_buf_t *shared_txb = mbuf_get(s->buffer_pool);
 
   s->shared_recv_buffer = shared_rxb;
   s->shared_send_buffer = shared_txb;
@@ -1366,7 +1258,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   return 0;
 }
 
-static int conn_read(ws_conn_t *conn, buf_t *buf) {
+static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
   size_t space = buf_space(buf);
 
 #ifdef WITH_COMPRESSION
@@ -1444,8 +1336,8 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 
 static void handle_upgrade(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
-  buf_t *request_buf;
-  buf_t *response_buf = NULL;
+  mirrored_buf_t *request_buf;
+  mirrored_buf_t *response_buf = NULL;
   size_t resp_len = 0;
 
   // pick the recv buffer
@@ -1647,7 +1539,7 @@ static void handle_upgrade(ws_conn_t *conn) {
   }
 }
 
-static inline buf_t *ws_conn_choose_read_buf(ws_conn_t *conn) {
+static inline mirrored_buf_t *ws_conn_choose_read_buf(ws_conn_t *conn) {
   if (!is_using_own_recv_buf(conn)) {
     return conn->base->shared_recv_buffer;
   } else {
@@ -1665,7 +1557,7 @@ static inline buf_t *ws_conn_choose_read_buf(ws_conn_t *conn) {
   // }
 }
 
-static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
+static size_t ws_conn_readable_len(ws_conn_t *conn, mirrored_buf_t *buf) {
   if (buf == conn->base->shared_recv_buffer) {
     return buf->wpos - buf->rpos;
   } else {
@@ -1675,7 +1567,7 @@ static size_t ws_conn_readable_len(ws_conn_t *conn, buf_t *buf) {
 }
 
 static inline void ws_conn_handle(ws_conn_t *conn) {
-  buf_t *buf = ws_conn_choose_read_buf(conn);
+  mirrored_buf_t *buf = ws_conn_choose_read_buf(conn);
   ws_server_t *s = conn->base;
 
   unsigned int next_read_timeout = time(NULL) + READ_TIMEOUT;
@@ -1774,8 +1666,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           conn->needed_bytes = 2;
 
         } else {
-          struct per_message_deflate_buf *inflated_buf =
-              conn_per_message_deflate_buf(conn);
+          struct basic_buffer *inflated_buf =
+              conn_basic_buffer(conn);
           ssize_t inflated_sz = inflation_stream_inflate(
               s->istrm, (char *)msg, payload_len, inflated_buf->data,
               inflated_buf->cap, true);
@@ -1795,13 +1687,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             buf_consume(buf, full_frame_len);
             conn->needed_bytes = 2;
             clear_bin(conn);
-            conn_per_message_deflate_buf_dispose(conn);
+            conn_basic_buffer_dispose(conn);
           } else {
             // TODO handle error
             printf("inflate error\n");
             ws_conn_destroy(conn);
             buf_reset(s->shared_recv_buffer);
-            conn_per_message_deflate_buf_dispose(conn);
+            conn_basic_buffer_dispose(conn);
             return; // TODO(sah): send a Close frame, & call close callback
           }
         }
@@ -1877,8 +1769,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           if (is_fragment_compressed(conn)) {
             clear_fragment_compressed(conn);
 
-            struct per_message_deflate_buf *inflated_buf =
-                conn_per_message_deflate_buf(conn);
+            struct basic_buffer *inflated_buf =
+                conn_basic_buffer(conn);
 
             assert(inflated_buf->len == 0);
             ssize_t inflated_sz = inflation_stream_inflate(
@@ -1894,7 +1786,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
                   !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
                 ws_conn_destroy(conn);
                 buf_reset(s->shared_recv_buffer);
-                conn_per_message_deflate_buf_dispose(conn);
+                conn_basic_buffer_dispose(conn);
                 return; // TODO(sah): send a Close frame, & call close callback
               }
               s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
@@ -1903,7 +1795,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
               buf_reset(s->shared_recv_buffer);
             }
 
-            conn_per_message_deflate_buf_dispose(conn);
+            conn_basic_buffer_dispose(conn);
           } else {
             if (!is_bin(conn) && !utf8_is_valid(buf_peek(conn_read_buf(conn)),
                                                 conn->fragments_len)) {
@@ -2085,7 +1977,7 @@ static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
   ws_server_epoll_ctl(conn->base, EPOLL_CTL_MOD, conn->fd);
 }
 
-static int conn_drain_write_buf(ws_conn_t *conn, buf_t *wbuf) {
+static int conn_drain_write_buf(ws_conn_t *conn, mirrored_buf_t *wbuf) {
   size_t to_write = buf_len(wbuf);
   ssize_t n = 0;
 
@@ -2176,8 +2068,8 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   if (!compress) {
     stat = conn_write_frame(c, msg, n, OP_TXT);
   } else {
-    struct per_message_deflate_buf *deflate_buf =
-        conn_per_message_deflate_buf(c);
+    struct basic_buffer *deflate_buf =
+        conn_basic_buffer(c);
 
     ssize_t compressed_len = deflation_stream_deflate(
         c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
@@ -2196,7 +2088,7 @@ inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   return stat == 1;
 }
 
-static inline buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
+static inline mirrored_buf_t *conn_choose_send_buf(ws_conn_t *conn, size_t send_len) {
   if (send_len > 65535 || is_using_own_write_buf(conn) || !is_writeable(conn)) {
     set_using_own_write_buf(conn);
     return conn_write_buf(conn);
@@ -2231,7 +2123,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
     return;
   }
 
-  buf_t *wbuf = conn_choose_send_buf(conn, 4 + len);
+  mirrored_buf_t *wbuf = conn_choose_send_buf(conn, 4 + len);
   uint8_t *buf = buf_peek(wbuf);
 
   buf[0] = FIN | OP_CLOSE;
@@ -2268,7 +2160,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
   if (!is_closing(conn->flags)) {
     ws_server_t *s = conn->base;
     size_t hlen = frame_get_header_len(len);
-    buf_t *wbuf = conn_choose_send_buf(conn, len);
+    mirrored_buf_t *wbuf = conn_choose_send_buf(conn, len);
 
     size_t flen = len + hlen;
     if (buf_space(wbuf) > flen) {
@@ -2526,21 +2418,21 @@ struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz) {
   p->inuse = 0;
   p->cap = nmemb;
 
-  p->avb_list = calloc(nmemb, sizeof(struct per_message_deflate_buf *));
+  p->avb_list = calloc(nmemb, sizeof(struct basic_buffer *));
   assert(p->avb_list != NULL);
 
   return p;
 }
 
-struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p) {
+struct basic_buffer *pmd_buf_get(struct pmd_buf_pool *p) {
   while (p->avb) {
     p->inuse++;
     return p->avb_list[--p->avb];
   }
 
   if (p->inuse + 1 <= p->cap) {
-    struct per_message_deflate_buf *buf =
-        malloc(sizeof(struct per_message_deflate_buf) + p->buf_sz);
+    struct basic_buffer *buf =
+        malloc(sizeof(struct basic_buffer) + p->buf_sz);
     assert(buf != NULL);
     buf->cap = p->buf_sz;
     buf->len = 0;
@@ -2551,7 +2443,7 @@ struct per_message_deflate_buf *pmd_buf_get(struct pmd_buf_pool *p) {
   return NULL;
 }
 
-void pmd_buf_put(struct pmd_buf_pool *p, struct per_message_deflate_buf *buf) {
+void pmd_buf_put(struct pmd_buf_pool *p, struct basic_buffer *buf) {
   if (buf) {
     buf->len = 0;
     p->avb_list[p->avb++] = buf;
@@ -2786,14 +2678,14 @@ static void *buf_pool_alloc(struct buf_pool *p) {
 //   p->head = &p->_buf_nodes[diff];
 // }
 
-static inline int buf_init(struct buf_pool *p, buf_t *r) {
+static inline int buf_init(struct buf_pool *p, mirrored_buf_t *r) {
 
   r->buf = (uint8_t *)buf_pool_alloc(p);
   if (r->buf == NULL) {
     return -1;
   }
 
-  memset(r, 0, sizeof(buf_t) - offsetof(buf_t, buf_sz));
+  memset(r, 0, sizeof(mirrored_buf_t) - offsetof(mirrored_buf_t, buf_sz));
   r->buf_sz = p->buf_sz;
 
   return 0;
@@ -2806,10 +2698,10 @@ struct mbuf_pool *mbuf_pool_create(uint32_t nmemb, size_t buf_sz) {
   p->cap = nmemb;
   
 
-  p->mirrored_bufs = calloc(nmemb, sizeof (buf_t));
+  p->mirrored_bufs = calloc(nmemb, sizeof (mirrored_buf_t));
   assert(p->mirrored_bufs != NULL);
 
-  p->avb_list = calloc(nmemb, sizeof(buf_t *));
+  p->avb_list = calloc(nmemb, sizeof(mirrored_buf_t *));
   assert(p->avb_list != NULL);
   p->pool = buf_pool_create(nmemb, buf_sz);
   if (p->pool == NULL){
@@ -2833,7 +2725,7 @@ struct mbuf_pool *mbuf_pool_create(uint32_t nmemb, size_t buf_sz) {
   return p;
 }
 
-buf_t *mbuf_get(struct mbuf_pool *bp) {
+mirrored_buf_t *mbuf_get(struct mbuf_pool *bp) {
   while (bp->avb) {
     return bp->avb_list[--bp->avb];
   }
@@ -2841,12 +2733,154 @@ buf_t *mbuf_get(struct mbuf_pool *bp) {
   return NULL;
 }
 
-void mbuf_put(struct mbuf_pool *bp, buf_t *buf) {
+void mbuf_put(struct mbuf_pool *bp, mirrored_buf_t *buf) {
   if (buf) {
     buf->rpos = 0;
     buf->wpos = 0;
     bp->avb_list[bp->avb++] = buf;
   }
+}
+
+
+static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n) {
+  if (buf_space(r) < n) {
+    return -1;
+  }
+  memcpy(r->buf + r->wpos, data, n);
+  r->wpos += n;
+  return 0;
+}
+
+static inline ssize_t buf_send(mirrored_buf_t *r, int fd, int flags) {
+  ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
+  r->rpos += (n > 0) * n;
+
+  if (r->rpos == r->wpos) {
+    buf_reset(r);
+  } else {
+    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    r->rpos -= ovf;
+    r->wpos -= ovf;
+  }
+
+  return n;
+}
+
+static inline int buf_consume(mirrored_buf_t *r, size_t n) {
+  if (buf_len(r) < n) {
+    return -1;
+  }
+
+  r->rpos += n;
+
+  if (r->rpos == r->wpos) {
+    buf_reset(r);
+  } else {
+    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    r->rpos -= ovf;
+    r->wpos -= ovf;
+  }
+
+  return 0;
+}
+
+
+/*
+ * writes two io vectors first is a header and the second is a payload
+ * returns total written and copies any leftover if we didn't drain the buffer
+ */
+static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd, struct iovec const *iovs,
+                                  size_t const total) {
+  ssize_t n = writev(fd, iovs, 2);
+  // everything was written
+  if (n == total) {
+    return n;
+    // some error happened
+  } else if (n == 0 || n == -1) {
+    // if temporary error do a copy
+    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
+      buf_put(r, iovs[0].iov_base, iovs[0].iov_len);
+      buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
+    }
+
+    return n;
+    // less than the header was written
+  } else if (n < iovs[0].iov_len) {
+    buf_put(r, (uint8_t *)iovs[0].iov_base + n, iovs[0].iov_len - n);
+    buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
+    return n;
+  } else {
+    // header was written but only part of the payload
+    size_t leftover = n - iovs[0].iov_len;
+    buf_put(r, (uint8_t *)iovs[1].iov_base + leftover,
+            iovs[1].iov_len - leftover);
+    return n;
+  }
+}
+
+static inline ssize_t buf_drain_write2v(mirrored_buf_t *r, struct iovec const *iovs,
+                                        size_t const total, mirrored_buf_t *rem_dst,
+                                        int fd) {
+
+  mirrored_buf_t *dst;
+  if (rem_dst) {
+    dst = rem_dst;
+  } else {
+    dst = r;
+  }
+
+  ssize_t n = writev(fd, iovs, 3);
+  // everything was written
+  if (n == total) {
+    // consume what we drained from the buffer
+    buf_consume(r, iovs[0].iov_len);
+    return n;
+    // some error happened
+  } else if (n == 0 || n == -1) {
+    // if temporary error do a copy
+    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
+      // copy both header and payload first iov already in the buffer
+      buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
+      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
+    }
+    return n;
+    // couldn't drain the buffer copy the header and payload
+  } else if (n < iovs[0].iov_len) {
+    buf_consume(r, n);
+    if (rem_dst) {
+      buf_move(r, dst, buf_len(r));
+    }
+
+    buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
+    buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
+  }
+  // drained the buffer but only wrote parts of the new frame
+  else if (n > iovs[0].iov_len) {
+    ssize_t wrote = n - iovs[0].iov_len;
+    buf_consume(r, iovs[0].iov_len);
+
+    // less than header was written
+    if (wrote < iovs[1].iov_len) {
+      buf_put(dst, (uint8_t *)iovs[1].iov_base + wrote,
+              iovs[1].iov_len - wrote);
+      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
+    } else {
+      // parts of payload were written
+      size_t leftover = wrote - iovs[1].iov_len;
+      buf_put(dst, (uint8_t *)iovs[2].iov_base + leftover,
+              iovs[2].iov_len - leftover);
+    }
+  }
+
+  return n;
+}
+
+
+static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len, int flags) {
+  ssize_t n = recv(fd, r->buf + r->wpos, len, flags);
+
+  r->wpos += (n > 0) * n;
+  return n;
 }
 
 
