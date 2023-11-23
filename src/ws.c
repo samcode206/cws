@@ -225,7 +225,7 @@ struct conn_list {
 // buffer is needed in which we can skip going through the allocator and reuse
 // a previously allocated buffer
 
-struct pmd_buf_pool {
+struct basic_buffer_pool {
   size_t buf_sz;
   size_t avb;
   size_t inuse;
@@ -233,9 +233,9 @@ struct pmd_buf_pool {
   struct basic_buffer **avb_list;
 };
 
-struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz);
-struct basic_buffer *pmd_buf_get(struct pmd_buf_pool *p);
-void pmd_buf_put(struct pmd_buf_pool *p, struct basic_buffer *buf);
+struct basic_buffer_pool *basic_buffer_pool_create(size_t nmemb, size_t pmd_bufsz);
+struct basic_buffer *pmd_buf_get(struct basic_buffer_pool *p);
+void pmd_buf_put(struct basic_buffer_pool *p, struct basic_buffer *buf);
 
 #ifdef WITH_COMPRESSION
 static z_stream *inflation_stream_init();
@@ -274,7 +274,7 @@ typedef struct server {
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
   struct mirrored_buf_pool *buffer_pool;
-  struct pmd_buf_pool *pmd_buf_pool;
+  struct basic_buffer_pool *basic_buffer_pool;
 #ifdef WITH_COMPRESSION
   z_stream *istrm;
   z_stream *dstrm;
@@ -302,7 +302,7 @@ static inline mirrored_buf_t *conn_write_buf(ws_conn_t *c) {
 #ifdef WITH_COMPRESSION
 static struct basic_buffer *conn_basic_buffer(ws_conn_t *c) {
   if (!c->pmd_buf) {
-    c->pmd_buf = pmd_buf_get(c->base->pmd_buf_pool);
+    c->pmd_buf = pmd_buf_get(c->base->basic_buffer_pool);
     return c->pmd_buf;
   } else {
     return c->pmd_buf;
@@ -311,7 +311,7 @@ static struct basic_buffer *conn_basic_buffer(ws_conn_t *c) {
 
 static void conn_basic_buffer_dispose(ws_conn_t *c) {
   if (c->pmd_buf) {
-    pmd_buf_put(c->base->pmd_buf_pool, c->pmd_buf);
+    pmd_buf_put(c->base->basic_buffer_pool, c->pmd_buf);
     c->pmd_buf = NULL;
   }
 }
@@ -945,9 +945,9 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->dstrm = deflation_stream_init();
 #endif /* WITH_COMPRESSION */
 
-  s->pmd_buf_pool =
-      pmd_buf_pool_create(s->max_conns, s->max_msg_len + s->max_msg_len + 16);
-  assert(s->pmd_buf_pool != NULL);
+  s->basic_buffer_pool =
+      basic_buffer_pool_create(s->max_conns, s->max_msg_len + s->max_msg_len + 16);
+  assert(s->basic_buffer_pool != NULL);
 
   // server resources all ready
   return s;
@@ -2413,8 +2413,8 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c) {
   p->head = &p->_buf_nodes[diff];
 }
 
-struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz) {
-  struct pmd_buf_pool *p = malloc(sizeof(struct pmd_buf_pool));
+struct basic_buffer_pool *basic_buffer_pool_create(size_t nmemb, size_t pmd_bufsz) {
+  struct basic_buffer_pool *p = malloc(sizeof(struct basic_buffer_pool));
   assert(p != NULL);
   p->buf_sz = pmd_bufsz;
   p->avb = 0;
@@ -2427,7 +2427,7 @@ struct pmd_buf_pool *pmd_buf_pool_create(size_t nmemb, size_t pmd_bufsz) {
   return p;
 }
 
-struct basic_buffer *pmd_buf_get(struct pmd_buf_pool *p) {
+struct basic_buffer *pmd_buf_get(struct basic_buffer_pool *p) {
   while (p->avb) {
     p->inuse++;
     return p->avb_list[--p->avb];
@@ -2445,7 +2445,7 @@ struct basic_buffer *pmd_buf_get(struct pmd_buf_pool *p) {
   return NULL;
 }
 
-void pmd_buf_put(struct pmd_buf_pool *p, struct basic_buffer *buf) {
+void pmd_buf_put(struct basic_buffer_pool *p, struct basic_buffer *buf) {
   if (buf) {
     buf->len = 0;
     p->avb_list[p->avb++] = buf;
