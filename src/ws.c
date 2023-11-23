@@ -148,7 +148,6 @@ struct mirrored_buf_pool {
   uint32_t nmemb;
   size_t buf_sz;
   void *base;
-  struct buf_node *head;
 
   size_t avb;
   size_t cap;
