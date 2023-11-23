@@ -282,6 +282,31 @@ bool ws_conn_compression_allowed(ws_conn_t *c);
 
 bool ws_server_accept_paused(ws_server_t *s);
 
+
+
+bool ws_server_accept_paused(ws_server_t *s);
+
+
+
+typedef struct ws_poll_cb_ctx_t ws_poll_cb_ctx_t;
+
+typedef void (*poll_ev_cb_t)(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev);
+
+struct ws_poll_cb_ctx_t {
+  poll_ev_cb_t cb;
+    void *ctx;
+};
+
+int ws_poller_init(ws_server_t *s);
+
+int ws_pollable_register(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
+                         int events);
+
+int ws_pollable_unregister(ws_server_t *s, int fd);
+
+int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
+                       int events);
+
 int utf8_is_valid(uint8_t *s, size_t n);
 
 

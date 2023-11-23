@@ -192,6 +192,7 @@ typedef struct server {
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
   struct conn_list closeable_conns;
+  int user_epoll;
 } ws_server_t;
 
 static inline buf_t *conn_read_buf(ws_conn_t *c) { return c->recv_buf; }
@@ -1050,15 +1051,21 @@ int ws_server_start(ws_server_t *s, int backlog) {
       return -1;
     }
 
+    bool check_user_epoll = false;
+    int *user_epoll_ptr = &s->user_epoll;
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if (s->events[i].data.ptr == &tfd) {
-        uint64_t _;
-        assert(read(tfd, &_, 8) == 8);
-        (void)_;
+      if ((s->events[i].data.ptr == &tfd) |
+          (s->events[i].data.ptr == user_epoll_ptr)) {
+        if (s->events[i].data.ptr == &tfd) {
+          uint64_t _;
+          assert(read(tfd, &_, 8) == 8);
+          (void)_;
 
-        server_check_pending_timers(s);
-
+          server_check_pending_timers(s);
+        } else {
+          check_user_epoll = true;
+        }
       } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
@@ -1131,6 +1138,20 @@ int ws_server_start(ws_server_t *s, int backlog) {
       s->ev.data.ptr = s;
       ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
       s->accept_paused = 0;
+    }
+
+    if (check_user_epoll) {
+      int count = epoll_wait(*user_epoll_ptr, s->events, 1024, 0);
+      if (count > 0) {
+        for (int i = 0; i < count; ++i) {
+          ws_poll_cb_ctx_t *ctx = s->events[i].data.ptr;
+          if (ctx) {
+            ctx->cb(s, ctx, s->events[i].events);
+          }
+        }
+      }
+
+      check_user_epoll = false;
     }
   }
 
@@ -2439,3 +2460,54 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 }
 
 #endif /* WITH_COMPRESSION */
+
+int ws_poller_init(ws_server_t *s) {
+  if (!s->user_epoll) {
+    s->user_epoll = epoll_create1(O_CLOEXEC);
+    if (s->user_epoll == -1) {
+      return -1;
+    } else {
+      s->ev.events = EPOLLIN;
+      s->ev.data.ptr = &s->user_epoll;
+      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->user_epoll);
+      return 0;
+    }
+  }
+
+  return s->user_epoll ? 0 : -1;
+}
+
+int ws_pollable_register(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
+                         int events) {
+  if (!s->user_epoll || !cb_ctx) {
+    return -1;
+  }
+
+  s->ev.events = events;
+  s->ev.data.ptr = cb_ctx;
+
+  return epoll_ctl(s->user_epoll, EPOLL_CTL_ADD, fd, &s->ev);
+}
+
+int ws_pollable_unregister(ws_server_t *s, int fd) {
+  if (!s->user_epoll) {
+    return -1;
+  }
+
+  s->ev.events = 0;
+  s->ev.data.ptr = NULL;
+
+  return epoll_ctl(s->user_epoll, EPOLL_CTL_DEL, fd, &s->ev);
+}
+
+int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
+                       int events) {
+  if (!s->user_epoll || !cb_ctx) {
+    return -1;
+  }
+
+  s->ev.events = events;
+  s->ev.data.ptr = cb_ctx;
+
+  return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &s->ev);
+}
