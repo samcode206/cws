@@ -541,6 +541,7 @@ static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
   }
 }
 
+// loop unrolling version, maybe faster for smaller messages?? 
 // static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
 
 //   size_t i = 0;
