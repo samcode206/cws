@@ -402,7 +402,6 @@ static inline void clear_writeable(ws_conn_t *c) {
   c->flags &= ~CONN_TX_WRITEABLE;
 }
 
-
 static inline bool is_processing(ws_conn_t *c) {
   return (c->flags & CONN_RX_PROCESSING_FRAMES) != 0;
 }
@@ -414,7 +413,6 @@ static inline void set_processing(ws_conn_t *c) {
 static inline void clear_processing(ws_conn_t *c) {
   c->flags &= ~CONN_RX_PROCESSING_FRAMES;
 }
-
 
 static inline bool is_write_queued(ws_conn_t *c) {
   return (c->flags & CONN_TX_WRITE_QUEUED) != 0;
@@ -649,7 +647,6 @@ static void server_closeable_conns_append(ws_conn_t *c) {
     mirrored_buf_put(c->base->buffer_pool, c->send_buf);
     c->send_buf = NULL;
   }
-
   c->base->ev.data.ptr = c;
   ws_server_epoll_ctl(c->base, EPOLL_CTL_DEL, c->fd);
   conn_list_append(&c->base->closeable_conns, c);
@@ -1569,9 +1566,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             return; // TODO(sah): send a Close frame, & call close callback
           }
           s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
-          buf_consume(conn->recv_buf, full_frame_len);
-          clear_bin(conn);
-          conn->needed_bytes = 2;
+          if (conn->recv_buf) {
+            buf_consume(conn->recv_buf, full_frame_len);
+            clear_bin(conn);
+            conn->needed_bytes = 2;
+          } else {
+            return;
+          }
 
         } else {
           struct basic_buffer *inflated_buf = conn_basic_buffer(conn);
@@ -1591,9 +1592,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             }
             s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
             buf_consume(conn->recv_buf, full_frame_len);
-            conn->needed_bytes = 2;
-            clear_bin(conn);
-            conn_basic_buffer_dispose(conn);
+            if (conn->recv_buf) {
+              conn->needed_bytes = 2;
+              clear_bin(conn);
+              conn_basic_buffer_dispose(conn);
+            } else {
+              return;
+            }
           } else {
             // TODO handle error
             printf("inflate error\n");
@@ -1609,9 +1614,13 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           return; // TODO(sah): send a Close frame, & call close callback
         }
         s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
-        buf_consume(buf, full_frame_len);
-        clear_bin(conn);
-        conn->needed_bytes = 2;
+        if (conn->recv_buff) {
+          buf_consume(buf, full_frame_len);
+          clear_bin(conn);
+          conn->needed_bytes = 2;
+        } else {
+          return;
+        }
 #endif /* WITH_COMPRESSION */
 
         break; /* OP_BIN don't fall through to fragmented msg */
@@ -1707,21 +1716,28 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 #endif /* WITH_COMPRESSION */
 
           buf_consume(conn->recv_buf, conn->fragments_len);
-
-          conn->fragments_len = 0;
-          clear_fragmented(conn);
-          clear_bin(conn);
-          conn->needed_bytes = 2;
+          if (conn->recv_buf) {
+            conn->fragments_len = 0;
+            clear_fragmented(conn);
+            clear_bin(conn);
+            conn->needed_bytes = 2;
+          } else {
+            return;
+          }
         }
       } else {
         s->on_ws_msg_fragment(conn, msg, payload_len, fin);
-        buf_consume(conn->recv_buf, full_frame_len);
-        conn->needed_bytes = 2;
-        if (fin) {
-          conn->fragments_len = 0;
+        if (conn->recv_buf) {
+          buf_consume(conn->recv_buf, full_frame_len);
           conn->needed_bytes = 2;
-          clear_fragmented(conn);
-          clear_bin(conn);
+          if (fin) {
+            conn->fragments_len = 0;
+            conn->needed_bytes = 2;
+            clear_fragmented(conn);
+            clear_bin(conn);
+          }
+        } else {
+          return;
         }
       }
       break;
@@ -1741,9 +1757,12 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         total_trimmed += full_frame_len;
         conn->needed_bytes = 2;
       } else {
-        // printf("here\n");
-        buf_consume(conn->recv_buf, full_frame_len);
-        conn->needed_bytes = 2;
+        if (conn->recv_buf) {
+          buf_consume(conn->recv_buf, full_frame_len);
+          conn->needed_bytes = 2;
+        } else {
+          return;
+        }
       }
 
       break;
@@ -1762,8 +1781,10 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         total_trimmed += total_trimmed;
         conn->needed_bytes = 2;
       } else {
-        buf_consume(conn->recv_buf, full_frame_len);
-        conn->needed_bytes = 2;
+        if (conn->recv_buf) {
+          buf_consume(conn->recv_buf, full_frame_len);
+          conn->needed_bytes = 2;
+        }
       }
       break;
     case OP_CLOSE:
@@ -1828,30 +1849,32 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     }
   } /* loop end */
 
-
-  if ((conn->send_buf != NULL) & (is_writeable(conn)) & (!is_closing(conn->flags))){
+  if ((conn->send_buf != NULL) && (is_writeable(conn)) &&
+      (!is_closing(conn->flags)) & (!is_write_queued(conn))) {
     conn_drain_write_buf(conn);
   }
 
   size_t move_total;
 
 clean_up_buffer:
-  move_total = conn->recv_buf->wpos - conn->recv_buf->rpos -
-               conn->fragments_len - total_trimmed;
+  if (conn->recv_buf) {
+    move_total = conn->recv_buf->wpos - conn->recv_buf->rpos -
+                 conn->fragments_len - total_trimmed;
 
-  if ((move_total != 0) | (total_trimmed != 0)) {
-    memmove(conn->recv_buf->buf + conn->recv_buf->rpos + conn->fragments_len,
-            conn->recv_buf->buf + conn->recv_buf->rpos + conn->fragments_len +
-                total_trimmed,
-            move_total);
+    if ((move_total != 0) | (total_trimmed != 0)) {
+      memmove(conn->recv_buf->buf + conn->recv_buf->rpos + conn->fragments_len,
+              conn->recv_buf->buf + conn->recv_buf->rpos + conn->fragments_len +
+                  total_trimmed,
+              move_total);
 
-    conn->recv_buf->wpos =
-        conn->recv_buf->rpos + conn->fragments_len + move_total;
-  }
+      conn->recv_buf->wpos =
+          conn->recv_buf->rpos + conn->fragments_len + move_total;
+    }
 
-  if (!buf_len(conn->recv_buf)) {
-    mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
-    conn->recv_buf = NULL;
+    if (!buf_len(conn->recv_buf)) {
+      mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
+      conn->recv_buf = NULL;
+    }
   }
 }
 
@@ -2090,11 +2113,12 @@ int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
 
 int ws_conn_put_bin_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_msg(c, msg, n, OP_BIN, compress);
-  // if we are sending to another connection outside of the currently processed connection
-  // in the event loop, we have to queue up the request so we really send it to the other side
-  // this does hold on to a buffer for longer than ideal but can be useful for certain cases 
-  // where a bunch of small messages are emmitted in a short time and we wanna send them all in a single
-  // syscall (if possible)
+  // if we are sending to another connection outside of the currently processed
+  // connection in the event loop, we have to queue up the request so we really
+  // send it to the other side this does hold on to a buffer for longer than
+  // ideal but can be useful for certain cases where a bunch of small messages
+  // are emmitted in a short time and we wanna send them all in a single syscall
+  // (if possible)
   if ((stat == 0) & (c->send_buf != NULL) & (!is_processing(c))) {
     server_writeable_conns_append(c);
   } else if (stat == -1) {
