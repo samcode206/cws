@@ -268,7 +268,7 @@ typedef struct server {
 #ifdef WITH_COMPRESSION
   z_stream *istrm;
   z_stream *dstrm;
-#endif /* WITH_COMPRESSION */
+#endif    /* WITH_COMPRESSION */
   int fd; // server file descriptor
   int epoll_fd;
   bool accept_paused; // are we paused on accepting new connections
@@ -518,20 +518,46 @@ static inline size_t frame_get_header_len(size_t const n) {
 static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
 
   size_t i = 0;
-  size_t left_over = n & 3;
+  size_t uneven = n & 7;
 
-  for (; i < left_over; ++i) {
+  for (; i < uneven; ++i) {
     src[i] = src[i] ^ mask[i & 3];
   }
+
+  uint8_t tmp[8] = {mask[i & 3],       mask[(i + 1) & 3], mask[(i + 2) & 3],
+                    mask[(i + 3) & 3], mask[(i + 4) & 3], mask[(i + 5) & 3],
+                    mask[(i + 6) & 3], mask[(i + 7) & 3]};
+
+  uint64_t mask64;
+  uint64_t chunk;
+
+  memcpy(&mask64, tmp, 8);
 
   while (i < n) {
-    src[i] = src[i] ^ mask[i & 3];
-    src[i + 1] = src[i + 1] ^ mask[(i + 1) & 3];
-    src[i + 2] = src[i + 2] ^ mask[(i + 2) & 3];
-    src[i + 3] = src[i + 3] ^ mask[(i + 3) & 3];
-    i += 4;
+    memcpy(&chunk, src + i, 8);
+    chunk ^= mask64;
+    memcpy(src + i, &chunk, 8);
+    i += 8;
   }
 }
+
+// static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
+
+//   size_t i = 0;
+//   size_t left_over = n & 3;
+
+//   for (; i < left_over; ++i) {
+//     src[i] = src[i] ^ mask[i & 3];
+//   }
+
+//   while (i < n) {
+//     src[i] = src[i] ^ mask[i & 3];
+//     src[i + 1] = src[i + 1] ^ mask[(i + 1) & 3];
+//     src[i + 2] = src[i + 2] ^ mask[(i + 2) & 3];
+//     src[i + 3] = src[i + 3] ^ mask[(i + 3) & 3];
+//     i += 4;
+//   }
+// }
 
 static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd);
 
