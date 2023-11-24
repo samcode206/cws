@@ -2095,9 +2095,9 @@ static inline int ws_conn_do_send(ws_conn_t *c, int stat) {
   // the socket is already waiting for EPOLLOUT so we don't need to queue it
   if ((stat == WS_SEND_OK) & (c->send_buf != NULL) & is_writeable(c)) {
     int drain_ret = conn_drain_write_buf(c);
-    if (drain_ret == 0){
+    if (drain_ret == 0) {
       return WS_SEND_OK_BACKPRESSURE;
-    } else if (drain_ret == -1){
+    } else if (drain_ret == -1) {
       return WS_SEND_FAILED;
     }
 
@@ -2195,12 +2195,19 @@ void ws_conn_flush_pending(ws_conn_t *c) {
   }
 }
 
-size_t ws_conn_write_buf_space(ws_conn_t *c) {
-  if (c->send_buf) {
-    return buf_space(c->send_buf);
-  } else {
-    return c->base->buffer_pool->buf_sz;
+size_t ws_conn_max_sendable_len(ws_conn_t *c) {
+  if (!is_closing(c->flags)) {
+    if (c->send_buf != NULL) {
+      size_t space = buf_space(c->send_buf);
+      if (space > 10) {
+        return space - 10; // accounts for max header size (server frame)
+      }
+    } else {
+      // buf_sz is at least one page in size so this should be safe
+      return c->base->buffer_pool->buf_sz - 10;
+    }
   }
+  return 0;
 }
 
 // *************************************

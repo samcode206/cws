@@ -270,7 +270,13 @@ void ws_conn_destroy(ws_conn_t *c);
 
 void ws_conn_flush_pending(ws_conn_t *c);
 
-size_t ws_conn_write_buf_space(ws_conn_t *c);
+
+// current size of a single frame that can be sent
+// if a previous send has some backpressure
+// but was still placed the frame in the send buffer
+// the user may call ws_conn_max_sendable_len to see if another frame
+// may fit in the buffer without having to wait for on_ws_drain
+size_t ws_conn_max_sendable_len(ws_conn_t *c);
 
 ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
