@@ -2148,9 +2148,17 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
     ssize_t compressed_len = deflation_stream_deflate(
         c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
         deflate_buf->cap - deflate_buf->len, true);
+    if (compressed_len > 0) {
+      stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
+                              compressed_len, op | 0x40);
+                              
+      if (!deflate_buf->len){
+        conn_basic_buffer_dispose(c);
+      }
 
-    stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
-                            compressed_len, op | 0x40);
+    } else {
+      return WS_SEND_FAILED; // compression error 
+    }
   }
 #else
   stat = conn_write_frame(c, msg, n, op);
