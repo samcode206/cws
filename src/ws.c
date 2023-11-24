@@ -2110,34 +2110,26 @@ static inline int ws_conn_do_send(ws_conn_t *c, int stat) {
 
 // *************************************
 
-static inline int conn_write_pong(ws_conn_t *c, void *msg, size_t n) {
-  return conn_write_frame(c, msg, n, FIN | OP_PONG);
-}
-
 int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_pong(c, msg, n);
+  int stat = conn_write_frame(c, msg, n, FIN | OP_PONG);
   return ws_conn_do_send(c, stat);
 }
 
 int ws_conn_put_pong(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_pong(c, msg, n);
+  int stat = conn_write_frame(c, msg, n, FIN | OP_PONG);
   ws_conn_do_put(c, stat);
   return stat;
 }
 
 // *************************************
 
-static inline int conn_write_ping(ws_conn_t *c, void *msg, size_t n) {
-  return conn_write_frame(c, msg, n, FIN | OP_PING);
-}
-
 int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_ping(c, msg, n);
+  int stat = conn_write_frame(c, msg, n, FIN | OP_PING);
   return ws_conn_do_send(c, stat);
 }
 
 int ws_conn_put_ping(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_ping(c, msg, n);
+  int stat = conn_write_frame(c, msg, n, FIN | OP_PING);
   ws_conn_do_put(c, stat);
   return stat;
 }
