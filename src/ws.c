@@ -1914,7 +1914,7 @@ static int conn_drain_write_buf(ws_conn_t *conn) {
 }
 
 static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
-                                  uint8_t op) {
+                                  uint8_t opAndFinOpts) {
 
   size_t hlen = 10;
   size_t flen = len + 10;
@@ -1922,7 +1922,7 @@ static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
   // large send
   uint8_t hbuf[hlen]; // place the header on the stack
   memset(hbuf, 0, 2);
-  hbuf[0] = FIN | op; // Set FIN bit and opcode
+  hbuf[0] = opAndFinOpts;
   hbuf[1] = PAYLOAD_LEN_64;
   hbuf[2] = (len >> 56) & 0xFF;
   hbuf[3] = (len >> 48) & 0xFF;
@@ -1988,7 +1988,7 @@ static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
 }
 
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
-                            uint8_t op) {
+                            uint8_t opAndFinOpts) {
 
   if (!is_closing(conn->flags)) {
     size_t hlen = frame_get_header_len(len);
@@ -2024,7 +2024,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       } else {
         // this msg is larger than the send buffer
         // and must be fragmented
-        if (op & OP_TXT || op & OP_BIN) {
+        if (opAndFinOpts & OP_TXT || opAndFinOpts & OP_BIN) {
           return WS_SEND_DROPPED_NEEDS_FRAGMENTATION;
         }
 
@@ -2042,7 +2042,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
           conn->send_buf->buf +
           conn->send_buf->wpos; // place the header in the write buffer
       memset(hbuf, 0, 2);
-      hbuf[0] = FIN | op; // Set FIN bit and opcode
+      hbuf[0] = FIN | opAndFinOpts;
       conn->send_buf->wpos += hlen;
       hbuf[1] = PAYLOAD_LEN_16;
       hbuf[2] = (len >> 8) & 0xFF;
@@ -2053,12 +2053,12 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
           conn->send_buf->buf +
           conn->send_buf->wpos; // place the header in the write buffer
       memset(hbuf, 0, 2);
-      hbuf[0] = FIN | op; // Set FIN bit and opcode
+      hbuf[0] = FIN | opAndFinOpts;
       conn->send_buf->wpos += hlen;
       hbuf[1] = (uint8_t)len;
       buf_put(conn->send_buf, data, len);
     } else {
-      return conn_write_large_frame(conn, data, len, op);
+      return conn_write_large_frame(conn, data, len, opAndFinOpts);
     }
 
     return WS_SEND_OK;
@@ -2111,7 +2111,7 @@ static inline int ws_conn_do_send(ws_conn_t *c, int stat) {
 // *************************************
 
 static inline int conn_write_pong(ws_conn_t *c, void *msg, size_t n) {
-  return conn_write_frame(c, msg, n, OP_PONG);
+  return conn_write_frame(c, msg, n, FIN | OP_PONG);
 }
 
 int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
@@ -2128,7 +2128,7 @@ int ws_conn_put_pong(ws_conn_t *c, void *msg, size_t n) {
 // *************************************
 
 static inline int conn_write_ping(ws_conn_t *c, void *msg, size_t n) {
-  return conn_write_frame(c, msg, n, OP_PING);
+  return conn_write_frame(c, msg, n, FIN | OP_PING);
 }
 
 int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
@@ -2168,24 +2168,24 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
 }
 
 int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
-  int stat = conn_write_msg(c, msg, n, OP_BIN, compress);
+  int stat = conn_write_msg(c, msg, n, FIN | OP_BIN, compress);
   return ws_conn_do_send(c, stat);
 }
 
 int ws_conn_put_bin(ws_conn_t *c, void *msg, size_t n, bool compress) {
-  int stat = conn_write_msg(c, msg, n, OP_BIN, compress);
+  int stat = conn_write_msg(c, msg, n, FIN | OP_BIN, compress);
   ws_conn_do_put(c, stat);
   return stat;
 }
 
 int ws_conn_put_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
-  int stat = conn_write_msg(c, msg, n, OP_TXT, compress);
+  int stat = conn_write_msg(c, msg, n, FIN | OP_TXT, compress);
   ws_conn_do_put(c, stat);
   return stat;
 }
 
 int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
-  int stat = conn_write_msg(c, msg, n, OP_TXT, compress);
+  int stat = conn_write_msg(c, msg, n, FIN | OP_TXT, compress);
   return ws_conn_do_send(c, stat);
 }
 
