@@ -268,6 +268,10 @@ void ws_conn_close(ws_conn_t *c, void *msg, size_t n, uint16_t code);
 void ws_conn_destroy(ws_conn_t *c);
 
 
+void ws_conn_flush_pending(ws_conn_t *c);
+
+size_t ws_conn_write_buf_space(ws_conn_t *c);
+
 ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
 void ws_conn_set_ctx(ws_conn_t *c, void *ctx);

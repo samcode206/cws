@@ -13,6 +13,12 @@ static void appBroadcast(App *state, char *msg, size_t len) {
   while (state->numConnections) {
     size_t i = state->numConnections;
     while (i--) {
+      //       if (ws_conn_write_buf_space(state->conns[i]) < len + 10) {
+      //   ws_conn_flush_pending(state->conns[i]);
+      // }
+
+      // ws_conn_put_txt_msg(state->conns[i], msg, len, 0);
+
       ws_conn_send_txt(state->conns[i], msg, len, 0);
     }
 

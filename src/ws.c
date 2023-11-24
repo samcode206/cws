@@ -689,10 +689,10 @@ static void server_check_pending_timers(ws_server_t *s) {
 static void server_writeable_conns_drain(ws_server_t *s) {
   for (size_t i = 0; i < s->writeable_conns.len; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
-    if (!is_closing(c->flags)) {
+    if (!is_closing(c->flags) & (c->send_buf != NULL) & is_writeable(c)) {
       conn_drain_write_buf(c);
-      clear_write_queued(c);
     }
+    clear_write_queued(c);
   }
 
   s->writeable_conns.len = 0;
@@ -2147,6 +2147,22 @@ int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
     ws_conn_destroy(c);
   }
   return stat == 1;
+}
+
+void ws_conn_flush_pending(ws_conn_t *c) {
+  if (!is_closing(c->flags) & (c->send_buf != NULL) & is_writeable(c)) {
+    conn_drain_write_buf(c);
+  }
+}
+
+
+
+size_t ws_conn_write_buf_space(ws_conn_t *c){
+  if (c->send_buf){
+  return buf_space(c->send_buf);
+  } else {
+    return c->base->buffer_pool->buf_sz;
+  }
 }
 
 // *************************************
