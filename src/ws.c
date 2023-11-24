@@ -404,15 +404,15 @@ static inline void clear_writeable(ws_conn_t *c) {
 
 
 static inline bool is_processing(ws_conn_t *c) {
-  return (c->flags & CONN_TX_WRITEABLE) != 0;
+  return (c->flags & CONN_RX_PROCESSING_FRAMES) != 0;
 }
 
 static inline void set_processing(ws_conn_t *c) {
-  c->flags |= CONN_TX_WRITEABLE;
+  c->flags |= CONN_RX_PROCESSING_FRAMES;
 }
 
 static inline void clear_processing(ws_conn_t *c) {
-  c->flags &= ~CONN_TX_WRITEABLE;
+  c->flags &= ~CONN_RX_PROCESSING_FRAMES;
 }
 
 
