@@ -322,6 +322,44 @@ int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
 int utf8_is_valid(uint8_t *s, size_t n);
 
 
+
+enum ws_send_status {
+  /*
+    send/writev call failed and/or the connection is closing/closed
+  */ 
+  WS_SEND_FAILED = -1, 
+
+  /*
+    all is ok user may send more frames
+  */
+  WS_SEND_OK = 0,
+
+  /*
+    we placed the data in the send buffer but there's backpressure 
+    caller should wait check available space before more sends or wait for on_ws_drain
+  */
+  WS_SEND_OK_BACKPRESSURE = 1, 
+
+  /*
+    the frame was dropped because there isn't enough space currently
+    caller should wait for on_ws_drain to try again
+  */
+  WS_SEND_DROPPED_NEEDS_DRAIN = 2,
+
+  /*
+    the frame is too large and can't be fragmented because it's a ping/pong/close frame
+  */
+  WS_SEND_DROPPED_TOO_LARGE = 3,
+
+  /*
+    this frame is too large and needs to be fragmented this is a no op 
+    caller should use the fragmented send variant and track progress with on_ws_drain
+    if they still want to send the data to the client
+  */
+  WS_SEND_DROPPED_NEEDS_FRAGMENTATION = 4,
+
+};
+
 /**
  * Normal closure; the purpose for which the connection was
  * established has been fulfilled.
