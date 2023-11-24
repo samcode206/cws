@@ -577,9 +577,6 @@ static inline int conn_read(ws_conn_t *conn, mirrored_buf_t *buf);
 
 static int conn_drain_write_buf(ws_conn_t *conn);
 
-static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
-                            uint8_t op);
-
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
   if (cl->len + 1 <= cl->cap) {
     cl->conns[cl->len++] = conn;
@@ -678,10 +675,6 @@ static void server_check_pending_timers(ws_server_t *s) {
 }
 
 static void server_writeable_conns_drain(ws_server_t *s) {
-  if (s->writeable_conns.len) {
-    printf("draining %zu connections\n", s->writeable_conns.len);
-  }
-
   for (size_t i = 0; i < s->writeable_conns.len; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
     if (!is_closing(c->flags)) {
@@ -1851,7 +1844,7 @@ static int conn_drain_write_buf(ws_conn_t *conn) {
   size_t to_write = buf_len(conn->send_buf);
   ssize_t n = 0;
 
-  if ((!to_write)) {
+  if (!to_write) {
     return 0;
   }
 
@@ -1874,131 +1867,6 @@ static int conn_drain_write_buf(ws_conn_t *conn) {
 
   return 0;
 }
-
-/**
-* returns:
-     1 data was completely written
-
-     0 part of the data was written caller should wait for on_drain event to
-start sending more data or an error occurred in which the corresponding callback
-will be called
-*/
-inline int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(c, msg, n, OP_PONG);
-  if (stat == -1) {
-    ws_conn_destroy(c);
-  }
-  return stat == 1;
-}
-/**
-* returns:
-     1 data was completely written
-
-     0 part of the data was written caller should wait for on_drain event to
-start sending more data or an error occurred in which the corresponding callback
-will be called
-*/
-inline int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
-  int stat = conn_write_frame(c, msg, n, OP_PING);
-  if (stat == -1) {
-    ws_conn_destroy(c);
-  }
-  return stat == 1;
-}
-
-/**
-* returns:
-     1 data was completely written
-
-     0 part of the data was written caller should wait for on_drain event to
-start sending more data or an error occurred in which the corresponding callback
-will be called
-*/
-inline int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
-  int stat = conn_write_frame(c, msg, n, OP_BIN);
-  if (stat == -1) {
-    ws_conn_destroy(c);
-  }
-  return stat;
-}
-
-/**
-* returns:
-     1 data was completely written
-
-     0 part of the data was written caller should wait for on_drain event to
-start sending more data or an error occurred in which the corresponding callback
-will be called
-*/
-inline int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
-  int stat;
-#ifdef WITH_COMPRESSION
-  if (!compress) {
-    stat = conn_write_frame(c, msg, n, OP_TXT);
-  } else {
-    struct basic_buffer *deflate_buf = conn_basic_buffer(c);
-
-    ssize_t compressed_len = deflation_stream_deflate(
-        c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
-        deflate_buf->cap - deflate_buf->len, true);
-
-    stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
-                            compressed_len, OP_TXT | 0x40);
-  }
-#else
-  stat = conn_write_frame(c, msg, n, OP_TXT);
-#endif /* WITH_COMPRESSION */
-
-  if (stat == -1) {
-    ws_conn_destroy(c);
-  }
-  return stat == 1;
-}
-
-void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
-  // reason string must be less than 124
-  // this isn't a websocket protocol restriction but it will be here for now
-  if (len > 124) {
-    return;
-  }
-
-  // make sure we haven't already done this
-  if (is_closing(conn->flags)) {
-    return;
-  }
-
-  conn_prep_send_buf(conn);
-
-  uint8_t *buf = buf_peek(conn->send_buf);
-
-  buf[0] = FIN | OP_CLOSE;
-  buf[1] = 2 + len;
-  buf[2] = (code >> 8) & 0xFF;
-  buf[3] = code & 0xFF;
-  conn->send_buf->wpos += 4;
-  buf_put(conn->send_buf, msg, len);
-
-  conn_drain_write_buf(conn);
-  ws_conn_destroy(conn);
-}
-
-void ws_conn_destroy(ws_conn_t *conn) {
-  if (is_closing(conn->flags)) {
-    return;
-  }
-
-  server_closeable_conns_append(conn);
-}
-
-/**
-* returns:
-     1 data was completely written
-
-     0 part of the data was written, caller should wait for on_drain event to
-start sending more data
-
-    -1 an error occurred connection should be closed, check errno
-*/
 
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op) {
@@ -2091,38 +1959,188 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
           if (n == total_write) {
             mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
             conn->send_buf = NULL;
-
-            return 1;
+            return 0;
           } else if (n == 0 ||
                      ((n == -1) & ((errno != EAGAIN) | (errno != EINTR)))) {
             return -1;
           } else {
             ws_conn_notify_on_writeable(conn);
-            return 1;
+            return 0;
           }
         }
       }
 
-      conn_drain_write_buf(conn);
-
-      // queue up for writing if not using shared buffer
-      // if (wbuf == conn->send_buf) {
-      //   // queue it up for writing
-      //   server_writeable_conns_append(conn);
-      // } else if (is_using_shared(conn)) {
-      //   if (conn_drain_write_buf(conn, s->shared_send_buffer) == -1) {
-      //     // buf_reset(s->shared_recv_buffer);
-      //     ws_conn_destroy(conn);
-      //   };
-      //   clear_using_shared(conn);
-      //   conn->base->shared_send_buffer_owner = NULL;
-      // }
-
-      return 1;
+      return 0;
+    } else {
+      return -1;
     }
+  } else {
+    return -1;
+  }
+}
+
+// *************************************
+
+static inline int conn_write_pong(ws_conn_t *c, void *msg, size_t n) {
+  return conn_write_frame(c, msg, n, OP_PONG);
+}
+
+int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_pong(c, msg, n);
+  if ((stat == 0) & (c->send_buf != NULL)) {
+    conn_drain_write_buf(c);
+  } else if (stat == -1) {
+    ws_conn_destroy(c);
+  }
+  return stat == 1;
+}
+
+int ws_conn_prep_pong(ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_pong(c, msg, n);
+  if (stat == -1) {
+    ws_conn_destroy(c);
+    return stat;
+  }
+  return stat;
+}
+
+// *************************************
+
+static inline int conn_write_ping(ws_conn_t *c, void *msg, size_t n) {
+  return conn_write_frame(c, msg, n, OP_PING);
+}
+
+int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_ping(c, msg, n);
+  if ((stat == 0) & (c->send_buf != NULL)) {
+    conn_drain_write_buf(c);
+  } else if (stat == -1) {
+    ws_conn_destroy(c);
+  }
+  return stat == 1;
+}
+
+int ws_conn_prep_ping(ws_conn_t *c, void *msg, size_t n) {
+  int stat = conn_write_ping(c, msg, n);
+  if (stat == -1) {
+    ws_conn_destroy(c);
+    return stat;
+  }
+  return stat;
+}
+
+// *************************************
+
+static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
+                                 bool compress) {
+  int stat;
+#ifdef WITH_COMPRESSION
+  if (!compress) {
+    stat = conn_write_frame(c, msg, n, op);
+  } else {
+    struct basic_buffer *deflate_buf = conn_basic_buffer(c);
+
+    ssize_t compressed_len = deflation_stream_deflate(
+        c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
+        deflate_buf->cap - deflate_buf->len, true);
+
+    stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
+                            compressed_len, op | 0x40);
+  }
+#else
+  stat = conn_write_frame(c, msg, n, OP_TXT);
+#endif /* WITH_COMPRESSION */
+
+  return stat;
+}
+
+int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
+  int stat = conn_write_msg(c, msg, n, OP_BIN, compress);
+  if ((stat == 0) & (c->send_buf != NULL)) {
+    conn_drain_write_buf(c);
+  } else if (stat == -1) {
+    ws_conn_destroy(c);
+  }
+  return stat;
+}
+
+int ws_conn_prep_bin_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
+  int stat = conn_write_msg(c, msg, n, OP_BIN, compress);
+  if (stat == -1) {
+    ws_conn_destroy(c);
+    return stat;
   }
 
-  return 0;
+  return stat;
+}
+
+int ws_conn_prep_txt_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
+  int stat = conn_write_msg(c, msg, n, OP_TXT, compress);
+  if (stat == -1) {
+    ws_conn_destroy(c);
+    return stat;
+  }
+
+  return stat;
+}
+
+int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
+  int stat = conn_write_msg(c, msg, n, OP_TXT, compress);
+  if ((stat == 0) & (c->send_buf != NULL)) {
+    conn_drain_write_buf(c);
+  } else if (stat == -1) {
+    ws_conn_destroy(c);
+  }
+  return stat == 1;
+}
+
+// *************************************
+
+void ws_conn_send_all(ws_conn_t *c) {
+  if ((c->send_buf != NULL) & (is_writeable(c) == 1)) {
+    conn_drain_write_buf(c);
+  }
+}
+
+void ws_conn_send_all_async(ws_conn_t *c) {
+  if ((c->send_buf != NULL)) {
+    server_writeable_conns_append(c);
+  }
+}
+
+void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
+  // reason string must be less than 124
+  // this isn't a websocket protocol restriction but it will be here for now
+  if (len > 124) {
+    return;
+  }
+
+  // make sure we haven't already done this
+  if (is_closing(conn->flags)) {
+    return;
+  }
+
+  conn_prep_send_buf(conn);
+
+  uint8_t *buf = buf_peek(conn->send_buf);
+
+  buf[0] = FIN | OP_CLOSE;
+  buf[1] = 2 + len;
+  buf[2] = (code >> 8) & 0xFF;
+  buf[3] = code & 0xFF;
+  conn->send_buf->wpos += 4;
+  buf_put(conn->send_buf, msg, len);
+
+  conn_drain_write_buf(conn);
+  ws_conn_destroy(conn);
+}
+
+void ws_conn_destroy(ws_conn_t *conn) {
+  if (is_closing(conn->flags)) {
+    return;
+  }
+
+  server_closeable_conns_append(conn);
 }
 
 int ws_conn_fd(ws_conn_t *c) { return c->fd; }
@@ -2406,10 +2424,12 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   }
 
   size_t mirrored_bufs_total_size = nmemb * sizeof(mirrored_buf_t);
-  size_t avb_list_total_size = nmemb * sizeof(mirrored_buf_t*);
+  size_t avb_list_total_size = nmemb * sizeof(mirrored_buf_t *);
 
-  size_t pool_sz =
-      ((sizeof(struct mirrored_buf_pool) + mirrored_bufs_total_size + avb_list_total_size) + page_size - 1) & ~(page_size - 1);
+  size_t pool_sz = ((sizeof(struct mirrored_buf_pool) +
+                     mirrored_bufs_total_size + avb_list_total_size) +
+                    page_size - 1) &
+                   ~(page_size - 1);
   size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
 
   void *pool_mem = mmap(NULL, pool_sz + buf_pool_sz, PROT_NONE,
@@ -2430,8 +2450,11 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   pool->avb = nmemb;
   pool->cap = nmemb;
 
-  pool->mirrored_bufs = (mirrored_buf_t*)((uintptr_t)pool_mem + sizeof (struct mirrored_buf_pool));
-  pool->avb_list = (mirrored_buf_t**)((uintptr_t)pool_mem + sizeof (struct mirrored_buf_pool) + mirrored_bufs_total_size);
+  pool->mirrored_bufs = (mirrored_buf_t *)((uintptr_t)pool_mem +
+                                           sizeof(struct mirrored_buf_pool));
+  pool->avb_list = (mirrored_buf_t **)((uintptr_t)pool_mem +
+                                       sizeof(struct mirrored_buf_pool) +
+                                       mirrored_bufs_total_size);
 
   pool->fd = memfd_create("buf", 0);
   if (pool->fd == -1) {

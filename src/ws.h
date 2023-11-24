@@ -252,11 +252,25 @@ struct ws_server_params {
 int ws_conn_fd(ws_conn_t *c);
 
 int ws_conn_pong(ws_conn_t *c, void *msg, size_t n);
+int ws_conn_prep_pong(ws_conn_t *c, void *msg, size_t n);
+
 int ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
+int ws_conn_prep_ping(ws_conn_t *c, void *msg, size_t n);
+
+int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
+int ws_conn_prep_txt_msg(ws_conn_t *c, void *msg, size_t n, bool compress);
+
+void ws_conn_send_all(ws_conn_t *c); // drain the send buffer 
+
+void ws_conn_send_all_async(ws_conn_t *c);
+
+
+int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress);
+int ws_conn_prep_bin_msg(ws_conn_t *c, void *msg, size_t n, bool compress);
+
 void ws_conn_close(ws_conn_t *c, void *msg, size_t n, uint16_t code);
 void ws_conn_destroy(ws_conn_t *c);
-int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
-int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress);
+
 
 ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
