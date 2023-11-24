@@ -1995,39 +1995,65 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
     conn_prep_send_buf(conn);
 
     size_t flen = len + hlen;
-    if (buf_space(conn->send_buf) > flen) {
-      // large sends are a bit more complex to handle
-      // we attempt to avoid as much copying as possible
-      // using vectored I/O
 
-      if (hlen == 4) {
-        uint8_t *hbuf =
-            conn->send_buf->buf +
-            conn->send_buf->wpos; // place the header in the write buffer
-        memset(hbuf, 0, 2);
-        hbuf[0] = FIN | op; // Set FIN bit and opcode
-        conn->send_buf->wpos += hlen;
-        hbuf[1] = PAYLOAD_LEN_16;
-        hbuf[2] = (len >> 8) & 0xFF;
-        hbuf[3] = len & 0xFF;
-        buf_put(conn->send_buf, data, len);
-      } else if (hlen == 2) {
-        uint8_t *hbuf =
-            conn->send_buf->buf +
-            conn->send_buf->wpos; // place the header in the write buffer
-        memset(hbuf, 0, 2);
-        hbuf[0] = FIN | op; // Set FIN bit and opcode
-        conn->send_buf->wpos += hlen;
-        hbuf[1] = (uint8_t)len;
-        buf_put(conn->send_buf, data, len);
+    if (buf_space(conn->send_buf) < flen) {
+      // if we drain would we be able to fit the msg?
+      if (conn->send_buf->buf_sz >= flen) {
+        if (is_writeable(conn)) {
+          int ret = conn_drain_write_buf(conn);
+          switch (ret) {
+          case -1:
+            return ret;
+            break;
+          default:
+            conn_prep_send_buf(conn);
+            // we couldn't drain enough to fit the msg
+            if (buf_space(conn->send_buf) < flen) {
+              return -1;
+            }
+            break;
+          }
+
+        } else {
+          // we can't write to the socket now due to backpressure
+          return -1;
+        }
       } else {
-       return conn_write_large_frame(conn, data, len, op);
+        // this is too large and needs to be fragmented
+        return -1;
       }
-
-      return 0;
-    } else {
-      return -1;
     }
+
+    // large sends are a bit more complex to handle
+    // we attempt to avoid as much copying as possible
+    // using vectored I/O
+
+    if (hlen == 4) {
+      uint8_t *hbuf =
+          conn->send_buf->buf +
+          conn->send_buf->wpos; // place the header in the write buffer
+      memset(hbuf, 0, 2);
+      hbuf[0] = FIN | op; // Set FIN bit and opcode
+      conn->send_buf->wpos += hlen;
+      hbuf[1] = PAYLOAD_LEN_16;
+      hbuf[2] = (len >> 8) & 0xFF;
+      hbuf[3] = len & 0xFF;
+      buf_put(conn->send_buf, data, len);
+    } else if (hlen == 2) {
+      uint8_t *hbuf =
+          conn->send_buf->buf +
+          conn->send_buf->wpos; // place the header in the write buffer
+      memset(hbuf, 0, 2);
+      hbuf[0] = FIN | op; // Set FIN bit and opcode
+      conn->send_buf->wpos += hlen;
+      hbuf[1] = (uint8_t)len;
+      buf_put(conn->send_buf, data, len);
+    } else {
+      return conn_write_large_frame(conn, data, len, op);
+    }
+
+    return 0;
+
   } else {
     return -1;
   }
