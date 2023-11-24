@@ -248,27 +248,27 @@ typedef struct server {
   ws_msg_cb_t on_ws_msg;
   ws_msg_fragment_cb_t on_ws_msg_fragment;
   ws_ping_cb_t on_ws_ping;
-  ws_pong_cb_t on_ws_pong;
-
-  ws_drain_cb_t on_ws_drain;
-  ws_disconnect_cb_t on_ws_disconnect;
-  ws_open_cb_t on_ws_open;
+  struct mirrored_buf_pool *buffer_pool;
   size_t open_conns; // open websocket connections
   size_t max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
+
+  ws_open_cb_t on_ws_open;
+  ws_drain_cb_t on_ws_drain;
+  ws_disconnect_cb_t on_ws_disconnect;
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
   ws_close_cb_t on_ws_close;
-
+  ws_pong_cb_t on_ws_pong;
   ws_on_timeout_t on_ws_conn_timeout;
+  struct ws_conn_pool *conn_pool;
+
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
-  struct mirrored_buf_pool *buffer_pool;
   struct basic_buffer_pool *basic_buffer_pool;
 #ifdef WITH_COMPRESSION
   z_stream *istrm;
   z_stream *dstrm;
 #endif /* WITH_COMPRESSION */
-  struct ws_conn_pool *conn_pool;
   int fd; // server file descriptor
   int epoll_fd;
   bool accept_paused; // are we paused on accepting new connections
