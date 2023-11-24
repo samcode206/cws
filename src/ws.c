@@ -581,13 +581,13 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op);
 
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
-  if (cl->len + 1 < cl->cap) {
+  if (cl->len + 1 <= cl->cap) {
     cl->conns[cl->len++] = conn;
   } else {
     // this would be a serious bug, we should always have enough space unless we
     // are adding duplicates and theres a nasty bug so we can keep this check
     // maybe ??
-    fprintf(stderr, "%s: would overflow\n", "conn_list_append");
+    fprintf(stderr, "%s(): would overflow\n", "conn_list_append");
     exit(EXIT_FAILURE);
   }
 }
@@ -2405,8 +2405,11 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
     return NULL;
   }
 
+  size_t mirrored_bufs_total_size = nmemb * sizeof(mirrored_buf_t);
+  size_t avb_list_total_size = nmemb * sizeof(mirrored_buf_t*);
+
   size_t pool_sz =
-      (sizeof(struct mirrored_buf_pool) + page_size - 1) & ~(page_size - 1);
+      ((sizeof(struct mirrored_buf_pool) + mirrored_bufs_total_size + avb_list_total_size) + page_size - 1) & ~(page_size - 1);
   size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
 
   void *pool_mem = mmap(NULL, pool_sz + buf_pool_sz, PROT_NONE,
@@ -2427,11 +2430,8 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   pool->avb = nmemb;
   pool->cap = nmemb;
 
-  pool->mirrored_bufs = calloc(nmemb, sizeof(mirrored_buf_t));
-  assert(pool->mirrored_bufs != NULL);
-
-  pool->avb_list = calloc(nmemb, sizeof(mirrored_buf_t *));
-  assert(pool->avb_list != NULL);
+  pool->mirrored_bufs = (mirrored_buf_t*)((uintptr_t)pool_mem + sizeof (struct mirrored_buf_pool));
+  pool->avb_list = (mirrored_buf_t**)((uintptr_t)pool_mem + sizeof (struct mirrored_buf_pool) + mirrored_bufs_total_size);
 
   pool->fd = memfd_create("buf", 0);
   if (pool->fd == -1) {
