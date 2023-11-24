@@ -1913,6 +1913,79 @@ static int conn_drain_write_buf(ws_conn_t *conn) {
   return 0;
 }
 
+static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
+                                  uint8_t op) {
+
+  size_t hlen = 10;
+  size_t flen = len + 10;
+
+  // large send
+  uint8_t hbuf[hlen]; // place the header on the stack
+  memset(hbuf, 0, 2);
+  hbuf[0] = FIN | op; // Set FIN bit and opcode
+  hbuf[1] = PAYLOAD_LEN_64;
+  hbuf[2] = (len >> 56) & 0xFF;
+  hbuf[3] = (len >> 48) & 0xFF;
+  hbuf[4] = (len >> 40) & 0xFF;
+  hbuf[5] = (len >> 32) & 0xFF;
+  hbuf[6] = (len >> 24) & 0xFF;
+  hbuf[7] = (len >> 16) & 0xFF;
+  hbuf[8] = (len >> 8) & 0xFF;
+  hbuf[9] = len & 0xFF;
+
+  if (!is_writeable(conn)) {
+    buf_put(conn->send_buf, hbuf, hlen);
+    buf_put(conn->send_buf, data, len);
+  } else {
+    ssize_t n;
+    size_t total_write;
+
+    if (!buf_len(conn->send_buf)) {
+      // here only two iovecs are needed
+      // stack allocated header and the payload data
+      struct iovec vecs[2];
+      vecs[0].iov_base = hbuf;
+      vecs[0].iov_len = hlen;
+      vecs[1].iov_base = data;
+      vecs[1].iov_len = len;
+      total_write = flen;
+      // write as much as possible and only copy from payload data what
+      // couldn't be drained
+      n = buf_write2v(conn->send_buf, conn->fd, vecs, flen);
+    } else {
+      // here there is data pending in the connection send buffer
+      // first iovec points to the connection buffer
+      // second points to the stack allocated header
+      // third points to the payload data
+      struct iovec vecs[3];
+      vecs[0].iov_len = buf_len(conn->send_buf);
+      vecs[0].iov_base = conn->send_buf->buf + conn->send_buf->rpos;
+      vecs[1].iov_base = hbuf;
+      vecs[1].iov_len = hlen;
+      vecs[2].iov_base = data;
+      vecs[2].iov_len = len;
+      total_write = flen + vecs[0].iov_len;
+
+      // send of as much as we can and place the rest in the connection
+      // buffer
+      n = buf_drain_write2v(conn->send_buf, vecs, total_write, NULL, conn->fd);
+    }
+
+    if (n == total_write) {
+      mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
+      conn->send_buf = NULL;
+      return 0;
+    } else if (n == 0 || ((n == -1) & ((errno != EAGAIN) | (errno != EINTR)))) {
+      return -1;
+    } else {
+      ws_conn_notify_on_writeable(conn);
+      return 0;
+    }
+  }
+
+  return 0;
+}
+
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op) {
 
@@ -1948,71 +2021,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
         hbuf[1] = (uint8_t)len;
         buf_put(conn->send_buf, data, len);
       } else {
-        // large send
-        uint8_t hbuf[hlen]; // place the header on the stack
-        memset(hbuf, 0, 2);
-        hbuf[0] = FIN | op; // Set FIN bit and opcode
-        hbuf[1] = PAYLOAD_LEN_64;
-        hbuf[2] = (len >> 56) & 0xFF;
-        hbuf[3] = (len >> 48) & 0xFF;
-        hbuf[4] = (len >> 40) & 0xFF;
-        hbuf[5] = (len >> 32) & 0xFF;
-        hbuf[6] = (len >> 24) & 0xFF;
-        hbuf[7] = (len >> 16) & 0xFF;
-        hbuf[8] = (len >> 8) & 0xFF;
-        hbuf[9] = len & 0xFF;
-
-        if (!is_writeable(conn)) {
-          buf_put(conn->send_buf, hbuf, hlen);
-          buf_put(conn->send_buf, data, len);
-        } else {
-          ssize_t n;
-          size_t total_write;
-
-          if (!buf_len(conn->send_buf)) {
-            // here only two iovecs are needed
-            // stack allocated header and the payload data
-            struct iovec vecs[2];
-            vecs[0].iov_base = hbuf;
-            vecs[0].iov_len = hlen;
-            vecs[1].iov_base = data;
-            vecs[1].iov_len = len;
-            total_write = flen;
-            // write as much as possible and only copy from payload data what
-            // couldn't be drained
-            n = buf_write2v(conn->send_buf, conn->fd, vecs, flen);
-          } else {
-            // here there is data pending in the connection send buffer
-            // first iovec points to the connection buffer
-            // second points to the stack allocated header
-            // third points to the payload data
-            struct iovec vecs[3];
-            vecs[0].iov_len = buf_len(conn->send_buf);
-            vecs[0].iov_base = conn->send_buf->buf + conn->send_buf->rpos;
-            vecs[1].iov_base = hbuf;
-            vecs[1].iov_len = hlen;
-            vecs[2].iov_base = data;
-            vecs[2].iov_len = len;
-            total_write = flen + vecs[0].iov_len;
-
-            // send of as much as we can and place the rest in the connection
-            // buffer
-            n = buf_drain_write2v(conn->send_buf, vecs, total_write, NULL,
-                                  conn->fd);
-          }
-
-          if (n == total_write) {
-            mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
-            conn->send_buf = NULL;
-            return 0;
-          } else if (n == 0 ||
-                     ((n == -1) & ((errno != EAGAIN) | (errno != EINTR)))) {
-            return -1;
-          } else {
-            ws_conn_notify_on_writeable(conn);
-            return 0;
-          }
-        }
+       return conn_write_large_frame(conn, data, len, op);
       }
 
       return 0;
@@ -2111,14 +2120,14 @@ int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
   return stat;
 }
 
-int ws_conn_put_bin_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
+int ws_conn_put_bin(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_msg(c, msg, n, OP_BIN, compress);
-  // if we are sending to another connection outside of the currently processed
-  // connection in the event loop, we have to queue up the request so we really
-  // send it to the other side this does hold on to a buffer for longer than
-  // ideal but can be useful for certain cases where a bunch of small messages
-  // are emmitted in a short time and we wanna send them all in a single syscall
-  // (if possible)
+  // if we are sending to another connection outside of the currently
+  // processed connection in the event loop, we have to queue up the request
+  // so we really send it to the other side this does hold on to a buffer for
+  // longer than ideal but can be useful for certain cases where a bunch of
+  // small messages are emmitted in a short time and we wanna send them all in
+  // a single syscall (if possible)
   if ((stat == 0) & (c->send_buf != NULL) & (!is_processing(c))) {
     server_writeable_conns_append(c);
   } else if (stat == -1) {
@@ -2128,7 +2137,7 @@ int ws_conn_put_bin_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
   return stat;
 }
 
-int ws_conn_put_txt_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
+int ws_conn_put_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_msg(c, msg, n, OP_TXT, compress);
   if ((stat == 0) & (c->send_buf != NULL) & (!is_processing(c))) {
     server_writeable_conns_append(c);
@@ -2155,11 +2164,9 @@ void ws_conn_flush_pending(ws_conn_t *c) {
   }
 }
 
-
-
-size_t ws_conn_write_buf_space(ws_conn_t *c){
-  if (c->send_buf){
-  return buf_space(c->send_buf);
+size_t ws_conn_write_buf_space(ws_conn_t *c) {
+  if (c->send_buf) {
+    return buf_space(c->send_buf);
   } else {
     return c->base->buffer_pool->buf_sz;
   }

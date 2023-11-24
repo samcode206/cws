@@ -258,11 +258,11 @@ int ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
 int ws_conn_put_ping(ws_conn_t *c, void *msg, size_t n);
 
 int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
-int ws_conn_put_txt_msg(ws_conn_t *c, void *msg, size_t n, bool compress);
+int ws_conn_put_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
 
 
 int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress);
-int ws_conn_put_bin_msg(ws_conn_t *c, void *msg, size_t n, bool compress);
+int ws_conn_put_bin(ws_conn_t *c, void *msg, size_t n, bool compress);
 
 void ws_conn_close(ws_conn_t *c, void *msg, size_t n, uint16_t code);
 void ws_conn_destroy(ws_conn_t *c);
