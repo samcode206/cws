@@ -298,6 +298,14 @@ static void conn_basic_buffer_dispose(ws_conn_t *c) {
 }
 #endif /* WITH_COMPRESSION */
 
+static inline void conn_prep_send_buf(ws_conn_t *conn) {
+  if (!conn->send_buf) {
+    conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
+    assert(conn->send_buf != NULL);
+  }
+}
+
+
 // maybe later we can support dedicated compression
 // z_stream *conn_inflate_stream(ws_conn_t *c) {
 //   if (c->buffers[3]) {
@@ -541,7 +549,7 @@ static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
   }
 }
 
-// loop unrolling version, maybe faster for smaller messages?? 
+// loop unrolling version, maybe faster for smaller messages??
 // static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
 
 //   size_t i = 0;
@@ -1174,13 +1182,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
                 ws_conn_handle(c);
               } else {
                 handle_upgrade(c);
-                // remove
-                if (c->recv_buf) {
-                  exit(EXIT_FAILURE);
-                }
-                if (c->send_buf) {
-                  exit(EXIT_FAILURE);
-                }
               }
             }
           }
@@ -1295,6 +1296,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
   return base64_encode(derived_val, (const char *)hash, sizeof hash);
 }
 
+
 static void handle_upgrade(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
   size_t resp_len = 0;
@@ -1381,9 +1383,7 @@ static void handle_upgrade(ws_conn_t *conn) {
             pmd = true;
           }
 
-          if (!conn->send_buf) {
-            conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-          }
+          conn_prep_send_buf(conn);
 
           buf_reset(conn->send_buf);
           buf_put(conn->send_buf, switching_protocols,
@@ -1400,9 +1400,7 @@ static void handle_upgrade(ws_conn_t *conn) {
           buf_put(conn->send_buf, CRLF2, CRLF2_LEN);
           resp_len = buf_len(conn->send_buf);
         } else {
-          if (!conn->send_buf) {
-            conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-          }
+          conn_prep_send_buf(conn);
 
           size_t max_resp_len = buf_space(conn->send_buf);
           resp_len = s->on_ws_upgrade_req(conn, (char *)headers, accept_key,
@@ -1422,9 +1420,7 @@ static void handle_upgrade(ws_conn_t *conn) {
 
       } else {
         set_write_shutdown(conn);
-        if (!conn->send_buf) {
-          conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-        }
+        conn_prep_send_buf(conn);
 
         buf_put(conn->send_buf, bad_request, BAD_REQUEST_LEN);
         printf("error parsing http headers: %d\n", ret);
@@ -1438,9 +1434,7 @@ static void handle_upgrade(ws_conn_t *conn) {
     }
 
   } else {
-    if (!conn->send_buf) {
-      conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-    }
+    conn_prep_send_buf(conn);
     set_write_shutdown(conn);
     buf_put(conn->send_buf, bad_request, BAD_REQUEST_LEN);
   }
@@ -1975,9 +1969,7 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
     return;
   }
 
-  if (!conn->send_buf) {
-    conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-  }
+  conn_prep_send_buf(conn);
 
   uint8_t *buf = buf_peek(conn->send_buf);
 
@@ -2014,12 +2006,9 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
                             uint8_t op) {
 
   if (!is_closing(conn->flags)) {
-    ws_server_t *s = conn->base;
     size_t hlen = frame_get_header_len(len);
 
-    if (!conn->send_buf) {
-      conn->send_buf = mirrored_buf_get(s->buffer_pool);
-    }
+    conn_prep_send_buf(conn);
 
     size_t flen = len + hlen;
     if (buf_space(conn->send_buf) > flen) {
