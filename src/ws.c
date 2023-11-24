@@ -203,6 +203,7 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
 #define CONN_COMPRESSION_ALLOWED (1u << 8)
 #define CONN_RX_COMPRESSED_FRAGMENTS (1u << 9)
 #define CONN_TIMER_QUEUED (1u << 10)
+#define CONN_RX_PROCESSING_FRAMES (1u << 11)
 
 struct conn_list {
   size_t len;
@@ -400,6 +401,20 @@ static inline void set_writeable(ws_conn_t *c) {
 static inline void clear_writeable(ws_conn_t *c) {
   c->flags &= ~CONN_TX_WRITEABLE;
 }
+
+
+static inline bool is_processing(ws_conn_t *c) {
+  return (c->flags & CONN_TX_WRITEABLE) != 0;
+}
+
+static inline void set_processing(ws_conn_t *c) {
+  c->flags |= CONN_TX_WRITEABLE;
+}
+
+static inline void clear_processing(ws_conn_t *c) {
+  c->flags &= ~CONN_TX_WRITEABLE;
+}
+
 
 static inline bool is_write_queued(ws_conn_t *c) {
   return (c->flags & CONN_TX_WRITE_QUEUED) != 0;
@@ -1171,7 +1186,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
               }
 
               if (is_upgraded(c)) {
+                set_processing(c);
                 ws_conn_handle(c);
+                clear_processing(c);
               } else {
                 handle_upgrade(c);
               }
@@ -1811,6 +1828,11 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     }
   } /* loop end */
 
+
+  if ((conn->send_buf != NULL) & (is_writeable(conn)) & (!is_closing(conn->flags))){
+    conn_drain_write_buf(conn);
+  }
+
   size_t move_total;
 
 clean_up_buffer:
@@ -1987,7 +2009,7 @@ static inline int conn_write_pong(ws_conn_t *c, void *msg, size_t n) {
 
 int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_pong(c, msg, n);
-  if ((stat == 0) & (c->send_buf != NULL)) {
+  if ((stat == 0) & (c->send_buf != NULL) & is_writeable(c)) {
     conn_drain_write_buf(c);
   } else if (stat == -1) {
     ws_conn_destroy(c);
@@ -1995,11 +2017,12 @@ int ws_conn_pong(ws_conn_t *c, void *msg, size_t n) {
   return stat == 1;
 }
 
-int ws_conn_prep_pong(ws_conn_t *c, void *msg, size_t n) {
+int ws_conn_put_pong(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_pong(c, msg, n);
-  if (stat == -1) {
+  if ((stat == 0) & (c->send_buf != NULL) & (!is_processing(c))) {
+    server_writeable_conns_append(c);
+  } else if (stat == -1) {
     ws_conn_destroy(c);
-    return stat;
   }
   return stat;
 }
@@ -2012,7 +2035,7 @@ static inline int conn_write_ping(ws_conn_t *c, void *msg, size_t n) {
 
 int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_ping(c, msg, n);
-  if ((stat == 0) & (c->send_buf != NULL)) {
+  if ((stat == 0) & (c->send_buf != NULL) & is_writeable(c)) {
     conn_drain_write_buf(c);
   } else if (stat == -1) {
     ws_conn_destroy(c);
@@ -2020,11 +2043,12 @@ int ws_conn_ping(ws_conn_t *c, void *msg, size_t n) {
   return stat == 1;
 }
 
-int ws_conn_prep_ping(ws_conn_t *c, void *msg, size_t n) {
+int ws_conn_put_ping(ws_conn_t *c, void *msg, size_t n) {
   int stat = conn_write_ping(c, msg, n);
-  if (stat == -1) {
+  if ((stat == 0) & (c->send_buf != NULL) & (!is_processing(c))) {
+    server_writeable_conns_append(c);
+  } else if (stat == -1) {
     ws_conn_destroy(c);
-    return stat;
   }
   return stat;
 }
@@ -2056,7 +2080,7 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
 
 int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_msg(c, msg, n, OP_BIN, compress);
-  if ((stat == 0) & (c->send_buf != NULL)) {
+  if ((stat == 0) & (c->send_buf != NULL) & is_writeable(c)) {
     conn_drain_write_buf(c);
   } else if (stat == -1) {
     ws_conn_destroy(c);
@@ -2064,21 +2088,28 @@ int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress) {
   return stat;
 }
 
-int ws_conn_prep_bin_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
+int ws_conn_put_bin_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_msg(c, msg, n, OP_BIN, compress);
-  if (stat == -1) {
+  // if we are sending to another connection outside of the currently processed connection
+  // in the event loop, we have to queue up the request so we really send it to the other side
+  // this does hold on to a buffer for longer than ideal but can be useful for certain cases 
+  // where a bunch of small messages are emmitted in a short time and we wanna send them all in a single
+  // syscall (if possible)
+  if ((stat == 0) & (c->send_buf != NULL) & (!is_processing(c))) {
+    server_writeable_conns_append(c);
+  } else if (stat == -1) {
     ws_conn_destroy(c);
-    return stat;
   }
 
   return stat;
 }
 
-int ws_conn_prep_txt_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
+int ws_conn_put_txt_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_msg(c, msg, n, OP_TXT, compress);
-  if (stat == -1) {
+  if ((stat == 0) & (c->send_buf != NULL) & (!is_processing(c))) {
+    server_writeable_conns_append(c);
+  } else if (stat == -1) {
     ws_conn_destroy(c);
-    return stat;
   }
 
   return stat;
@@ -2086,7 +2117,7 @@ int ws_conn_prep_txt_msg(ws_conn_t *c, void *msg, size_t n, bool compress) {
 
 int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
   int stat = conn_write_msg(c, msg, n, OP_TXT, compress);
-  if ((stat == 0) & (c->send_buf != NULL)) {
+  if ((stat == 0) & (c->send_buf != NULL) & is_writeable(c)) {
     conn_drain_write_buf(c);
   } else if (stat == -1) {
     ws_conn_destroy(c);
@@ -2095,18 +2126,6 @@ int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress) {
 }
 
 // *************************************
-
-void ws_conn_send_all(ws_conn_t *c) {
-  if ((c->send_buf != NULL) & (is_writeable(c) == 1)) {
-    conn_drain_write_buf(c);
-  }
-}
-
-void ws_conn_send_all_async(ws_conn_t *c) {
-  if ((c->send_buf != NULL)) {
-    server_writeable_conns_append(c);
-  }
-}
 
 void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   // reason string must be less than 124
