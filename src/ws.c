@@ -305,7 +305,6 @@ static inline void conn_prep_send_buf(ws_conn_t *conn) {
   }
 }
 
-
 // maybe later we can support dedicated compression
 // z_stream *conn_inflate_stream(ws_conn_t *c) {
 //   if (c->buffers[3]) {
@@ -1295,7 +1294,6 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 
   return base64_encode(derived_val, (const char *)hash, sizeof hash);
 }
-
 
 static void handle_upgrade(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
@@ -2697,12 +2695,12 @@ int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
   return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &s->ev);
 }
 
+static const char b64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
 static int base64_encode(char *encoded, const char *string, int len) {
   int i;
   char *p;
-
-  const char b64_table[] =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
   p = encoded;
   for (i = 0; i < len - 2; i += 3) {
