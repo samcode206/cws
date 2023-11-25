@@ -1412,7 +1412,11 @@ static void handle_upgrade(ws_conn_t *conn) {
                                           max_resp_len,
                                           (char *)buf_peek(conn->send_buf));
 
-          buf_consume(conn->recv_buf, request_buf_len);
+          if (conn->recv_buf) {
+            buf_consume(conn->recv_buf, request_buf_len);
+          } else {
+            return;
+          }
           if ((resp_len > 0) & (resp_len <= max_resp_len)) {
             conn->send_buf->wpos += resp_len;
             ok = true;
@@ -1591,8 +1595,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
               return; // TODO(sah): send a Close frame, & call close callback
             }
             s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
-            buf_consume(conn->recv_buf, full_frame_len);
             if (conn->recv_buf) {
+              buf_consume(conn->recv_buf, full_frame_len);
               conn->needed_bytes = 2;
               clear_bin(conn);
               conn_basic_buffer_dispose(conn);
@@ -1715,8 +1719,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
                        is_bin(conn));
 #endif /* WITH_COMPRESSION */
 
-          buf_consume(conn->recv_buf, conn->fragments_len);
           if (conn->recv_buf) {
+            buf_consume(conn->recv_buf, conn->fragments_len);
             conn->fragments_len = 0;
             clear_fragmented(conn);
             clear_bin(conn);
@@ -2151,13 +2155,13 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
     if (compressed_len > 0) {
       stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
                               compressed_len, op | 0x40);
-                              
-      if (!deflate_buf->len){
+
+      if (!deflate_buf->len) {
         conn_basic_buffer_dispose(c);
       }
 
     } else {
-      return WS_SEND_FAILED; // compression error 
+      return WS_SEND_FAILED; // compression error
     }
   }
 #else
