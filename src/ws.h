@@ -35,6 +35,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#define WITH_COMPRESSION
+
+#ifdef WITH_COMPRESSION
+#include <zlib.h>
+#endif /* WITH_COMPRESSION */
+
 
 /**
  * WebSocket server connection structure.
@@ -271,12 +277,49 @@ void ws_conn_destroy(ws_conn_t *c);
 void ws_conn_flush_pending(ws_conn_t *c);
 
 
-// current size of a single frame that can be sent
+// current size of a SINGLE frame that can be sent (accounts for largest possible Websocket Header)
 // if a previous send has some backpressure
 // but was still placed the frame in the send buffer
 // the user may call ws_conn_max_sendable_len to see if another frame
 // may fit in the buffer without having to wait for on_ws_drain
 size_t ws_conn_max_sendable_len(ws_conn_t *c);
+
+// given a msg_len in bytes, do we have enough space to store it
+// in the connection's send buffer
+bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len);
+
+
+// send a fragmented message to the client
+// if compression is wanted it must be done upfront on the entire msg before beginning to send fragments
+// otherwise the frames will get corrupted when the client decompresses the msg
+int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt, bool was_compressed, bool final);
+
+
+// are we currently in the middle for sending a fragmented message
+// if this retuns true no frames other than control frames should be written
+// because Websocket protocol only allows control frames to be interleaved with data frames
+bool ws_conn_sending_fragments(ws_conn_t *c);
+
+
+#ifdef WITH_COMPRESSION
+
+
+// compresses an entire message that is too large to fit in the connection's buffer and/or internal deflation buffer
+// the compressed data will be in out_len and the size of the compressed data is returned or an error from zlib 
+// users should only use this in conjuction with ws_conn_send_fragment if the msg is compressed and given 
+// to any other send/put function the data will be compressed twice if the compress parameter is true
+// or the frame built will not inform the client that the msg is compressed if compress paramater is false 
+// callers may combine with ws_estimate_max_deflated_size before, to get an upper bound of the compressed size
+ssize_t ws_server_deflate_huge_msg(ws_server_t *s,  char *input, size_t in_len, char *out,
+                            size_t out_len);
+
+// maximum size the data will be after compression
+// this may be used to allocate a buffer to provide for ws_deflate_huge_msg
+size_t ws_server_estimate_max_deflated_size(ws_server_t *s, size_t sz);
+
+
+
+#endif /* WITH_COMPRESSION */
 
 ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
@@ -364,6 +407,24 @@ enum ws_send_status {
   */
   WS_SEND_DROPPED_NEEDS_FRAGMENTATION = 4,
 
+
+  /*
+    this status is returned if sending a complete data frame (text|binary)
+    is not currently allowed by the Websocket protocol because there are 
+    fragmented messages currently being sent, if this error is returned
+    user should wait until they have sent the final fragment successfully
+    before trying to send a complete text/binary frame 
+    control message are not affected by this and can be sent interleaved with messages
+  */
+  WS_SEND_DROPPED_NOT_ALLOWED = 5,
+
+
+  /*
+    a compressed message was wanted where the client doesn't support it
+    this is only triggered with fragmented sends where the compression 
+    is already done, in a normal send we simply fallback to no compression
+  */
+  WS_SEND_DROPPED_UNSUPPORTED = 6,
 };
 
 /**

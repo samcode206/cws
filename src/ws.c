@@ -44,12 +44,6 @@
 #include <sys/uio.h>
 #include <time.h>
 
-#define WITH_COMPRESSION
-
-#ifdef WITH_COMPRESSION
-#include <zlib.h>
-#endif /* WITH_COMPRESSION */
-
 #define TIMER_GRANULARITY 5
 #define READ_TIMEOUT 60
 
@@ -204,6 +198,7 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
 #define CONN_RX_COMPRESSED_FRAGMENTS (1u << 9)
 #define CONN_TIMER_QUEUED (1u << 10)
 #define CONN_RX_PROCESSING_FRAMES (1u << 11)
+#define CONN_TX_SENDING_FRAGMENTS (1u << 12)
 
 struct conn_list {
   size_t len;
@@ -464,6 +459,18 @@ static inline void set_has_pending_timers(ws_conn_t *c) {
 
 static inline void clear_has_pending_timers(ws_conn_t *c) {
   c->flags &= ~CONN_TIMER_QUEUED;
+}
+
+static inline bool is_sending_fragments(ws_conn_t *c) {
+  return (c->flags & CONN_TX_SENDING_FRAGMENTS) != 0;
+}
+
+static inline void set_sending_fragments(ws_conn_t *c) {
+  c->flags |= CONN_TX_SENDING_FRAGMENTS;
+}
+
+static inline void clear_sending_fragments(ws_conn_t *c) {
+  c->flags &= ~CONN_TX_SENDING_FRAGMENTS;
 }
 
 // Frame Parsing Utils
@@ -1162,17 +1169,24 @@ int ws_server_start(ws_server_t *s, int backlog) {
                   };
                 }
 
-                s->ev.data.ptr = c;
-                s->ev.events = EPOLLIN | EPOLLRDHUP;
-                if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &s->ev) == -1) {
-                  if (s->on_ws_err) {
-                    int err = errno;
-                    s->on_ws_err(s, err);
-                  } else {
-                    perror("epoll_ctl");
-                    exit(EXIT_FAILURE);
-                  }
-                };
+                // we must recheck if the connection is still writeable
+                // it may be that more back pressure was built when
+                // s->on_ws_drain was called if that's the case we want to keep
+                // waiting on EPOLLOUT before resuming reads
+                if (is_writeable(c)) {
+                  s->ev.data.ptr = c;
+                  s->ev.events = EPOLLIN | EPOLLRDHUP;
+
+                  if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &s->ev) == -1) {
+                    if (s->on_ws_err) {
+                      int err = errno;
+                      s->on_ws_err(s, err);
+                    } else {
+                      perror("epoll_ctl");
+                      exit(EXIT_FAILURE);
+                    }
+                  };
+                }
               }
             }
           }
@@ -1618,8 +1632,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
           return; // TODO(sah): send a Close frame, & call close callback
         }
         s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
-        if (conn->recv_buff) {
-          buf_consume(buf, full_frame_len);
+        if (conn->recv_buf) {
+          buf_consume(conn->recv_buf, full_frame_len);
           clear_bin(conn);
           conn->needed_bytes = 2;
         } else {
@@ -1886,6 +1900,19 @@ static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
   clear_writeable(conn);
   conn->base->ev.data.ptr = conn;
   conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
+
+  if (is_sending_fragments(conn)) {
+    // keep EPOLLIN armed if we are in the sending_fragments state
+    // this is so that we can continue to read control frames
+    // we usually disable reading if there is backpressure
+    // until the client has read what was sent but this case
+    // we may be in the sending_fragments state for too long and don't wanna
+    // miss any ping/pongs or other messages that may cause a read timeout
+    // TODO : add a pause function for when the client wants to stop reading
+    // from a connection temporarily
+    conn->base->ev.events |= EPOLLIN;
+  }
+
   ws_server_epoll_ctl(conn->base, EPOLL_CTL_MOD, conn->fd);
 }
 
@@ -2026,6 +2053,11 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
           return WS_SEND_DROPPED_NEEDS_DRAIN;
         }
       } else {
+        // put the buffer back if it's empty
+        if (buf_len(conn->send_buf) == 0) {
+          mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
+          conn->send_buf = NULL;
+        }
         // this msg is larger than the send buffer
         // and must be fragmented
         if (opAndFinOpts & OP_TXT || opAndFinOpts & OP_BIN) {
@@ -2037,16 +2069,12 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       }
     }
 
-    // large sends are a bit more complex to handle
-    // we attempt to avoid as much copying as possible
-    // using vectored I/O
-
     if (hlen == 4) {
       uint8_t *hbuf =
           conn->send_buf->buf +
           conn->send_buf->wpos; // place the header in the write buffer
       memset(hbuf, 0, 2);
-      hbuf[0] = FIN | opAndFinOpts;
+      hbuf[0] = opAndFinOpts;
       conn->send_buf->wpos += hlen;
       hbuf[1] = PAYLOAD_LEN_16;
       hbuf[2] = (len >> 8) & 0xFF;
@@ -2057,7 +2085,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
           conn->send_buf->buf +
           conn->send_buf->wpos; // place the header in the write buffer
       memset(hbuf, 0, 2);
-      hbuf[0] = FIN | opAndFinOpts;
+      hbuf[0] = opAndFinOpts;
       conn->send_buf->wpos += hlen;
       hbuf[1] = (uint8_t)len;
       buf_put(conn->send_buf, data, len);
@@ -2108,7 +2136,6 @@ static inline int ws_conn_do_send(ws_conn_t *c, int stat) {
   } else if (stat == WS_SEND_FAILED) {
     ws_conn_destroy(c);
   }
-
   return stat;
 }
 
@@ -2142,9 +2169,13 @@ int ws_conn_put_ping(ws_conn_t *c, void *msg, size_t n) {
 
 static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
                                  bool compress) {
+  if (is_sending_fragments(c)) {
+    return WS_SEND_DROPPED_NOT_ALLOWED;
+  }
+
   int stat;
 #ifdef WITH_COMPRESSION
-  if (!compress) {
+  if (!compress || !is_compression_allowed(c)) {
     stat = conn_write_frame(c, msg, n, op);
   } else {
     struct basic_buffer *deflate_buf = conn_basic_buffer(c);
@@ -2215,6 +2246,56 @@ size_t ws_conn_max_sendable_len(ws_conn_t *c) {
 }
 
 // *************************************
+
+bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len) {
+  msg_len += frame_get_header_len(msg_len);
+  if (c->send_buf) {
+    return buf_space(c->send_buf) >= msg_len;
+  } else {
+    return c->base->buffer_pool->buf_sz >= msg_len;
+  }
+}
+
+inline bool ws_conn_sending_fragments(ws_conn_t *c) {
+  return is_sending_fragments(c);
+}
+
+int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt,
+                          bool was_compressed, bool final) {
+  bool is_continuation = is_sending_fragments(c);
+  set_sending_fragments(c);
+  uint8_t frame_cfg = OP_CONT;
+
+  // first fragment
+  if (!is_continuation) {
+    frame_cfg = txt ? OP_TXT : OP_BIN;
+    if (was_compressed) {
+      if (is_compression_allowed(c)) {
+        frame_cfg |= 0x40;
+      } else {
+        clear_sending_fragments(c);
+        return WS_SEND_DROPPED_UNSUPPORTED;
+      }
+    }
+  }
+
+
+  if (final)
+    frame_cfg |= FIN;
+
+  int stat = conn_write_frame(c, msg, len, frame_cfg);
+  int ret = ws_conn_do_send(c, stat);
+
+  if ((final == 1) & ((ret == WS_SEND_OK) | (ret == WS_SEND_OK_BACKPRESSURE))) {
+    // if we placed the final frame successfully clear the sending_fragments
+    // state to allow non fragmented bin|txt frames to be sent again
+    clear_sending_fragments(c);
+  }
+
+  return ret;
+}
+
+// **************************************
 
 void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   // reason string must be less than 124
@@ -2499,7 +2580,16 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
     deflateReset(dstrm);
   }
 
-  return total - 4;
+  return err == Z_OK ? total - 4 : err;
+}
+
+ssize_t ws_server_deflate_huge_msg(ws_server_t *s, char *input, size_t in_len,
+                                   char *out, size_t out_len) {
+  return deflation_stream_deflate(s->dstrm, input, in_len, out, out_len, 1);
+}
+
+size_t ws_server_estimate_max_deflated_size(ws_server_t *s, size_t sz) {
+  return deflateBound(s->dstrm, sz) + 4;
 }
 
 #endif /* WITH_COMPRESSION */

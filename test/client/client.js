@@ -19,11 +19,13 @@ ws.on("close", (code, reason) => {
 })
 
 ws.on("message", (msg, bin) => {
-  console.log(bin ? " binary": "text", "msg",  msg.toString());
+  console.log(bin ? " binary": "text", "msg", "size", msg.length,  msg.toString());
 })
 
 ws.on("ping", (data) => {
   console.log("ping", data.toString());
+  ws.pong('hi');
+  ws.send("hello");
 });
 
 ws.on("pong", (data) => {
