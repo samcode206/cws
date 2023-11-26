@@ -52,9 +52,10 @@
 #define OP_CONT 0x0
 #define OP_TXT 0x1
 #define OP_BIN 0x2
+
+#define OP_CLOSE 0x8
 #define OP_PING 0x9
 #define OP_PONG 0xA
-#define OP_CLOSE 0x8
 
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
@@ -294,10 +295,17 @@ static void conn_basic_buffer_dispose(ws_conn_t *c) {
 }
 #endif /* WITH_COMPRESSION */
 
-static inline void conn_prep_send_buf(ws_conn_t *conn) {
+static void conn_prep_send_buf(ws_conn_t *conn) {
   if (!conn->send_buf) {
-    conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-    assert(conn->send_buf != NULL);
+    mirrored_buf_t *recv_buf = conn->recv_buf;
+    // can we swap buffers so we don't go all the way to the buffer pool
+    if (recv_buf && !buf_len(recv_buf)) {
+      conn->send_buf = recv_buf;
+      conn->recv_buf = NULL;
+    } else {
+      conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
+      assert(conn->send_buf != NULL);
+    }
   }
 }
 
@@ -1393,16 +1401,17 @@ static void handle_upgrade(ws_conn_t *conn) {
 
         if (!s->on_ws_upgrade_req) {
           ok = true;
+#ifdef WITH_COMPRESSION
           bool pmd = false;
 
           char sec_websocket_extensions[1024];
-
           int sec_websocket_extensions_ret =
               get_header((char *)headers, "Sec-WebSocket-Extensions",
                          sec_websocket_extensions, 1024);
           if (sec_websocket_extensions_ret > 0) {
             pmd = true;
           }
+#endif /* WITH_COMPRESSION */
 
           conn_prep_send_buf(conn);
 
@@ -1410,6 +1419,7 @@ static void handle_upgrade(ws_conn_t *conn) {
           buf_put(conn->send_buf, switching_protocols,
                   SWITCHING_PROTOCOLS_HDRS_LEN);
           buf_put(conn->send_buf, accept_key, accept_key_len);
+#ifdef WITH_COMPRESSION
           if (pmd) {
             set_compression_allowed(conn);
             buf_put(conn->send_buf,
@@ -1417,7 +1427,7 @@ static void handle_upgrade(ws_conn_t *conn) {
                     "client_no_context_takeover",
                     74);
           }
-
+#endif /* WITH_COMPRESSION */
           buf_put(conn->send_buf, CRLF2, CRLF2_LEN);
           resp_len = buf_len(conn->send_buf);
         } else {
@@ -1494,11 +1504,6 @@ static void handle_upgrade(ws_conn_t *conn) {
   }
 }
 
-static inline size_t ws_conn_readable_len(ws_conn_t *conn,
-                                          mirrored_buf_t *buf) {
-  return buf->wpos - buf->rpos - conn->fragments_len;
-}
-
 static inline void ws_conn_handle(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
@@ -1513,360 +1518,324 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
     return;
   }
 
-  while (ws_conn_readable_len(conn, conn->recv_buf) - total_trimmed >=
-         conn->needed_bytes) {
-    // payload start
-    uint8_t *frame = conn->recv_buf->buf + conn->recv_buf->rpos +
-                     conn->fragments_len + total_trimmed;
+  for (;;) {
+    if (conn->recv_buf &&
+        buf_len(conn->recv_buf) - conn->fragments_len - total_trimmed >=
+            conn->needed_bytes) {
 
-    uint8_t fin = frame_get_fin(frame);
-    uint8_t opcode = frame_get_opcode(frame);
-    bool is_compressed = is_compressed_msg(frame);
+      // payload start
+      uint8_t *frame = conn->recv_buf->buf + conn->recv_buf->rpos +
+                       conn->fragments_len + total_trimmed;
 
-    // printf("fragments=%zu\n", conn->state.fragments_len);
-    // run general validation checks on the header
-    if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
-        (frame_has_unsupported_reserved_bits_set(conn, frame) == 1) |
-        (frame_is_masked(frame) == 0)) {
-      ws_conn_destroy(conn);
-      return;
-    }
+      uint8_t fin = frame_get_fin(frame);
+      uint8_t opcode = frame_get_opcode(frame);
+      bool is_compressed = is_compressed_msg(frame);
 
-    // make sure we can get the full msg
-    size_t payload_len = 0;
-    size_t frame_buf_len =
-        buf_len(conn->recv_buf) - conn->fragments_len - total_trimmed;
+      // printf("fragments=%zu\n", conn->state.fragments_len);
+      // run general validation checks on the header
+      if (((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
+          (frame_has_unsupported_reserved_bits_set(conn, frame) == 1) |
+          (frame_is_masked(frame) == 0)) {
+        ws_conn_destroy(conn);
+        return;
+      }
 
-    // check if we need to do more reads to get the msg length
-    int missing_header_len =
-        frame_decode_payload_len(frame, frame_buf_len, &payload_len);
-    if (missing_header_len) {
-      // wait for atleast remaining of the header
-      conn->needed_bytes = missing_header_len;
-      goto clean_up_buffer;
-    }
+      // make sure we can get the full msg
+      size_t payload_len = 0;
+      size_t frame_buf_len =
+          buf_len(conn->recv_buf) - conn->fragments_len - total_trimmed;
 
-    size_t mask_offset = frame_get_header_len(payload_len);
-    size_t full_frame_len = payload_len + 4 + mask_offset;
+      // check if we need to do more reads to get the msg length
+      int missing_header_len =
+          frame_decode_payload_len(frame, frame_buf_len, &payload_len);
+      if (missing_header_len) {
+        // wait for atleast remaining of the header
+        conn->needed_bytes = missing_header_len;
+        goto clean_up_buffer;
+      }
 
-    // validate frame length
-    if (payload_len > max_allowed_len) {
-      // drop the connection
-      ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
-      return;
-    }
+      size_t mask_offset = frame_get_header_len(payload_len);
+      size_t full_frame_len = payload_len + 4 + mask_offset;
 
-    // check that we have atleast the whole frame, otherwise
-    // set needed_bytes and exit waiting for more reads from the socket
-    if (frame_buf_len < full_frame_len) {
-      conn->needed_bytes = full_frame_len;
-      goto clean_up_buffer;
-    }
+      // validate frame length
+      if (payload_len > max_allowed_len) {
+        // drop the connection
+        ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
+        return;
+      }
 
-    // buf_debug(buf, "buffer");
+      // check that we have atleast the whole frame, otherwise
+      // set needed_bytes and exit waiting for more reads from the socket
+      if (frame_buf_len < full_frame_len) {
+        conn->needed_bytes = full_frame_len;
+        goto clean_up_buffer;
+      }
 
-    uint8_t *msg = frame + mask_offset + 4;
-    msg_unmask(msg, frame + mask_offset, payload_len);
-    conn->read_timeout = next_read_timeout;
-    switch (opcode) {
-    case OP_TXT:
-    case OP_BIN:
-      conn->flags &= ~CONN_RX_BIN;
-      conn->flags |= (opcode == OP_BIN) * CONN_RX_BIN;
-      // fin and never fragmented
-      // this handles both text and binary hence the fallthrough
-      if (fin & (!is_fragmented(conn))) {
+      // buf_debug(buf, "buffer");
+
+      uint8_t *msg = frame + mask_offset + 4;
+      msg_unmask(msg, frame + mask_offset, payload_len);
+      conn->read_timeout = next_read_timeout;
+      switch (opcode) {
+      case OP_TXT:
+      case OP_BIN:
+        conn->flags &= ~CONN_RX_BIN;
+        conn->flags |= (opcode == OP_BIN) * CONN_RX_BIN;
+        // fin and never fragmented
+        // this handles both text and binary hence the fallthrough
+        if (fin & (!is_fragmented(conn))) {
+          buf_consume(conn->recv_buf, full_frame_len);
+          conn->needed_bytes = 2;
 
 #ifdef WITH_COMPRESSION
 
-        // printf("payload len = %zu\n", payload_len);
+          // printf("payload len = %zu\n", payload_len);
 
-        if (!is_compressed) {
+          if (!is_compressed) {
+            if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
+              ws_conn_destroy(conn);
+              return; // TODO(sah): send a Close frame, & call close callback
+            }
+            s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
+            clear_bin(conn);
+          } else {
+            struct basic_buffer *inflated_buf = conn_basic_buffer(conn);
+            ssize_t inflated_sz = inflation_stream_inflate(
+                s->istrm, (char *)msg, payload_len, inflated_buf->data,
+                inflated_buf->cap, true);
+
+            if (inflated_sz > 0) {
+              // printf("%.*s\n", (int)inflated_sz, out);
+              // printf("\ninflated_sz = %zi\n", inflated_sz);
+              if (!is_bin(conn) &&
+                  !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
+                printf("invalid utf\n");
+                ws_conn_destroy(conn);
+                return; // TODO(sah): send a Close frame, & call close callback
+              }
+              s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
+              conn->needed_bytes = 2;
+              clear_bin(conn);
+              conn_basic_buffer_dispose(conn);
+            } else {
+              // TODO handle error
+              printf("inflate error\n");
+              ws_conn_destroy(conn);
+              conn_basic_buffer_dispose(conn);
+              return; // TODO(sah): send a Close frame, & call close callback
+            }
+          }
+
+#else
           if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
             ws_conn_destroy(conn);
             return; // TODO(sah): send a Close frame, & call close callback
           }
           s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
-          if (conn->recv_buf) {
-            buf_consume(conn->recv_buf, full_frame_len);
-            clear_bin(conn);
-            conn->needed_bytes = 2;
-          } else {
-            return;
-          }
-
-        } else {
-          struct basic_buffer *inflated_buf = conn_basic_buffer(conn);
-          ssize_t inflated_sz = inflation_stream_inflate(
-              s->istrm, (char *)msg, payload_len, inflated_buf->data,
-              inflated_buf->cap, true);
-
-          if (inflated_sz > 0) {
-            // printf("%.*s\n", (int)inflated_sz, out);
-            // printf("\ninflated_sz = %zi\n", inflated_sz);
-
-            if (!is_bin(conn) &&
-                !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
-              printf("invalid utf\n");
-              ws_conn_destroy(conn);
-              return; // TODO(sah): send a Close frame, & call close callback
-            }
-            s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
-            if (conn->recv_buf) {
-              buf_consume(conn->recv_buf, full_frame_len);
-              conn->needed_bytes = 2;
-              clear_bin(conn);
-              conn_basic_buffer_dispose(conn);
-            } else {
-              return;
-            }
-          } else {
-            // TODO handle error
-            printf("inflate error\n");
-            ws_conn_destroy(conn);
-            conn_basic_buffer_dispose(conn);
-            return; // TODO(sah): send a Close frame, & call close callback
-          }
-        }
-
-#else
-        if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
-          ws_conn_destroy(conn);
-          return; // TODO(sah): send a Close frame, & call close callback
-        }
-        s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
-        if (conn->recv_buf) {
-          buf_consume(conn->recv_buf, full_frame_len);
           clear_bin(conn);
-          conn->needed_bytes = 2;
-        } else {
-          return;
-        }
 #endif /* WITH_COMPRESSION */
 
-        break; /* OP_BIN don't fall through to fragmented msg */
-      } else if (fin & (is_fragmented(conn))) {
-        // this is invalid because we expect continuation not text or binary
-        // opcode
-        ws_conn_destroy(conn);
-        return;
-      }
+          break; /* OP_BIN don't fall through to fragmented msg */
+        } else if (fin & (is_fragmented(conn))) {
+          // this is invalid because we expect continuation not text or binary
+          // opcode
+          ws_conn_destroy(conn);
+          return;
+        }
 
-    case OP_CONT:
-      // accumulate bytes and increase fragments_len
+      case OP_CONT:
+        // accumulate bytes and increase fragments_len
 
-      // move bytes over
-      // call the callback
-      // reset
-      // can't send cont as first fragment
-      if ((opcode == OP_CONT) & (!is_fragmented(conn))) {
-        ws_conn_destroy(conn);
-        return;
-      }
+        // move bytes over
+        // call the callback
+        // reset
+        // can't send cont as first fragment
+        if ((opcode == OP_CONT) & (!is_fragmented(conn))) {
+          ws_conn_destroy(conn);
+          return;
+        }
 
-      if (conn->fragments_len + payload_len > max_allowed_len) {
-        ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
-        return;
-      }
+        if (conn->fragments_len + payload_len > max_allowed_len) {
+          ws_conn_close(conn, NULL, 0, WS_CLOSE_TOO_LARGE);
+          return;
+        }
 
-      // set the state to fragmented after validation
-      set_fragmented(conn);
-      if (is_compressed) {
-        set_fragment_compressed(conn);
-      }
+        // set the state to fragmented after validation
+        set_fragmented(conn);
+        if (is_compressed) {
+          set_fragment_compressed(conn);
+        }
 
-      if (!s->on_ws_msg_fragment) {
+        if (!s->on_ws_msg_fragment) {
 
-        // place back at the frame start which contains the header & mask
-        // we want to get rid of but ensure to subtract by the frame_gap to
-        // fill it if it isn't zero
-        // printf("%p placing at %zu\n", conn, (uintptr_t)frame-total_trimmed -
-        // (uintptr_t)conn->recv_buf->buf);
-        memmove(frame - total_trimmed, msg, payload_len);
-        conn->fragments_len += payload_len;
-        total_trimmed += mask_offset + 4;
-        conn->needed_bytes = 2;
-        if (fin) {
+          // place back at the frame start which contains the header & mask
+          // we want to get rid of but ensure to subtract by the frame_gap to
+          // fill it if it isn't zero
+          // printf("%p placing at %zu\n", conn, (uintptr_t)frame-total_trimmed
+          // - (uintptr_t)conn->recv_buf->buf);
+          memmove(frame - total_trimmed, msg, payload_len);
+          conn->fragments_len += payload_len;
+          total_trimmed += mask_offset + 4;
+          conn->needed_bytes = 2;
+          if (fin) {
 
 #ifdef WITH_COMPRESSION
 
-          if (is_fragment_compressed(conn)) {
-            clear_fragment_compressed(conn);
+            if (is_fragment_compressed(conn)) {
+              clear_fragment_compressed(conn);
 
-            struct basic_buffer *inflated_buf = conn_basic_buffer(conn);
+              struct basic_buffer *inflated_buf = conn_basic_buffer(conn);
 
-            assert(inflated_buf->len == 0);
-            ssize_t inflated_sz = inflation_stream_inflate(
-                s->istrm, (char *)buf_peek(conn->recv_buf), conn->fragments_len,
-                inflated_buf->data, inflated_buf->cap, true);
+              assert(inflated_buf->len == 0);
+              ssize_t inflated_sz = inflation_stream_inflate(
+                  s->istrm, (char *)buf_peek(conn->recv_buf),
+                  conn->fragments_len, inflated_buf->data, inflated_buf->cap,
+                  true);
 
-            if (inflated_sz) {
-              inflated_buf->len += inflated_sz;
-              // printf("%s\n", inflated_buf->data);
-              // printf("%zu\n", inflated_sz);
-              if (!is_bin(conn) &&
-                  !utf8_is_valid((uint8_t *)inflated_buf->data, inflated_sz)) {
+              buf_consume(conn->recv_buf, conn->fragments_len);
+
+              if (inflated_sz) {
+                inflated_buf->len += inflated_sz;
+                // printf("%s\n", inflated_buf->data);
+                // printf("%zu\n", inflated_sz);
+                if (!is_bin(conn) &&
+                    !utf8_is_valid((uint8_t *)inflated_buf->data,
+                                   inflated_sz)) {
+                  ws_conn_destroy(conn);
+                  conn_basic_buffer_dispose(conn);
+                  return; // TODO(sah): send a Close frame, & call close
+                          // callback
+                }
+                s->on_ws_msg(conn, inflated_buf->data, inflated_sz,
+                             is_bin(conn));
+              } else {
                 ws_conn_destroy(conn);
-                conn_basic_buffer_dispose(conn);
+              }
+
+              conn_basic_buffer_dispose(conn);
+            } else {
+              uint8_t *msg = buf_peek(conn->recv_buf);
+              buf_consume(conn->recv_buf, conn->fragments_len);
+              if (!is_bin(conn) && !utf8_is_valid(msg, conn->fragments_len)) {
+                ws_conn_destroy(conn);
                 return; // TODO(sah): send a Close frame, & call close callback
               }
-              s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
-            } else {
-              ws_conn_destroy(conn);
+              s->on_ws_msg(conn, msg, conn->fragments_len, is_bin(conn));
             }
 
-            conn_basic_buffer_dispose(conn);
-          } else {
-            if (!is_bin(conn) &&
-                !utf8_is_valid(buf_peek(conn->recv_buf), conn->fragments_len)) {
+#else
+            uint8_t *msg = buf_peek(conn->recv_buf);
+            buf_consume(conn->recv_buf, conn->fragments_len);
+            if (!is_bin(conn) && !utf8_is_valid(msg, conn->fragments_len)) {
               ws_conn_destroy(conn);
               return; // TODO(sah): send a Close frame, & call close callback
             }
-            s->on_ws_msg(conn, buf_peek(conn->recv_buf), conn->fragments_len,
-                         is_bin(conn));
-          }
-
-#else
-          if (!is_bin(conn) &&
-              !utf8_is_valid(buf_peek(conn->recv_buf), conn->fragments_len)) {
-            ws_conn_destroy(conn);
-            return; // TODO(sah): send a Close frame, & call close callback
-          }
-          s->on_ws_msg(conn, buf_peek(conn->recv_buf), conn->fragments_len,
-                       is_bin(conn));
+            s->on_ws_msg(conn, msg, conn->fragments_len, is_bin(conn));
 #endif /* WITH_COMPRESSION */
 
-          if (conn->recv_buf) {
-            buf_consume(conn->recv_buf, conn->fragments_len);
             conn->fragments_len = 0;
             clear_fragmented(conn);
             clear_bin(conn);
             conn->needed_bytes = 2;
-          } else {
-            return;
           }
-        }
-      } else {
-        s->on_ws_msg_fragment(conn, msg, payload_len, fin);
-        if (conn->recv_buf) {
+        } else {
           buf_consume(conn->recv_buf, full_frame_len);
+          s->on_ws_msg_fragment(conn, msg, payload_len, fin);
           conn->needed_bytes = 2;
           if (fin) {
             conn->fragments_len = 0;
-            conn->needed_bytes = 2;
             clear_fragmented(conn);
             clear_bin(conn);
           }
-        } else {
-          return;
         }
-      }
-      break;
-    case OP_PING:
-      if (payload_len > 125) {
-        ws_conn_destroy(conn);
-        return;
-      }
-      if (s->on_ws_ping) {
-        s->on_ws_ping(conn, msg, payload_len);
-      } else {
-        // Todo(sah): add some throttling to this
-        // a bad client can constantly send pings and we would keep replying
-        ws_conn_pong(conn, msg, payload_len);
-      }
-      if ((conn->fragments_len != 0)) {
-        total_trimmed += full_frame_len;
-        conn->needed_bytes = 2;
-      } else {
-        if (conn->recv_buf) {
+        break;
+      case OP_PING:
+      case OP_PONG:
+        if ((conn->fragments_len != 0)) {
+          total_trimmed += full_frame_len;
+        } else {
           buf_consume(conn->recv_buf, full_frame_len);
-          conn->needed_bytes = 2;
-        } else {
-          return;
         }
-      }
-
-      break;
-    case OP_PONG:
-      if (payload_len > 125) {
-        ws_conn_destroy(conn);
-        return;
-      }
-
-      if (s->on_ws_pong) {
-        // only call the callback if provided
-        s->on_ws_pong(conn, msg, payload_len);
-      }
-
-      if ((conn->fragments_len != 0)) {
-        total_trimmed += total_trimmed;
         conn->needed_bytes = 2;
-      } else {
-        if (conn->recv_buf) {
-          buf_consume(conn->recv_buf, full_frame_len);
-          conn->needed_bytes = 2;
-        }
-      }
-      break;
-    case OP_CLOSE:
-      if (!payload_len) {
-        if (s->on_ws_close) {
-          s->on_ws_close(conn, NULL, 0, WS_CLOSE_NORMAL);
-        } else {
-          ws_conn_close(conn, NULL, 0, WS_CLOSE_NORMAL);
-        }
-        return;
-      } else if (payload_len < 2) {
-        if (s->on_ws_close) {
-          s->on_ws_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
-        } else {
-          ws_conn_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
-        }
-
-        return;
-      }
-
-      else {
-        uint16_t code = WS_CLOSE_NO_STATUS;
         if (payload_len > 125) {
-          // close frames can be more but this is the most that will be
-          // supported for various reasons close frames generally should
-          // contain just the 16bit code and a short string for the reason at
-          // most
           ws_conn_destroy(conn);
           return;
         }
 
-        if (!utf8_is_valid(msg + 2, payload_len - 2)) {
-          ws_conn_destroy(conn);
-          return;
-        };
-
-        code = (msg[0] << 8) | msg[1];
-        if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
-            code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
-            code == 2999) {
+        if (opcode == OP_PONG && s->on_ws_pong) {
+          s->on_ws_pong(conn, msg, payload_len);
+        } else if (opcode == OP_PING) {
+          if (s->on_ws_ping) {
+            s->on_ws_ping(conn, msg, payload_len);
+          } else {
+            // Todo(sah): add some throttling to this
+            // a bad client can constantly send pings and we would keep replying
+            ws_conn_pong(conn, msg, payload_len);
+          }
+        }
+        break;
+      case OP_CLOSE:
+        if (!payload_len) {
           if (s->on_ws_close) {
-            s->on_ws_close(conn, NULL, 0, code);
+            s->on_ws_close(conn, NULL, 0, WS_CLOSE_NORMAL);
+          } else {
+            ws_conn_close(conn, NULL, 0, WS_CLOSE_NORMAL);
+          }
+          return;
+        } else if (payload_len < 2) {
+          if (s->on_ws_close) {
+            s->on_ws_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
           } else {
             ws_conn_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
           }
+
           return;
         }
 
-        if (s->on_ws_close) {
-          s->on_ws_close(conn, msg + 2, payload_len - 2, code);
-        } else {
-          ws_conn_close(conn, NULL, 0, code);
+        else {
+          uint16_t code = WS_CLOSE_NO_STATUS;
+          if (payload_len > 125) {
+            // close frames can be more but this is the most that will be
+            // supported for various reasons close frames generally should
+            // contain just the 16bit code and a short string for the reason at
+            // most
+            ws_conn_destroy(conn);
+            return;
+          }
+
+          if (!utf8_is_valid(msg + 2, payload_len - 2)) {
+            ws_conn_destroy(conn);
+            return;
+          };
+
+          code = (msg[0] << 8) | msg[1];
+          if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
+              code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
+              code == 2999) {
+            if (s->on_ws_close) {
+              s->on_ws_close(conn, NULL, 0, code);
+            } else {
+              ws_conn_close(conn, NULL, 0, WS_CLOSE_PROTOCOL);
+            }
+            return;
+          }
+
+          if (s->on_ws_close) {
+            s->on_ws_close(conn, msg + 2, payload_len - 2, code);
+          } else {
+            ws_conn_close(conn, NULL, 0, code);
+          }
+
+          return;
         }
 
+        break;
+      default:
+        ws_conn_destroy(conn);
         return;
       }
-
+    } else {
       break;
-    default:
-      ws_conn_destroy(conn);
-      return;
     }
   } /* loop end */
 
