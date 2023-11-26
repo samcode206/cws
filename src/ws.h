@@ -252,7 +252,24 @@ typedef size_t (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, char *request, const char
 
 
 
-typedef void (*ws_on_timeout_t)(ws_conn_t *ws_conn, int kind);
+/**
+ * Optional Callback invoked when a timeout occurs on a WebSocket connection.
+ *
+ * This callback is triggered when the WebSocket connection experiences a timeout.
+ * The 'kind' parameter specifies the type of timeout that occurred, allowing
+ * specific actions to be taken based on the timeout condition.
+ *
+ * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`) experiencing the timeout.
+ * @param kind    Specifies the type of timeout. The possible values are:
+ *                1 - Read timeout: Indicates a timeout occurred while waiting for incoming data.
+ *                2 - Write timeout: Indicates a timeout occurred while attempting to send data.
+ *                3 - Read/Write timeout: Indicates a timeout occurred in both reading and writing operations.
+ *
+ * The callback provides an opportunity to handle these timeout conditions, such as
+ * closing the connection or resetting the timeout. if this callback is not registered
+ * the default action is to drop the connection.
+ */
+typedef void (*ws_on_timeout_t)(ws_conn_t *ws_conn, unsigned kind);
 
 
 // Server parameter structure with optional callbacks for various WebSocket events.
@@ -278,74 +295,301 @@ struct ws_server_params {
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
 };
 
-int ws_conn_fd(ws_conn_t *c);
 
-int ws_conn_pong(ws_conn_t *c, void *msg, size_t n);
-int ws_conn_put_pong(ws_conn_t *c, void *msg, size_t n);
+enum ws_send_status {
+  /*
+    Send/writev call failed, or the connection is closing/closed.
+  */
+  WS_SEND_FAILED = -1, 
 
-int ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
-int ws_conn_put_ping(ws_conn_t *c, void *msg, size_t n);
+  /*
+    Send successful. The user may send more frames.
+  */
+  WS_SEND_OK = 0,
 
-int ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
-int ws_conn_put_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
+  /*
+    Data placed in send buffer, but there's backpressure. 
+    The caller should check available space before more sends or wait for on_ws_drain.
+  */
+  WS_SEND_OK_BACKPRESSURE = 1, 
+
+  /*
+    Frame dropped due to insufficient space. 
+    The caller should wait for on_ws_drain before retrying.
+  */
+  WS_SEND_DROPPED_NEEDS_DRAIN = 2,
+
+  /*
+    Frame too large and fragmentation is not allowed. This applies to control
+    frames (ping, pong, close) which have a maximum payload limit of 125 bytes.
+  */
+  WS_SEND_DROPPED_TOO_LARGE = 3,
+
+  /*
+    Frame too large, far exceeding the specified max_buffer_bytes set for the server. 
+    Such frames require fragmentation. Users should use the fragmented send 
+    variant and track progress with on_ws_drain When WS_SEND_OK_BACKPRESSURE is returned.
+  */
+  WS_SEND_DROPPED_NEEDS_FRAGMENTATION = 4,
+
+  /*
+    Sending a complete data frame (text|binary) is not allowed 
+    due to ongoing fragmented messages. Wait until the final fragment 
+    is sent before sending a complete text/binary frame. 
+    Control messages are not affected and can be sent interleaved.
+  */
+  WS_SEND_DROPPED_NOT_ALLOWED = 5,
+
+  /*
+    Compressed message not supported by the client. 
+    Triggered in fragmented sends where compression is pre-applied. 
+    In normal sends, falls back to no compression.
+  */
+  WS_SEND_DROPPED_UNSUPPORTED = 6,
+};
 
 
-int ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress);
-int ws_conn_put_bin(ws_conn_t *c, void *msg, size_t n, bool compress);
 
+/**
+ * Sends a text message synchronously over the WebSocket connection, with fallback to queuing if the socket 
+ * is not currently in a writeable state. Caller should check the return status to monitor the state (see Above)
+ * This method sends the text message immediately, allowing for optimal buffer reuse,
+ * especially when sending a single frame to multiple clients. 
+ * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg      Pointer to the text message data.
+ * @param n        Size of the text message in bytes.
+ * @param compress Boolean indicating whether to compress the message.
+ * @return         enum ws_send_status
+ */
+enum ws_send_status ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
+
+
+
+/**
+ * Queues a text message for asynchronous sending over the WebSocket connection.
+ * This method adds the text message to the send queue, beneficial for batching multiple small messages.
+ * Use in conjunction with 'ws_conn_flush_pending' or allow the event loop to pick the queued messages and send later
+ * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg      Pointer to the text message data.
+ * @param n        Size of the text message in bytes.
+ * @param compress Boolean indicating whether to compress the message.
+ * @return         enum ws_send_status
+ */
+enum ws_send_status ws_conn_put_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
+
+
+
+
+/**
+ * Sends a binary message synchronously over the WebSocket connection.
+ * This function behaves similarly to 'ws_conn_send_txt', but for binary data.
+ * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg      Pointer to the binary message data.
+ * @param n        Size of the binary message in bytes.
+ * @param compress Boolean indicating whether to compress the message.
+ * @return         enum ws_send_status
+ */
+enum ws_send_status ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress);
+
+
+
+/**
+ * Queues a binary message for asynchronous sending over the WebSocket connection.
+ * This function behaves similarly to 'ws_conn_put_txt', but for binary data.
+ * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg      Pointer to the binary message data.
+ * @param n        Size of the binary message in bytes.
+ * @param compress Boolean indicating whether to compress the message.
+ * @return         enum ws_send_status
+ */
+enum ws_send_status ws_conn_put_bin(ws_conn_t *c, void *msg, size_t n, bool compress);
+
+
+
+
+enum ws_send_status ws_conn_fd(ws_conn_t *c);
+
+/**
+ * Sends a pong message synchronously over the WebSocket connection.
+ * This method attempts to send the pong message immediately, ensuring immediate response to a ping.
+ * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg Pointer to the pong message data.
+ * @param n   Size of the pong message in bytes.
+ * @return    enum ws_send_status
+ */
+enum ws_send_status ws_conn_pong(ws_conn_t *c, void *msg, size_t n);
+
+
+
+/**
+ * Queues a pong message for asynchronous sending over the WebSocket connection.
+ * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg Pointer to the pong message data.
+ * @param n   Size of the pong message in bytes.
+ * @return    enum ws_send_status
+ */
+enum ws_send_status ws_conn_put_pong(ws_conn_t *c, void *msg, size_t n);
+
+
+
+/**
+ * Sends a ping message synchronously over the WebSocket connection.
+ * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg Pointer to the ping message data.
+ * @param n   Size of the ping message in bytes.
+ * @return    enum ws_send_status
+ */
+enum ws_send_status ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
+
+
+
+/**
+ * Queues a ping message for asynchronous sending over the WebSocket connection.
+ * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg Pointer to the ping message data.
+ * @param n   Size of the ping message in bytes.
+ * @return    enum ws_send_status
+ */
+enum ws_send_status ws_conn_put_ping(ws_conn_t *c, void *msg, size_t n);
+
+
+
+/**
+ * Closes the WebSocket connection synchronously. (Fire and forget)
+ * Sends a close frame with the provided message and status code but only
+ * if the socket is in a writeable state otherwise the connection is dropped similar to `ws_conn_destroy` (See Below)
+ * user may wait before freeing up resources until `on_ws_disconnect` is called (See Above)
+ * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg  Pointer to the close message data.
+ * @param n    Size of the close message in bytes.
+ * @param code Status code for closure.
+ */
 void ws_conn_close(ws_conn_t *c, void *msg, size_t n, uint16_t code);
+
+
+/**
+ * Destroys the WebSocket connection ungracefully.
+ *
+ * This function immediately terminates the WebSocket connection without
+ * going through the standard WebSocket close handshake. It should be used
+ * in scenarios where an immediate disconnection is required. The users should
+ * be aware that this abrupt termination might lead to unclean state on the
+ * client side.
+ *
+ * Resources associated with the connection may still need to be cleaned up.
+ * Cleanup should typically be handled in the 'on_ws_disconnect' callback, which
+ * will be invoked following the destruction of the connection.
+ *
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`) to be destroyed.
+ */
 void ws_conn_destroy(ws_conn_t *c);
 
 
+
+/**
+ * Flushes any pending frames in the send buffer of the WebSocket connection.
+ * This function may be used after queuing messages with 'put' variants (see Above) to attempt flushing all queued messages.
+ * this is useful in cases where multiple small messages are sent to many clients in which it's possible to put all frames to be sent
+ * then calling `ws_conn_flush_pending` before moving on to the next client to allow reuse of the buffer.
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ */
 void ws_conn_flush_pending(ws_conn_t *c);
 
 
-// current size of a SINGLE frame that can be sent (accounts for largest possible Websocket Header)
-// if a previous send has some backpressure
-// but was still placed the frame in the send buffer
-// the user may call ws_conn_max_sendable_len to see if another frame
-// may fit in the buffer without having to wait for on_ws_drain
+
+/**
+ * Returns the current maximum sendable length for a single frame on this connection.
+ * This considers the largest possible WebSocket header and any existing backpressure.
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ * @return  Size of the largest possible frame that can currently be sent.
+ */
 size_t ws_conn_max_sendable_len(ws_conn_t *c);
 
-// given a msg_len in bytes, do we have enough space to store it
-// in the connection's send buffer
+
+
+
+/**
+ * Checks if there is enough space in the connection's send buffer for a message of given length.
+ * @param c       Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg_len Length of the message in bytes to check.
+ * @return        True if there is enough space, false otherwise.
+ */
 bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len);
 
 
-// send a fragmented message to the client
-// if compression is wanted it must be done upfront on the entire msg before beginning to send fragments
-// otherwise the frames will get corrupted when the client decompresses the msg
-int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt, bool was_compressed, bool final);
 
 
-// are we currently in the middle for sending a fragmented message
-// if this retuns true no frames other than control frames should be written
-// because Websocket protocol only allows control frames to be interleaved with data frames
+/**
+ * Sends a fragmented message to the client.
+ * If compression is required, it must be applied to the entire message before sending fragments,
+ * otherwise the frames will get corrupted when the client decompresses the message.
+ * @param c              Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg            Pointer to the message data.
+ * @param len            Length of the fragment in bytes.
+ * @param txt            Boolean indicating if the message is text (true) or binary (false).
+ * @param was_compressed Boolean indicating if the message was pre-compressed.
+ * @param final          Boolean indicating if this is the final fragment.
+ * @return               enum ws_send_status
+ */
+enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt, bool was_compressed, bool final);
+
+
+
+/**
+ * Checks if the connection is currently sending a fragmented message.
+ *
+ * When this function returns true, it indicates that the WebSocket connection
+ * is in the middle of transmitting a fragmented message. According to the WebSocket
+ * protocol, no other data frames should be sent until the fragmented message is complete.
+ * However, control frames (such as ping, pong, and close) may still be interleaved and sent
+ * during this period. if data frames are sent while sending a fragmented message
+ * they will fail with WS_SEND_DROPPED_NOT_ALLOWED
+ *
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ * @return  True if the connection is currently sending message fragments, false otherwise.
+ */
 bool ws_conn_sending_fragments(ws_conn_t *c);
+
+
+
+
 
 
 #ifdef WITH_COMPRESSION
 
+/**
+ * Compresses a large message that doesn't fit in the connection's buffer or internal deflation buffer.
+ * The compressed data and its size are returned. This function should be used in conjunction with ws_conn_send_fragment
+ * for compressed messages. Direct use with other send/put functions may result in double compression or incorrect framing.
+ * @param s       Pointer to the WebSocket server (`ws_server_t`).
+ * @param input   Pointer to the input data to compress.
+ * @param in_len  Length of the input data.
+ * @param out     Pointer to the output buffer for compressed data.
+ * @param out_len Size of the output buffer.
+ * @return        Size of the compressed data, or an error code from zlib.
+ */
+ssize_t ws_server_deflate_huge_msg(ws_server_t *s, char *input, size_t in_len, char *out, size_t out_len);
 
-// compresses an entire message that is too large to fit in the connection's buffer and/or internal deflation buffer
-// the compressed data will be in out_len and the size of the compressed data is returned or an error from zlib 
-// users should only use this in conjuction with ws_conn_send_fragment if the msg is compressed and given 
-// to any other send/put function the data will be compressed twice if the compress parameter is true
-// or the frame built will not inform the client that the msg is compressed if compress paramater is false 
-// callers may combine with ws_estimate_max_deflated_size before, to get an upper bound of the compressed size
-ssize_t ws_server_deflate_huge_msg(ws_server_t *s,  char *input, size_t in_len, char *out,
-                            size_t out_len);
-
-// maximum size the data will be after compression
-// this may be used to allocate a buffer to provide for ws_deflate_huge_msg
+/**
+ * Estimates the maximum size of data after compression.
+ * Useful for allocating an appropriate buffer size for ws_deflate_huge_msg.
+ * @param s  Pointer to the WebSocket server (`ws_server_t`).
+ * @param sz Size of the original data before compression.
+ * @return   Estimated maximum size of the data after compression.
+ */
 size_t ws_server_estimate_max_deflated_size(ws_server_t *s, size_t sz);
-
 
 
 #endif /* WITH_COMPRESSION */
 
+
+
+
+
 ws_server_t *ws_conn_server(ws_conn_t *c);
+
 void *ws_conn_ctx(ws_conn_t *c);
+
 void ws_conn_set_ctx(ws_conn_t *c, void *ctx);
 
 ws_server_t *ws_server_create(struct ws_server_params *params,
@@ -393,61 +637,14 @@ int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
 
 
 
-
-enum ws_send_status {
-  /*
-    send/writev call failed and/or the connection is closing/closed
-  */ 
-  WS_SEND_FAILED = -1, 
-
-  /*
-    all is ok user may send more frames
-  */
-  WS_SEND_OK = 0,
-
-  /*
-    we placed the data in the send buffer but there's backpressure 
-    caller should wait check available space before more sends or wait for on_ws_drain
-  */
-  WS_SEND_OK_BACKPRESSURE = 1, 
-
-  /*
-    the frame was dropped because there isn't enough space currently
-    caller should wait for on_ws_drain to try again
-  */
-  WS_SEND_DROPPED_NEEDS_DRAIN = 2,
-
-  /*
-    the frame is too large and can't be fragmented because it's a ping/pong/close frame
-  */
-  WS_SEND_DROPPED_TOO_LARGE = 3,
-
-  /*
-    this frame is too large and needs to be fragmented this is a no op 
-    caller should use the fragmented send variant and track progress with on_ws_drain
-    if they still want to send the data to the client
-  */
-  WS_SEND_DROPPED_NEEDS_FRAGMENTATION = 4,
-
-
-  /*
-    this status is returned if sending a complete data frame (text|binary)
-    is not currently allowed by the Websocket protocol because there are 
-    fragmented messages currently being sent, if this error is returned
-    user should wait until they have sent the final fragment successfully
-    before trying to send a complete text/binary frame 
-    control message are not affected by this and can be sent interleaved with messages
-  */
-  WS_SEND_DROPPED_NOT_ALLOWED = 5,
-
-
-  /*
-    a compressed message was wanted where the client doesn't support it
-    this is only triggered with fragmented sends where the compression 
-    is already done, in a normal send we simply fallback to no compression
-  */
-  WS_SEND_DROPPED_UNSUPPORTED = 6,
+enum ws_timeout_status {
+  WS_READ_TIMEOUT = 1,
+  WS_WRITE_TIMEOUT = 2,
+  WS_RW_TIMEOUT = 3,
 };
+
+
+
 
 /**
  * Normal closure; the purpose for which the connection was

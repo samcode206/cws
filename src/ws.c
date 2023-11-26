@@ -664,7 +664,7 @@ static void server_closeable_conns_append(ws_conn_t *c) {
 }
 
 static void server_check_pending_timers(ws_server_t *s) {
-  int timeout_kind = 0;
+  unsigned timeout_kind = 0;
   ws_on_timeout_t cb = s->on_ws_conn_timeout;
   unsigned int now = (unsigned int)time(NULL);
 

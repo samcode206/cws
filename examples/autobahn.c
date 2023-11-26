@@ -171,12 +171,12 @@ void on_accept_err(ws_server_t *s, int err) {
   printf("is_paused=%d\n", ws_server_accept_paused(s));
 }
 
-void on_timeout(ws_conn_t *c, int timeout_kind) {
-  if (timeout_kind == 1) {
+void on_timeout(ws_conn_t *c, unsigned timeout_kind) {
+  if (timeout_kind == WS_READ_TIMEOUT) {
     printf("read timeout on %d\n", ws_conn_fd(c));
-  } else if (timeout_kind == 2) {
+  } else if (timeout_kind == WS_WRITE_TIMEOUT) {
     printf("write timeout on  %d\n", ws_conn_fd(c));
-  } else {
+  } else if (timeout_kind == WS_RW_TIMEOUT){
     printf("read/write timeout on %d\n", ws_conn_fd(c));
   }
 
