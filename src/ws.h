@@ -223,9 +223,32 @@ typedef int (*ws_accept_cb_t)(ws_server_t *s, struct sockaddr_storage *caddr, in
  */
 typedef void (*ws_err_accept_cb_t)(ws_server_t *s, int err);
 
-
-typedef size_t (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, char *request, const char *accept_key, size_t max_resp_len, char *resp_dst);
-
+/**
+ * Optional Callback invoked on receiving a raw WebSocket upgrade request.
+ *
+ * The callee is provided access to the request data and must craft a valid raw HTTP response
+ * adhering to the standards for WebSocket upgrades.
+ *
+ * The 'accept_key' provided is pre-calculated and should be incorporated into the
+ * response as part of the WebSocket handshake protocol. The user has the option
+ * to either proceed with or reject the upgrade. In case of rejection, any appropriate
+ * HTTP response can be sent back, and the user must set the 'reject' pointer to true (1).
+ * In case of proceeding with the upgrade, there is no need to modify the 'reject' flag.
+ *
+ * @param c            Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param request      Pointer to the buffer containing the raw upgrade request data.
+ * @param accept_key   Pre-calculated WebSocket accept key.
+ * @param max_resp_len Maximum length allowable for the response.
+ * @param resp_dst     Destination buffer for the raw HTTP response.
+ * @param reject       Pointer to a boolean flag to indicate rejection of the upgrade. Set to true
+ *                     if the upgrade is to be rejected, otherwise it should remain unchanged.
+ *
+ * @return The size of the response written to 'resp_dst'. The size must be within
+ *         the bounds of 'max_resp_len' and properly formatted as an HTTP response.
+ *         Returning 0, or a size exceeding 'max_resp_len', indicates a failure in processing,
+ *         resulting in the handshake being aborted and a 500 status response being sent.
+ */
+typedef size_t (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, char *request, const char *accept_key, size_t max_resp_len, char *resp_dst, bool *reject);
 
 
 
@@ -368,7 +391,6 @@ int ws_pollable_unregister(ws_server_t *s, int fd);
 int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
                        int events);
 
-int utf8_is_valid(uint8_t *s, size_t n);
 
 
 

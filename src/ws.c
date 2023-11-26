@@ -522,6 +522,8 @@ static inline bool is_compressed_msg(uint8_t const *buf) {
   return (buf[0] & 0x40) != 0;
 }
 
+static unsigned utf8_is_valid(uint8_t *s, size_t n);
+
 static int base64_encode(char *coded_dst, const char *plain_src,
                          int len_plain_src);
 
@@ -1422,9 +1424,10 @@ static void handle_upgrade(ws_conn_t *conn) {
           conn_prep_send_buf(conn);
 
           size_t max_resp_len = buf_space(conn->send_buf);
+          bool reject = 0;
           resp_len = s->on_ws_upgrade_req(conn, (char *)headers, accept_key,
                                           max_resp_len,
-                                          (char *)buf_peek(conn->send_buf));
+                                          (char *)buf_peek(conn->send_buf), &reject);
 
           if (conn->recv_buf) {
             buf_consume(conn->recv_buf, request_buf_len);
@@ -1433,7 +1436,7 @@ static void handle_upgrade(ws_conn_t *conn) {
           }
           if ((resp_len > 0) & (resp_len <= max_resp_len)) {
             conn->send_buf->wpos += resp_len;
-            ok = true;
+            ok = !reject;
           } else {
             set_write_shutdown(conn);
             buf_put(conn->send_buf, internal_server_error,
@@ -2346,7 +2349,7 @@ inline bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
 
 inline size_t ws_server_open_conns(ws_server_t *s) { return s->open_conns; }
 
-int utf8_is_valid(uint8_t *s, size_t n) {
+static unsigned utf8_is_valid(uint8_t *s, size_t n) {
   for (uint8_t *e = s + n; s != e;) {
     if (s + 4 <= e) {
       uint32_t tmp;
