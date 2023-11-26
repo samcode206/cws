@@ -2696,7 +2696,7 @@ static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n) {
   if (buf_space(r) < n) {
     return -1;
   }
-  memcpy(r->buf + r->wpos, data, n);
+  memmove(r->buf + r->wpos, data, n);
   r->wpos += n;
   return 0;
 }
