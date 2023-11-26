@@ -1413,6 +1413,7 @@ static void handle_upgrade(ws_conn_t *conn) {
           }
 #endif /* WITH_COMPRESSION */
 
+          buf_consume(conn->recv_buf, request_buf_len);
           conn_prep_send_buf(conn);
 
           buf_reset(conn->send_buf);
@@ -1431,19 +1432,14 @@ static void handle_upgrade(ws_conn_t *conn) {
           buf_put(conn->send_buf, CRLF2, CRLF2_LEN);
           resp_len = buf_len(conn->send_buf);
         } else {
+          buf_consume(conn->recv_buf, request_buf_len);
           conn_prep_send_buf(conn);
-
           size_t max_resp_len = buf_space(conn->send_buf);
           bool reject = 0;
           resp_len = s->on_ws_upgrade_req(
               conn, (char *)headers, accept_key, max_resp_len,
               (char *)buf_peek(conn->send_buf), &reject);
 
-          if (conn->recv_buf) {
-            buf_consume(conn->recv_buf, request_buf_len);
-          } else {
-            return;
-          }
           if ((resp_len > 0) & (resp_len <= max_resp_len)) {
             conn->send_buf->wpos += resp_len;
             ok = !reject;
