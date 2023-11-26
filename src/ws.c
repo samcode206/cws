@@ -1425,9 +1425,9 @@ static void handle_upgrade(ws_conn_t *conn) {
 
           size_t max_resp_len = buf_space(conn->send_buf);
           bool reject = 0;
-          resp_len = s->on_ws_upgrade_req(conn, (char *)headers, accept_key,
-                                          max_resp_len,
-                                          (char *)buf_peek(conn->send_buf), &reject);
+          resp_len = s->on_ws_upgrade_req(
+              conn, (char *)headers, accept_key, max_resp_len,
+              (char *)buf_peek(conn->send_buf), &reject);
 
           if (conn->recv_buf) {
             buf_consume(conn->recv_buf, request_buf_len);
@@ -2282,7 +2282,6 @@ int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt,
     }
   }
 
-
   if (final)
     frame_cfg |= FIN;
 
@@ -2519,8 +2518,10 @@ static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
       total += out_len - istrm->avail_out;
       break;
     } else {
-      fprintf(stderr, "inflate(): %s\n", istrm->msg);
-      exit(EXIT_FAILURE);
+      memcpy(tail_addr, pre_tail, 4);
+      fprintf(stderr, "inflate(): %d %s\n", err, istrm->msg);
+      inflateReset(istrm);
+      return 0;
     }
 
   } while ((istrm->avail_out == 0) & (total <= out_len));
