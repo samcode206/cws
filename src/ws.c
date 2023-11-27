@@ -145,7 +145,6 @@ struct mirrored_buf_pool {
 
   size_t avb;
   size_t cap;
-  struct buf_pool *pool;
   mirrored_buf_t **avb_stack;
   mirrored_buf_t *mirrored_bufs;
 };
