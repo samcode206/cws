@@ -2645,7 +2645,6 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   uint8_t *pos = pool->base;
   size_t offset = 0;
 
-  size_t j = nmemb;
 
   for (i = 0; i < nmemb; ++i) {
     if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
@@ -2660,18 +2659,18 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
       return NULL;
     };
 
-    j--;
-    pool->mirrored_bufs[j].buf = pos;
-    pool->mirrored_bufs[j].buf_sz = buf_sz;
+ 
+    pool->mirrored_bufs[i].buf = pos;
+    pool->mirrored_bufs[i].buf_sz = buf_sz;
 
     offset += buf_sz;
     pos = pos + buf_sz + buf_sz;
   }
 
-  j = nmemb;
-
+  i = 0;
+  uint32_t j = nmemb;
   while (j--) {
-    pool->avb_stack[j] = &pool->mirrored_bufs[j];
+    pool->avb_stack[j] = &pool->mirrored_bufs[i++];
   }
 
   return pool;
