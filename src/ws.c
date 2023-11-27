@@ -297,15 +297,18 @@ static void conn_basic_buffer_dispose(ws_conn_t *c) {
 
 static void conn_prep_send_buf(ws_conn_t *conn) {
   if (!conn->send_buf) {
-    mirrored_buf_t *recv_buf = conn->recv_buf;
-    // can we swap buffers so we don't go all the way to the buffer pool
-    if (recv_buf && !buf_len(recv_buf)) {
-      conn->send_buf = recv_buf;
-      conn->recv_buf = NULL;
-    } else {
+    // mirrored_buf_t *recv_buf = conn->recv_buf;
+    // // can we swap buffers so we don't go all the way to the buffer pool
+    // // commented out because we may overwrite the msg when user sends 
+    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's us know that 
+    // // that they no longer want the msg and we can make this safe 
+    // if (recv_buf && !buf_len(recv_buf)) {
+    //   conn->send_buf = recv_buf;
+    //   conn->recv_buf = NULL;
+    // } else {
       conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
       assert(conn->send_buf != NULL);
-    }
+    // }
   }
 }
 
