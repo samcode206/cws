@@ -146,7 +146,7 @@ struct mirrored_buf_pool {
   size_t avb;
   size_t cap;
   struct buf_pool *pool;
-  mirrored_buf_t **avb_list;
+  mirrored_buf_t **avb_stack;
   mirrored_buf_t *mirrored_bufs;
 };
 
@@ -218,7 +218,7 @@ struct basic_buffer_pool {
   size_t avb;
   size_t inuse;
   size_t cap;
-  struct basic_buffer **avb_list;
+  struct basic_buffer **avb_stack;
 };
 
 struct basic_buffer_pool *basic_buffer_pool_create(size_t nmemb,
@@ -2413,8 +2413,8 @@ struct basic_buffer_pool *basic_buffer_pool_create(size_t nmemb,
   p->inuse = 0;
   p->cap = nmemb;
 
-  p->avb_list = calloc(nmemb, sizeof(struct basic_buffer *));
-  assert(p->avb_list != NULL);
+  p->avb_stack = calloc(nmemb, sizeof(struct basic_buffer *));
+  assert(p->avb_stack != NULL);
 
   return p;
 }
@@ -2422,7 +2422,7 @@ struct basic_buffer_pool *basic_buffer_pool_create(size_t nmemb,
 struct basic_buffer *pmd_buf_get(struct basic_buffer_pool *p) {
   while (p->avb) {
     p->inuse++;
-    return p->avb_list[--p->avb];
+    return p->avb_stack[--p->avb];
   }
 
   if (p->inuse + 1 <= p->cap) {
@@ -2440,7 +2440,7 @@ struct basic_buffer *pmd_buf_get(struct basic_buffer_pool *p) {
 void pmd_buf_put(struct basic_buffer_pool *p, struct basic_buffer *buf) {
   if (buf) {
     buf->len = 0;
-    p->avb_list[p->avb++] = buf;
+    p->avb_stack[p->avb++] = buf;
     p->inuse--;
   }
 }
@@ -2594,10 +2594,10 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   }
 
   size_t mirrored_bufs_total_size = nmemb * sizeof(mirrored_buf_t);
-  size_t avb_list_total_size = nmemb * sizeof(mirrored_buf_t *);
+  size_t avb_stack_total_size = nmemb * sizeof(mirrored_buf_t *);
 
   size_t pool_sz = ((sizeof(struct mirrored_buf_pool) +
-                     mirrored_bufs_total_size + avb_list_total_size) +
+                     mirrored_bufs_total_size + avb_stack_total_size) +
                     page_size - 1) &
                    ~(page_size - 1);
   size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
@@ -2622,7 +2622,7 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 
   pool->mirrored_bufs = (mirrored_buf_t *)((uintptr_t)pool_mem +
                                            sizeof(struct mirrored_buf_pool));
-  pool->avb_list = (mirrored_buf_t **)((uintptr_t)pool_mem +
+  pool->avb_stack = (mirrored_buf_t **)((uintptr_t)pool_mem +
                                        sizeof(struct mirrored_buf_pool) +
                                        mirrored_bufs_total_size);
 
@@ -2672,7 +2672,7 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   j = nmemb;
 
   while (j--) {
-    pool->avb_list[j] = &pool->mirrored_bufs[j];
+    pool->avb_stack[j] = &pool->mirrored_bufs[j];
   }
 
   return pool;
@@ -2680,7 +2680,7 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 
 static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
   if (bp->avb) {
-    return bp->avb_list[--bp->avb];
+    return bp->avb_stack[--bp->avb];
   }
 
   return NULL;
@@ -2691,7 +2691,7 @@ static void mirrored_buf_put(struct mirrored_buf_pool *bp,
   if (buf) {
     buf->rpos = 0;
     buf->wpos = 0;
-    bp->avb_list[bp->avb++] = buf;
+    bp->avb_stack[bp->avb++] = buf;
   }
 }
 
