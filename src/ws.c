@@ -643,12 +643,14 @@ static void server_pending_timers_remove(ws_conn_t *c) {
     // go through all timers in list and swap with the last
     while (c->base->pending_timers.len) {
       size_t i = c->base->pending_timers.len;
+      ws_server_t *s = c->base;
+
       while (i--) {
-        if (c->base->pending_timers.conns[i] == c) {
+        if (s->pending_timers.conns[i] == c) {
           clear_has_pending_timers(c);
           ws_conn_t *tmp =
-              c->base->pending_timers.conns[--c->base->pending_timers.len];
-          c->base->pending_timers.conns[i] = tmp;
+              s->pending_timers.conns[--s->pending_timers.len];
+          s->pending_timers.conns[i] = tmp;
           break;
         }
       }
@@ -706,7 +708,9 @@ static void server_check_pending_timers(ws_server_t *s) {
 }
 
 static void server_writeable_conns_drain(ws_server_t *s) {
-  for (size_t i = 0; i < s->writeable_conns.len; ++i) {
+  size_t len = s->writeable_conns.len;
+
+  for (size_t i = 0; i < len; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
     if (!is_closing(c->flags) & (c->send_buf != NULL) & is_writeable(c)) {
       conn_drain_write_buf(c);
