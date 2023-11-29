@@ -64,7 +64,7 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-struct basic_buffer {
+struct dyn_buf {
   size_t len;
   size_t cap;
   char data[];
@@ -175,7 +175,7 @@ struct ws_conn_t {
   void *ctx;         // user data pointer
 
 #ifdef WITH_COMPRESSION
-  struct basic_buffer *pmd_buf;
+  struct dyn_buf *pmd_buf;
 #endif /* WITH_COMPRESSION */
 };
 
@@ -211,24 +211,7 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
-// per message deflate buffer pool
-// this one will be use malloc/calloc but only when needed
-// once buffer usage is done it will stay in the pool until another
-// buffer is needed in which we can skip going through the allocator and reuse
-// a previously allocated buffer
 
-struct basic_buffer_pool {
-  size_t buf_sz;
-  size_t avb;
-  size_t inuse;
-  size_t cap;
-  struct basic_buffer **avb_stack;
-};
-
-struct basic_buffer_pool *basic_buffer_pool_create(size_t nmemb,
-                                                   size_t pmd_bufsz);
-struct basic_buffer *pmd_buf_get(struct basic_buffer_pool *p);
-void pmd_buf_put(struct basic_buffer_pool *p, struct basic_buffer *buf);
 
 #ifdef WITH_COMPRESSION
 static z_stream *inflation_stream_init();
@@ -265,7 +248,6 @@ typedef struct server {
 
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
-  struct basic_buffer_pool *basic_buffer_pool;
 #ifdef WITH_COMPRESSION
   z_stream *istrm;
   z_stream *dstrm;
@@ -282,18 +264,22 @@ typedef struct server {
 } ws_server_t;
 
 #ifdef WITH_COMPRESSION
-static struct basic_buffer *conn_basic_buffer(ws_conn_t *c) {
+static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
   if (!c->pmd_buf) {
-    c->pmd_buf = pmd_buf_get(c->base->basic_buffer_pool);
+    c->pmd_buf = malloc(sizeof(struct dyn_buf) +
+                        (c->base->buffer_pool->buf_sz * 2) + 16);
+    c->pmd_buf->len = 0;
+    c->pmd_buf->cap = (c->base->buffer_pool->buf_sz * 2) + 16;
+    assert(c->pmd_buf != NULL);
     return c->pmd_buf;
   } else {
     return c->pmd_buf;
   }
 }
 
-static void conn_basic_buffer_dispose(ws_conn_t *c) {
+static void conn_dyn_buf_dispose(ws_conn_t *c) {
   if (c->pmd_buf) {
-    pmd_buf_put(c->base->basic_buffer_pool, c->pmd_buf);
+    free(c->pmd_buf);
     c->pmd_buf = NULL;
   }
 }
@@ -688,6 +674,7 @@ static void server_closeable_conns_append(ws_conn_t *c) {
   conn_list_append(&c->base->closeable_conns, c);
   mark_closing(c);
   server_pending_timers_remove(c);
+  conn_dyn_buf_dispose(c);
 }
 
 static void server_check_pending_timers(ws_server_t *s) {
@@ -950,10 +937,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->istrm = inflation_stream_init();
   s->dstrm = deflation_stream_init();
 #endif /* WITH_COMPRESSION */
-
-  s->basic_buffer_pool = basic_buffer_pool_create(
-      s->max_conns, s->max_msg_len + s->max_msg_len + 16);
-  assert(s->basic_buffer_pool != NULL);
 
   // server resources all ready
   return s;
@@ -1617,12 +1600,14 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
             clear_bin(conn);
           } else {
-            struct basic_buffer *inflated_buf = conn_basic_buffer(conn);
+            struct dyn_buf *inflated_buf = conn_dyn_buf_get(conn);
+            assert(inflated_buf->len == 0);
             ssize_t inflated_sz = inflation_stream_inflate(
                 s->istrm, (char *)msg, payload_len, inflated_buf->data,
                 inflated_buf->cap, true);
 
             if (inflated_sz > 0) {
+              inflated_buf->len += inflated_sz;
               // printf("%.*s\n", (int)inflated_sz, out);
               // printf("\ninflated_sz = %zi\n", inflated_sz);
               if (!is_bin(conn) &&
@@ -1634,12 +1619,16 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
               s->on_ws_msg(conn, inflated_buf->data, inflated_sz, is_bin(conn));
               conn->needed_bytes = 2;
               clear_bin(conn);
-              conn_basic_buffer_dispose(conn);
+              inflated_buf->len -= inflated_sz;
+
+              if (!inflated_buf->len)
+                conn_dyn_buf_dispose(conn);
+
             } else {
               // TODO handle error
               printf("inflate error\n");
               ws_conn_destroy(conn);
-              conn_basic_buffer_dispose(conn);
+              conn_dyn_buf_dispose(conn);
               return; // TODO(sah): send a Close frame, & call close callback
             }
           }
@@ -1702,7 +1691,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             if (is_fragment_compressed(conn)) {
               clear_fragment_compressed(conn);
 
-              struct basic_buffer *inflated_buf = conn_basic_buffer(conn);
+              struct dyn_buf *inflated_buf = conn_dyn_buf_get(conn);
 
               assert(inflated_buf->len == 0);
               ssize_t inflated_sz = inflation_stream_inflate(
@@ -1720,17 +1709,19 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
                     !utf8_is_valid((uint8_t *)inflated_buf->data,
                                    inflated_sz)) {
                   ws_conn_destroy(conn);
-                  conn_basic_buffer_dispose(conn);
+                  conn_dyn_buf_dispose(conn);
                   return; // TODO(sah): send a Close frame, & call close
                           // callback
                 }
                 s->on_ws_msg(conn, inflated_buf->data, inflated_sz,
                              is_bin(conn));
+                inflated_buf->len -= inflated_sz;
               } else {
                 ws_conn_destroy(conn);
               }
 
-              conn_basic_buffer_dispose(conn);
+              if (!inflated_buf->len)
+                conn_dyn_buf_dispose(conn);
             } else {
               uint8_t *msg = buf_peek(conn->recv_buf);
               buf_consume(conn->recv_buf, conn->fragments_len);
@@ -2170,7 +2161,7 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
   if (!compress || !is_compression_allowed(c)) {
     stat = conn_write_frame(c, msg, n, op);
   } else {
-    struct basic_buffer *deflate_buf = conn_basic_buffer(c);
+    struct dyn_buf *deflate_buf = conn_dyn_buf_get(c);
 
     ssize_t compressed_len = deflation_stream_deflate(
         c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
@@ -2180,7 +2171,7 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
                               compressed_len, op | 0x40);
 
       if (!deflate_buf->len) {
-        conn_basic_buffer_dispose(c);
+        conn_dyn_buf_dispose(c);
       }
 
     } else {
@@ -2317,7 +2308,7 @@ void ws_conn_destroy(ws_conn_t *conn) {
 
 int ws_conn_fd(ws_conn_t *c) { return c->fd; }
 
-inline bool ws_conn_is_read_paused(ws_conn_t *c) { return is_read_paused(c); };
+inline bool ws_conn_is_read_paused(ws_conn_t *c) { return is_read_paused(c); }
 
 void ws_conn_pause_read(ws_conn_t *c) {
   // if we aren't currently paused
@@ -2335,7 +2326,7 @@ void ws_conn_pause_read(ws_conn_t *c) {
 
     set_read_paused(c);
   }
-};
+}
 
 void ws_conn_resume_reads(ws_conn_t *c) {
   if (is_read_paused(c)) {
@@ -2450,47 +2441,6 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c) {
 
   p->_buf_nodes[diff].next = p->head;
   p->head = &p->_buf_nodes[diff];
-}
-
-struct basic_buffer_pool *basic_buffer_pool_create(size_t nmemb,
-                                                   size_t pmd_bufsz) {
-  struct basic_buffer_pool *p = malloc(sizeof(struct basic_buffer_pool));
-  assert(p != NULL);
-  p->buf_sz = pmd_bufsz;
-  p->avb = 0;
-  p->inuse = 0;
-  p->cap = nmemb;
-
-  p->avb_stack = calloc(nmemb, sizeof(struct basic_buffer *));
-  assert(p->avb_stack != NULL);
-
-  return p;
-}
-
-struct basic_buffer *pmd_buf_get(struct basic_buffer_pool *p) {
-  while (p->avb) {
-    p->inuse++;
-    return p->avb_stack[--p->avb];
-  }
-
-  if (p->inuse + 1 <= p->cap) {
-    struct basic_buffer *buf = malloc(sizeof(struct basic_buffer) + p->buf_sz);
-    assert(buf != NULL);
-    buf->cap = p->buf_sz;
-    buf->len = 0;
-    p->inuse++;
-    return buf;
-  }
-
-  return NULL;
-}
-
-void pmd_buf_put(struct basic_buffer_pool *p, struct basic_buffer *buf) {
-  if (buf) {
-    buf->len = 0;
-    p->avb_stack[p->avb++] = buf;
-    p->inuse--;
-  }
 }
 
 inline bool ws_conn_compression_allowed(ws_conn_t *c) {
