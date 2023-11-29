@@ -1518,7 +1518,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
   }
 
   for (;;) {
-    if (conn->recv_buf &&
+    if ((!is_read_paused(conn) & (conn->recv_buf != NULL)) &&
         buf_len(conn->recv_buf) - conn->fragments_len - total_trimmed >=
             conn->needed_bytes) {
 
