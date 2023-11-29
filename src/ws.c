@@ -44,6 +44,10 @@
 #include <sys/uio.h>
 #include <time.h>
 
+#ifdef WITH_COMPRESSION 
+#include <zlib.h>
+#endif /* WITH_COMPRESSION */
+
 #define TIMER_GRANULARITY 5
 #define READ_TIMEOUT 60
 
@@ -2235,7 +2239,7 @@ inline bool ws_conn_sending_fragments(ws_conn_t *c) {
 }
 
 int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt,
-                          bool was_compressed, bool final) {
+                           bool final) {
   bool is_continuation = is_sending_fragments(c);
   set_sending_fragments(c);
   uint8_t frame_cfg = OP_CONT;
@@ -2243,14 +2247,6 @@ int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt,
   // first fragment
   if (!is_continuation) {
     frame_cfg = txt ? OP_TXT : OP_BIN;
-    if (was_compressed) {
-      if (is_compression_allowed(c)) {
-        frame_cfg |= 0x40;
-      } else {
-        clear_sending_fragments(c);
-        return WS_SEND_DROPPED_UNSUPPORTED;
-      }
-    }
   }
 
   if (final)
@@ -2558,14 +2554,6 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
   return err == Z_OK ? total - 4 : err;
 }
 
-ssize_t ws_server_deflate_huge_msg(ws_server_t *s, char *input, size_t in_len,
-                                   char *out, size_t out_len) {
-  return deflation_stream_deflate(s->dstrm, input, in_len, out, out_len, 1);
-}
-
-size_t ws_server_estimate_max_deflated_size(ws_server_t *s, size_t sz) {
-  return deflateBound(s->dstrm, sz) + 4;
-}
 
 #endif /* WITH_COMPRESSION */
 

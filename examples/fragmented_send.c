@@ -7,10 +7,9 @@
 
 #define MAX_CONNS 1024
 
-bool should_deflate = 0; // can disabled by flipping to 0
+size_t msg_sz = 1024*1024*64;
+char large_msg[1024*1024*64] = {0};
 
-size_t msg_sz = 1024 * 1024 * 64;
-char large_msg[1024 * 1024 * 64] = {0};
 
 void doFragmentedSend(ws_conn_t *conn) {
   size_t *sent = ws_conn_ctx(conn);
@@ -55,9 +54,10 @@ void doFragmentedSend(ws_conn_t *conn) {
         assert(ws_conn_sending_fragments(conn) == false);
       }
 
-      int stat =
-          ws_conn_send_fragment(conn, large_msg + *sent, fragment_size, 0,
-                                should_deflate == 1, is_last_fragment);
+      int stat = ws_conn_send_fragment(conn, large_msg + *sent, fragment_size,
+                                       0, is_last_fragment);
+      *sent += fragment_size;
+
       assert(stat != WS_SEND_DROPPED_NEEDS_FRAGMENTATION);
       assert(stat != WS_SEND_DROPPED_TOO_LARGE);
       if (stat == WS_SEND_FAILED) {
@@ -65,26 +65,15 @@ void doFragmentedSend(ws_conn_t *conn) {
         break;
       }
 
-      if (!ws_conn_compression_allowed(conn)) {
-        assert(stat == WS_SEND_DROPPED_UNSUPPORTED);
-        assert(ws_conn_sending_fragments(conn) == 0);
-        assert(ws_conn_send_txt(conn, "hi", 2, 0) !=
-               WS_SEND_DROPPED_NOT_ALLOWED);
-        printf("Client does not support compression\n");
-        ws_conn_close(conn, "test completed!!", 16, WS_CLOSE_GOAWAY);
-        exit(EXIT_SUCCESS);
-      }
-
       if (stat == WS_SEND_OK_BACKPRESSURE) {
         break;
       }
-
-      *sent += fragment_size;
 
       // printf("after state *************************\n");
       // printf("sent index = %zu\n", sent);
 
       if (is_last_fragment) {
+        assert(*sent == msg_sz);
         *sent = 0;
         // we sent the final fragment successfully
         // we now should not be in the sending_fragments state
@@ -135,7 +124,6 @@ void onOpen(ws_conn_t *conn) {
 }
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
-
   if (ws_conn_sending_fragments(conn)) {
     assert(ws_conn_send(conn, msg, n, 0) == WS_SEND_DROPPED_NOT_ALLOWED);
   } else {
@@ -143,7 +131,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
     assert(ws_conn_send(conn, msg, n, 0) != WS_SEND_DROPPED_NOT_ALLOWED);
   }
 
-    // printf("msg recv\n");
+  // printf("msg recv\n");
 }
 
 void onDisconnect(ws_conn_t *conn, int err) {
@@ -173,29 +161,6 @@ int main(void) {
 
   int stat;
   ws_server_t *s = ws_server_create(&p, &stat);
-
-  if (should_deflate) {
-    printf("deflating\n");
-
-    size_t buf_sz = ws_server_estimate_max_deflated_size(s, msg_sz);
-    void *buf = malloc(buf_sz);
-
-    printf("max = %zu\n", buf_sz);
-    ssize_t compressed_sz =
-        ws_server_deflate_huge_msg(s, large_msg, msg_sz, buf, buf_sz);
-
-    if (compressed_sz <= 0) {
-      printf("compression failed\n");
-      exit(EXIT_FAILURE);
-    }
-
-    printf("compressed sz = %zu\n", compressed_sz);
-    memcpy(large_msg, buf, compressed_sz);
-
-    msg_sz = compressed_sz;
-
-    free(buf);
-  }
 
   ws_server_start(s, 1024);
   return 0;

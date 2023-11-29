@@ -37,10 +37,6 @@
 
 #define WITH_COMPRESSION
 
-#ifdef WITH_COMPRESSION
-#include <zlib.h>
-#endif /* WITH_COMPRESSION */
-
 
 /**
  * WebSocket server connection structure.
@@ -521,17 +517,14 @@ bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len);
 
 /**
  * Sends a fragmented message to the client.
- * If compression is required, it must be applied to the entire message before sending fragments,
- * otherwise the frames will get corrupted when the client decompresses the message.
  * @param c              Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg            Pointer to the message data.
  * @param len            Length of the fragment in bytes.
  * @param txt            Boolean indicating if the message is text (true) or binary (false).
- * @param was_compressed Boolean indicating if the message was pre-compressed.
  * @param final          Boolean indicating if this is the final fragment.
  * @return               enum ws_send_status
  */
-enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt, bool was_compressed, bool final);
+enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt, bool final);
 
 
 
@@ -549,41 +542,6 @@ enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, b
  * @return  True if the connection is currently sending message fragments, false otherwise.
  */
 bool ws_conn_sending_fragments(ws_conn_t *c);
-
-
-
-
-
-
-#ifdef WITH_COMPRESSION
-
-/**
- * Compresses a large message that doesn't fit in the connection's buffer or internal deflation buffer.
- * The compressed data and its size are returned. This function should be used in conjunction with ws_conn_send_fragment
- * for compressed messages. Direct use with other send/put functions may result in double compression or incorrect framing.
- * @param s       Pointer to the WebSocket server (`ws_server_t`).
- * @param input   Pointer to the input data to compress.
- * @param in_len  Length of the input data.
- * @param out     Pointer to the output buffer for compressed data.
- * @param out_len Size of the output buffer.
- * @return        Size of the compressed data, or an error code from zlib.
- */
-ssize_t ws_server_deflate_huge_msg(ws_server_t *s, char *input, size_t in_len, char *out, size_t out_len);
-
-/**
- * Estimates the maximum size of data after compression.
- * Useful for allocating an appropriate buffer size for ws_deflate_huge_msg.
- * @param s  Pointer to the WebSocket server (`ws_server_t`).
- * @param sz Size of the original data before compression.
- * @return   Estimated maximum size of the data after compression.
- */
-size_t ws_server_estimate_max_deflated_size(ws_server_t *s, size_t sz);
-
-
-#endif /* WITH_COMPRESSION */
-
-
-
 
 
 ws_server_t *ws_conn_server(ws_conn_t *c);
