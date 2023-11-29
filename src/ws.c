@@ -256,8 +256,8 @@ typedef struct server {
   struct epoll_event ev;
   struct epoll_event events[1024];
   struct conn_list pending_timers;
-  struct conn_list writeable_conns;
   struct conn_list closeable_conns;
+  struct conn_list writeable_conns;
   int user_epoll;
 } ws_server_t;
 
@@ -671,6 +671,7 @@ static void server_closeable_conns_append(ws_conn_t *c) {
   ws_server_epoll_ctl(c->base, EPOLL_CTL_DEL, c->fd);
   conn_list_append(&c->base->closeable_conns, c);
   mark_closing(c);
+  clear_writeable(c);
   server_pending_timers_remove(c);
   conn_dyn_buf_dispose(c);
 }
@@ -708,9 +709,9 @@ static void server_check_pending_timers(ws_server_t *s) {
 }
 
 static void server_writeable_conns_drain(ws_server_t *s) {
-  size_t len = s->writeable_conns.len;
+  size_t n = s->writeable_conns.len;
 
-  for (size_t i = 0; i < len; ++i) {
+  for (size_t i = 0; i < n; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
     if (!is_closing(c->flags) & (c->send_buf != NULL) & is_writeable(c)) {
       conn_drain_write_buf(c);
@@ -718,22 +719,41 @@ static void server_writeable_conns_drain(ws_server_t *s) {
     clear_write_queued(c);
   }
 
-  s->writeable_conns.len = 0;
+  // if draining caused more connections to get added to writeable_conns
+  // copy them to the front and update writeable_conns len
+  if (s->writeable_conns.len > n) {
+    memcpy(s->writeable_conns.conns,
+           s->writeable_conns.conns + s->writeable_conns.len,
+           s->writeable_conns.len - n);
+    s->writeable_conns.len = s->writeable_conns.len - n;
+  } else {
+    s->writeable_conns.len = 0;
+  }
+
 }
 
 static void server_closeable_conns_close(ws_server_t *s) {
   if (s->closeable_conns.len) {
     // printf("closing %zu connections\n", s->closeable_conns.len);
     size_t n = s->closeable_conns.len;
-    while (n--) {
-      ws_conn_t *c = s->closeable_conns.conns[n];
+    for (size_t i = 0; i < n; ++i) {
+      ws_conn_t *c = s->closeable_conns.conns[i];
       assert(close(c->fd) == 0);
       s->on_ws_disconnect(c, 0);
       ws_conn_free(s->conn_pool, c);
       --s->open_conns;
     }
 
-    s->closeable_conns.len = 0;
+    // if calling on_ws_disconnect caused more connections to be added
+    // to closeable_conns copy them and place to the front
+    if (s->closeable_conns.len > n) {
+      memcpy(s->closeable_conns.conns,
+             s->closeable_conns.conns + s->closeable_conns.len,
+             s->closeable_conns.len - n);
+      s->closeable_conns.len = s->closeable_conns.len - n;
+    } else {
+      s->closeable_conns.len = 0;
+    }
   }
 }
 
@@ -909,18 +929,18 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   assert(s->buffer_pool != NULL);
 
   // allocate the list (dynamic array of pointers to ws_conn_t) to track
-  // writeable connections
-  s->writeable_conns.conns =
-      calloc(s->max_conns, sizeof s->writeable_conns.conns);
-  s->writeable_conns.len = 0;
-  s->writeable_conns.cap = s->max_conns;
-
-  // allocate the list (dynamic array of pointers to ws_conn_t) to track
   // closeable connections
   s->closeable_conns.conns =
       calloc(s->max_conns, sizeof s->closeable_conns.conns);
   s->closeable_conns.len = 0;
   s->closeable_conns.cap = s->max_conns;
+
+  // allocate the list (dynamic array of pointers to ws_conn_t) to track
+  // writeable connections
+  s->writeable_conns.conns =
+      calloc(s->max_conns, sizeof s->writeable_conns.conns);
+  s->writeable_conns.len = 0;
+  s->writeable_conns.cap = s->max_conns;
 
   s->pending_timers.conns =
       calloc(s->max_conns, sizeof s->pending_timers.conns);
@@ -1222,8 +1242,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
       }
     }
 
-    server_writeable_conns_drain(s); // drain writes
-
     bool accept_resumable =
         s->accept_paused &&
         s->open_conns - s->closeable_conns.len <= s->max_conns;
@@ -1248,6 +1266,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
       check_user_epoll = false;
     }
+
+    // drain all outgoing before calling epoll_wait
+    server_writeable_conns_drain(s);
   }
 
   return 0;

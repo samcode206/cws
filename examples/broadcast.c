@@ -13,13 +13,13 @@ static void appBroadcast(App *state, char *msg, size_t len) {
   while (state->numConnections) {
     size_t i = state->numConnections;
     while (i--) {
-      //       if (ws_conn_write_buf_space(state->conns[i]) < len + 10) {
-      //   ws_conn_flush_pending(state->conns[i]);
-      // }
+      if (ws_conn_max_sendable_len(state->conns[i]) < len + 10) {
+        ws_conn_flush_pending(state->conns[i]);
+      }
 
-      // ws_conn_put_txt_msg(state->conns[i], msg, len, 0);
+      ws_conn_put_txt(state->conns[i], msg, len, 0);
 
-      ws_conn_send_txt(state->conns[i], msg, len, 0);
+      // ws_conn_send_txt(state->conns[i], msg, len, 0);
     }
 
     break;
@@ -50,7 +50,7 @@ static void appDisconnect(App *state, ws_conn_t *conn) {
 static App *state;
 
 void onOpen(ws_conn_t *conn) {
-  printf("on Open\n");
+  // printf("on Open\n");
   appNewConnection(state, conn);
 }
 
@@ -59,7 +59,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
 }
 
 void onDisconnect(ws_conn_t *conn, int err) {
-  printf("on Disconnect\n");
+  // printf("on Disconnect\n");
   appDisconnect(state, conn);
 }
 
