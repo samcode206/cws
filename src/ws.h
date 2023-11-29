@@ -502,7 +502,13 @@ void ws_conn_flush_pending(ws_conn_t *c);
 size_t ws_conn_max_sendable_len(ws_conn_t *c);
 
 
-
+/**
+* Returns current number of bytes not yet proccess in the Connection's receive buffer
+* if called during on_ws_msg and ws_conn_readable_len returns zero this indicates that the receive buffer is drained
+* @param c Pointer to the WebSocket connection (`ws_conn_t`).
+* @return  Size of the current number of bytes not yet processed
+*/
+size_t ws_conn_readable_len(ws_conn_t *c);
 
 /**
  * Checks if there is enough space in the connection's send buffer for a message of given length.
