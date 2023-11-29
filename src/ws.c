@@ -146,9 +146,9 @@ struct mirrored_buf_pool {
   uint32_t nmemb;
   size_t buf_sz;
   void *base;
-  void *rsv;
   size_t avb;
   size_t cap;
+  size_t depth_reached; // how many buffers deep did we need to hand out
   mirrored_buf_t **avb_stack;
   mirrored_buf_t *mirrored_bufs;
 };
@@ -708,6 +708,39 @@ static void server_check_pending_timers(ws_server_t *s) {
   }
 }
 
+static void server_do_mirrored_buf_pool_gc(ws_server_t *s) {
+#define GC_THRESHOLD 128
+  if (s->buffer_pool->depth_reached > GC_THRESHOLD+2) {
+    printf("buffer_pool depth reached %zu\n", s->buffer_pool->depth_reached);
+    struct mirrored_buf_pool *pool = s->buffer_pool;
+    if (pool->avb < 2) {
+      return;
+    }
+    // do a GC cycle and reset depth_reached back to zero
+    // don't collect the top two buffers of the allocation stack to keep it hot
+    size_t count = pool->depth_reached - 2;
+
+    // make sure we don't collect allocated pages
+    // check to make sure count doesn't exceed pool->avb minus two buffers
+    // if it does use that as the count
+    count = count >= pool->avb - 2 ? pool->avb - 2 : count;
+
+    printf("collecting %zu buffers\n", count);
+    // make sure we still meet GC_THRESHOLD
+    
+    if (count >= GC_THRESHOLD) {
+      while (count--) {
+        // let the kernel know we don't need these pages
+        // the quicker MADV_FREE only works with annonymous pages but it 
+        // also doesn't free until memory backpressure this one 
+        assert(madvise(pool->avb_stack[count]->buf,
+                       pool->avb_stack[count]->buf_sz*2, MADV_DONTNEED) == 0);
+      }
+      pool->depth_reached = 1;
+    }
+  }
+}
+
 static void server_writeable_conns_drain(ws_server_t *s) {
   size_t n = s->writeable_conns.len;
 
@@ -729,7 +762,6 @@ static void server_writeable_conns_drain(ws_server_t *s) {
   } else {
     s->writeable_conns.len = 0;
   }
-
 }
 
 static void server_closeable_conns_close(ws_server_t *s) {
@@ -1141,6 +1173,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   s->ev.data.ptr = &tfd;
   s->ev.events = EPOLLIN;
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
+  size_t gc_counter = 3;
 
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
@@ -1167,6 +1200,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
           (void)_;
 
           server_check_pending_timers(s);
+          gc_counter--;
+          if (!gc_counter) {
+            server_do_mirrored_buf_pool_gc(s);
+            gc_counter = 5;
+          }
+
         } else {
           check_user_epoll = true;
         }
@@ -2635,6 +2674,7 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 
   pool->avb = nmemb;
   pool->cap = nmemb;
+  pool->depth_reached = 0;
 
   pool->mirrored_bufs = (mirrored_buf_t *)((uintptr_t)pool_mem +
                                            sizeof(struct mirrored_buf_pool));
@@ -2702,8 +2742,13 @@ static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
 static void mirrored_buf_put(struct mirrored_buf_pool *bp,
                              mirrored_buf_t *buf) {
   if (buf) {
+    register size_t current_depth =
+        bp->cap - bp->avb; // record allocation depth reached
+
     buf->rpos = 0;
     buf->wpos = 0;
+    bp->depth_reached =
+        current_depth > bp->depth_reached ? current_depth : bp->depth_reached;
     bp->avb_stack[bp->avb++] = buf;
   }
 }
