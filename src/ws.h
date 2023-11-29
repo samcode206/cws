@@ -572,7 +572,11 @@ bool ws_server_accept_paused(ws_server_t *s);
 
 bool ws_server_accept_paused(ws_server_t *s);
 
+bool ws_conn_is_read_paused(ws_conn_t *c);
 
+void ws_conn_pause_read(ws_conn_t *c);
+
+void ws_conn_resume_reads(ws_conn_t *c);
 
 typedef struct ws_poll_cb_ctx_t ws_poll_cb_ctx_t;
 

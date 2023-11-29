@@ -44,7 +44,7 @@
 #include <sys/uio.h>
 #include <time.h>
 
-#ifdef WITH_COMPRESSION 
+#ifdef WITH_COMPRESSION
 #include <zlib.h>
 #endif /* WITH_COMPRESSION */
 
@@ -203,6 +203,7 @@ void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
 #define CONN_TIMER_QUEUED (1u << 10)
 #define CONN_RX_PROCESSING_FRAMES (1u << 11)
 #define CONN_TX_SENDING_FRAGMENTS (1u << 12)
+#define CONN_RX_PAUSED (1u << 13)
 
 struct conn_list {
   size_t len;
@@ -302,15 +303,16 @@ static void conn_prep_send_buf(ws_conn_t *conn) {
   if (!conn->send_buf) {
     // mirrored_buf_t *recv_buf = conn->recv_buf;
     // // can we swap buffers so we don't go all the way to the buffer pool
-    // // commented out because we may overwrite the msg when user sends 
-    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's us know that 
-    // // that they no longer want the msg and we can make this safe 
+    // // commented out because we may overwrite the msg when user sends
+    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's
+    // us know that
+    // // that they no longer want the msg and we can make this safe
     // if (recv_buf && !buf_len(recv_buf)) {
     //   conn->send_buf = recv_buf;
     //   conn->recv_buf = NULL;
     // } else {
-      conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-      assert(conn->send_buf != NULL);
+    conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
+    assert(conn->send_buf != NULL);
     // }
   }
 }
@@ -487,6 +489,16 @@ static inline void clear_sending_fragments(ws_conn_t *c) {
   c->flags &= ~CONN_TX_SENDING_FRAGMENTS;
 }
 
+static inline bool is_read_paused(ws_conn_t *c) {
+  return (c->flags & CONN_RX_PAUSED) != 0;
+}
+
+static inline void set_read_paused(ws_conn_t *c) { c->flags |= CONN_RX_PAUSED; }
+
+static inline void clear_read_paused(ws_conn_t *c) {
+  c->flags &= ~CONN_RX_PAUSED;
+}
+
 // Frame Parsing Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
@@ -652,8 +664,7 @@ static void server_pending_timers_remove(ws_conn_t *c) {
       while (i--) {
         if (s->pending_timers.conns[i] == c) {
           clear_has_pending_timers(c);
-          ws_conn_t *tmp =
-              s->pending_timers.conns[--s->pending_timers.len];
+          ws_conn_t *tmp = s->pending_timers.conns[--s->pending_timers.len];
           s->pending_timers.conns[i] = tmp;
           break;
         }
@@ -1206,6 +1217,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                       exit(EXIT_FAILURE);
                     }
                   };
+                  clear_read_paused(c);
                 }
               }
             }
@@ -1889,6 +1901,8 @@ static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
     // TODO : add a pause function for when the client wants to stop reading
     // from a connection temporarily
     conn->base->ev.events |= EPOLLIN;
+  } else {
+    set_read_paused(conn);
   }
 
   ws_server_epoll_ctl(conn->base, EPOLL_CTL_MOD, conn->fd);
@@ -2239,7 +2253,7 @@ inline bool ws_conn_sending_fragments(ws_conn_t *c) {
 }
 
 int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt,
-                           bool final) {
+                          bool final) {
   bool is_continuation = is_sending_fragments(c);
   set_sending_fragments(c);
   uint8_t frame_cfg = OP_CONT;
@@ -2302,6 +2316,41 @@ void ws_conn_destroy(ws_conn_t *conn) {
 }
 
 int ws_conn_fd(ws_conn_t *c) { return c->fd; }
+
+inline bool ws_conn_is_read_paused(ws_conn_t *c) { return is_read_paused(c); };
+
+void ws_conn_pause_read(ws_conn_t *c) {
+  // if we aren't currently paused
+  if (!is_read_paused(c)) {
+    printf("paused reads\n");
+
+    ws_server_t *s = c->base;
+    s->ev.data.ptr = c;
+    s->ev.events = EPOLLRDHUP;
+    // if we aren't writeable keep EPOLLOUT
+    if (!is_writeable(c)) {
+      s->ev.events |= EPOLLOUT;
+    }
+    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd);
+
+    set_read_paused(c);
+  }
+};
+
+void ws_conn_resume_reads(ws_conn_t *c) {
+  if (is_read_paused(c)) {
+    printf("resuming reads\n");
+    ws_server_t *s = c->base;
+    s->ev.data.ptr = c;
+    s->ev.events = EPOLLIN | EPOLLRDHUP;
+    if (!is_writeable(c)) {
+      s->ev.events |= EPOLLOUT;
+    }
+
+    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd);
+    clear_read_paused(c);
+  }
+}
 
 inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
 
@@ -2554,7 +2603,6 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
   return err == Z_OK ? total - 4 : err;
 }
 
-
 #endif /* WITH_COMPRESSION */
 
 // static void buf_pool_destroy(struct buf_pool *p) {
@@ -2614,8 +2662,8 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   pool->mirrored_bufs = (mirrored_buf_t *)((uintptr_t)pool_mem +
                                            sizeof(struct mirrored_buf_pool));
   pool->avb_stack = (mirrored_buf_t **)((uintptr_t)pool_mem +
-                                       sizeof(struct mirrored_buf_pool) +
-                                       mirrored_bufs_total_size);
+                                        sizeof(struct mirrored_buf_pool) +
+                                        mirrored_bufs_total_size);
 
   pool->fd = memfd_create("buf", 0);
   if (pool->fd == -1) {
@@ -2637,7 +2685,6 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   uint8_t *pos = pool->base;
   size_t offset = 0;
 
-
   for (i = 0; i < nmemb; ++i) {
     if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
              pool->fd, offset) == MAP_FAILED) {
@@ -2651,7 +2698,6 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
       return NULL;
     };
 
- 
     pool->mirrored_bufs[i].buf = pos;
     pool->mirrored_bufs[i].buf_sz = buf_sz;
 
