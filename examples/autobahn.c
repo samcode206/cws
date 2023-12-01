@@ -131,7 +131,7 @@ void on_disconnect(ws_conn_t *ws_conn, int err) {
     ws_conn_set_ctx(ws_conn, NULL);
   };
 
-  // printf("on_disconnect fd=%d\n", ws_conn_fd(ws_conn));
+  // printf("on_disconnect: %s\n", ws_conn_strerror(ws_conn));
 }
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
@@ -172,15 +172,15 @@ void on_accept_err(ws_server_t *s, int err) {
 }
 
 void on_timeout(ws_conn_t *c, unsigned timeout_kind) {
-  if (timeout_kind == WS_READ_TIMEOUT) {
+  if (timeout_kind == WS_ERR_READ_TIMEOUT) {
     printf("read timeout on %d\n", ws_conn_fd(c));
-  } else if (timeout_kind == WS_WRITE_TIMEOUT) {
+  } else if (timeout_kind == WS_ERR_WRITE_TIMEOUT) {
     printf("write timeout on  %d\n", ws_conn_fd(c));
-  } else if (timeout_kind == WS_RW_TIMEOUT){
+  } else if (timeout_kind == WS_ERR_RW_TIMEOUT){
     printf("read/write timeout on %d\n", ws_conn_fd(c));
   }
 
-  ws_conn_destroy(c);
+  ws_conn_destroy(c, WS_ERR_READ_TIMEOUT);
 }
 
 void *start_server() {

@@ -477,8 +477,9 @@ void ws_conn_close(ws_conn_t *c, void *msg, size_t n, uint16_t code);
  * will be invoked following the destruction of the connection.
  *
  * @param c Pointer to the WebSocket connection (`ws_conn_t`) to be destroyed.
+ * @param reason Code reason for the closure
  */
-void ws_conn_destroy(ws_conn_t *c);
+void ws_conn_destroy(ws_conn_t *c, unsigned long reason);
 
 
 
@@ -604,75 +605,90 @@ int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
                        int events);
 
 
+enum ws_conn_err {
+    WS_ERR_READ = 990,
 
-enum ws_timeout_status {
-  WS_READ_TIMEOUT = 1,
-  WS_WRITE_TIMEOUT = 2,
-  WS_RW_TIMEOUT = 3,
-};
+    WS_ERR_WRITE = 991,
 
+    WS_ERR_BAD_FRAME = 992,
 
+    WS_ERR_BAD_HANDSHAKE = 993,
 
+    WS_ERR_READ_TIMEOUT = 994,
 
-/**
- * Normal closure; the purpose for which the connection was
- * established has been fulfilled.
- */
-#define WS_CLOSE_NORMAL 1000 
+    WS_ERR_WRITE_TIMEOUT = 995,
 
-/**
- * Endpoint going away, such as a server shutting down or
- * a browser navigating away from a page.
- */
-#define WS_CLOSE_GOAWAY 1001
+    WS_ERR_RW_TIMEOUT = 996,
 
-/**
- * Protocol error encountered.
- */
-#define WS_CLOSE_PROTOCOL 1002 
+    WS_UNKNOWN_OPCODE = 997,
 
-/**
- * Unsupported data; the client expects text but the server
- * sends binary data, for instance.
- */
-#define WS_CLOSE_UNSUPPORTED 1003
+    WS_ERR_INFLATE = 998,
 
-/**
- * Invalid data; for example, non-UTF-8 data within a text message.
- */
-#define WS_CLOSE_INVALID 1007
-
-/**
- * Policy violation.
- */
-#define WS_CLOSE_POLICY 1008
-
-/**
- * The message is too large for the server to process.
- */
-#define WS_CLOSE_TOO_LARGE 1009
-
-/**
- * Client ending connection due to expected server extension negotiation failure.
- */
-#define WS_CLOSE_EXTENSION 1010
-
-/**
- * An unexpected condition prevented the server from fulfilling the request.
- */
-#define WS_CLOSE_UNEXPECTED 1011
-
-/**
- * No status code was present in the close frame.
- */
-#define WS_CLOSE_NO_STATUS 1005
-
-/**
- * Connection closed abnormally, such as without sending/receiving a close frame.
- */
-#define WS_CLOSE_ABNORMAL 1006
+    WS_ERR_INVALID_UTF8 = 999,
 
 
+    /**
+    * Normal closure; the purpose for which the connection was
+    * established has been fulfilled.
+    */
+    WS_CLOSE_NORMAL = 1000, 
+
+    /**
+    * Endpoint going away, such as a server shutting down or
+    * a browser navigating away from a page.
+    */
+    WS_CLOSE_GOAWAY = 1001,
+
+    /**
+    * Protocol error encountered.
+    */
+    WS_CLOSE_PROTOCOL = 1002, 
+
+    /**
+    * Unsupported data; the client expects text but the server
+    * sends binary data, for instance.
+    */
+    WS_CLOSE_UNSUPPORTED = 1003,
+
+    /**
+    * No status code was present in the close frame.
+    */
+    WS_CLOSE_NO_STATUS = 1005,
+
+    /**
+    * Connection closed abnormally, such as without sending/receiving a close frame.
+    */
+    WS_CLOSE_ABNORMAL = 1006,
+
+    /**
+    * Invalid data; for example, non-UTF-8 data within a text message.
+    */
+    WS_CLOSE_INVALID = 1007,
+
+    /**
+    * Policy violation.
+    */
+    WS_CLOSE_POLICY = 1008,
+
+    /**
+    * The message is too large for the server to process.
+    */
+    WS_CLOSE_TOO_LARGE = 1009,
+
+    /**
+    * Client ending connection due to expected server extension negotiation failure.
+    */
+    WS_CLOSE_EXTENSION = 1010,
+
+    /**
+    * An unexpected condition prevented the server from fulfilling the request.
+    */
+    WS_CLOSE_UNEXPECTED = 1011,
+
+  };
+
+
+const char *ws_conn_strerror(ws_conn_t *c);
 
 // errors
 #define ERR_HDR_NOT_FOUND -2
