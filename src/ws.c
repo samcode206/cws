@@ -48,7 +48,10 @@
 #include <zlib.h>
 #endif /* WITH_COMPRESSION */
 
-#define TIMER_GRANULARITY 5
+#define SECONDS_PER_TICK 1
+
+#define TIMER_CHECK_TICKS 5 // gives a timeout granularity of 5 seconds
+
 #define READ_TIMEOUT 60
 
 #define FIN 0x80
@@ -141,6 +144,9 @@ struct buf_node {
   struct buf_node *next;
 };
 
+#define BUF_POOL_LONG_AVG_TICKS 256
+#define BUF_POOL_GC_TICKS 16
+
 struct mirrored_buf_pool {
   int fd;
   uint32_t nmemb;
@@ -148,7 +154,20 @@ struct mirrored_buf_pool {
   void *base;
   size_t avb;
   size_t cap;
-  size_t depth_reached; // how many buffers deep did we need to hand out
+  size_t depth_reached; // current max depth reached per tick
+
+  size_t max_depth_since_gc; // max depth reached since last time gc ran
+
+  size_t avg_depth_reached_since_gc; // average depth reached recorded since
+                                     // last gc
+
+  size_t ticks; // total ticks for updating metrics
+
+  size_t touched_bufs; // total used since last gc
+
+  size_t avg_depths[BUF_POOL_LONG_AVG_TICKS]; // average depth for the last BUF_POOL_LONG_AVG_TICKS
+                                              
+
   mirrored_buf_t **avb_stack;
   mirrored_buf_t *mirrored_bufs;
 };
@@ -681,8 +700,9 @@ static void server_closeable_conns_append(ws_conn_t *c, unsigned long reason) {
 }
 
 static void server_check_pending_timers(ws_server_t *s) {
-  static_assert(WS_ERR_READ_TIMEOUT == 994, "WS_ERR_READ_TIMEOUT should be 994");
-  
+  static_assert(WS_ERR_READ_TIMEOUT == 994,
+                "WS_ERR_READ_TIMEOUT should be 994");
+
   unsigned timeout_kind = 993;
   ws_on_timeout_t cb = s->on_ws_conn_timeout;
   unsigned int now = (unsigned int)time(NULL);
@@ -711,35 +731,108 @@ static void server_check_pending_timers(ws_server_t *s) {
   }
 }
 
-static void server_do_mirrored_buf_pool_gc(ws_server_t *s) {
-#define GC_THRESHOLD 128
-  if (s->buffer_pool->depth_reached > GC_THRESHOLD + 2) {
-    printf("buffer_pool depth reached %zu\n", s->buffer_pool->depth_reached);
-    struct mirrored_buf_pool *pool = s->buffer_pool;
-    if (pool->avb < 2) {
-      return;
+static size_t buf_pool_max_depth_running_avg(struct mirrored_buf_pool *p) {
+  size_t total = 0;
+  size_t count =
+      p->ticks >= BUF_POOL_LONG_AVG_TICKS ? BUF_POOL_LONG_AVG_TICKS : p->ticks;
+
+  if (count) {
+    size_t i = count;
+    while (i--) {
+      total += p->avg_depths[i];
     }
-    // do a GC cycle and reset depth_reached back to zero
-    // don't collect the top two buffers of the allocation stack to keep it hot
-    size_t count = pool->depth_reached - 2;
 
-    // make sure we don't collect allocated pages
-    // check to make sure count doesn't exceed pool->avb minus two buffers
-    // if it does use that as the count
-    count = count >= pool->avb - 2 ? pool->avb - 2 : count;
+    return total / count;
+  }
 
-    printf("collecting %zu buffers\n", count);
-    // make sure we still meet GC_THRESHOLD
+  return 0;
+}
 
-    if (count >= GC_THRESHOLD) {
-      while (count--) {
-        // let the kernel know we don't need these pages
-        // the quicker MADV_FREE only works with annonymous pages but it
-        // also doesn't free until memory backpressure this one
-        assert(madvise(pool->avb_stack[count]->buf,
-                       pool->avb_stack[count]->buf_sz * 2, MADV_DONTNEED) == 0);
+static void server_do_mirrored_buf_pool_gc(ws_server_t *s) {
+  struct mirrored_buf_pool *p = s->buffer_pool;
+
+  // place the max depth reached for the tick in the avg_depths ring
+  p->avg_depths[s->buffer_pool->ticks++ % BUF_POOL_LONG_AVG_TICKS] =
+      p->depth_reached;
+
+  // save the current max depth
+  size_t current_depth = p->depth_reached;
+
+  // reset the per tick metric
+  p->depth_reached = 0;
+
+  size_t tick_no = p->ticks;
+
+  // add up to the eventual avg
+  // averaging out happens when it's needed
+  p->avg_depth_reached_since_gc += current_depth;
+
+  // update max_depth per gc
+  // if the tick we are processing holds the current max
+  // update the pool's max_depth_since_gc
+  p->max_depth_since_gc = current_depth > p->max_depth_since_gc
+                              ? current_depth
+                              : p->max_depth_since_gc;
+
+  // every BUF_POOL_GC_TICKS ticks check what can be collected
+  if (!(tick_no % BUF_POOL_GC_TICKS)) {
+    // calculate the avg from the past 32 tick
+    // short term per BUF_POOL_GC_TICKS avg max depth seen
+    size_t st_avg_depth = p->avg_depth_reached_since_gc / BUF_POOL_GC_TICKS;
+    p->avg_depth_reached_since_gc = 0; // reset per gc metric
+    // longer term avg for the above
+    size_t lt_avg_depth = buf_pool_max_depth_running_avg(p);
+
+    // get the current max depth and reset it
+    size_t max_depth = p->max_depth_since_gc;
+    p->max_depth_since_gc = 0; // reset per gc metric
+    if (max_depth > p->touched_bufs) {
+      p->touched_bufs = max_depth;
+    }
+
+    size_t avb_bufs = p->avb;
+
+    // printf("%zu buffers in use\n", p->touched_bufs);
+
+    // there's a downward trend in usage
+    if (st_avg_depth <= lt_avg_depth) {
+      size_t unneeded = 0;
+
+      // are there spikes still?
+      if (max_depth > st_avg_depth || max_depth > lt_avg_depth) {
+        // is the current spike still lower than what we touched since last GC
+        // if so we don't need to wait for the spike to drop and can free some
+        // memory
+        if (p->touched_bufs > max_depth) {
+          unneeded = p->touched_bufs - max_depth;
+          if (unneeded > 4) {
+            unneeded /= 2; // remove half at once
+          }
+        } else {
+          return;
+        }
+      } else {
+        // no spikes check how many buffers were paged in
+        // make sure to keep some for the average cases
+        unneeded = p->touched_bufs - lt_avg_depth - st_avg_depth;
       }
-      pool->depth_reached = 1;
+
+      if (unneeded > 2 && avb_bufs > unneeded) {
+        size_t len = unneeded - 2;
+        if (len > 4096) {
+          // limit calls to madvise to 4096 per GC cycle
+          // the aim is to increase frequency of GC runs but limit time spent
+          // per GC cycle at the cost of slower memory reclamation
+          len = 4096;
+        }
+
+        for (size_t i = p->cap - p->touched_bufs; i < len; ++i) {
+          assert(madvise(p->avb_stack[i]->buf, p->buf_sz * 2, MADV_DONTNEED) ==
+                 0);
+        }
+
+        p->touched_bufs -= len;
+      }
     }
   }
 }
@@ -953,7 +1046,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   printf("max_conns = %zu\n", s->max_conns);
   s->buffer_pool =
-      mirrored_buf_pool_create(s->max_conns + s->max_conns + 2, buffer_size);
+      mirrored_buf_pool_create(s->max_conns + s->max_conns, buffer_size);
 
   s->conn_pool = ws_conn_pool_create(s->max_conns);
 
@@ -1165,11 +1258,11 @@ int ws_server_start(ws_server_t *s, int backlog) {
   struct itimerspec timer = {.it_interval =
                                  {
                                      .tv_nsec = 0,
-                                     .tv_sec = TIMER_GRANULARITY,
+                                     .tv_sec = SECONDS_PER_TICK,
                                  },
                              .it_value = {
                                  .tv_nsec = 0,
-                                 .tv_sec = TIMER_GRANULARITY,
+                                 .tv_sec = SECONDS_PER_TICK,
                              }};
 
   assert(timerfd_settime(tfd, 0, &timer, NULL) != -1);
@@ -1177,7 +1270,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   s->ev.data.ptr = &tfd;
   s->ev.events = EPOLLIN;
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
-  size_t gc_counter = 3;
+  size_t timer_check_counter = TIMER_CHECK_TICKS;
 
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
@@ -1203,12 +1296,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
           assert(read(tfd, &_, 8) == 8);
           (void)_;
 
-          server_check_pending_timers(s);
-          gc_counter--;
-          if (!gc_counter) {
-            server_do_mirrored_buf_pool_gc(s);
-            gc_counter = 5;
+          timer_check_counter--;
+          if (!timer_check_counter) {
+            server_check_pending_timers(s);
+            timer_check_counter = TIMER_CHECK_TICKS;
           }
+
+          server_do_mirrored_buf_pool_gc(s);
 
         } else {
           check_user_epoll = true;
@@ -2651,7 +2745,7 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   size_t avb_stack_total_size = nmemb * sizeof(mirrored_buf_t *);
 
   size_t pool_sz = ((sizeof(struct mirrored_buf_pool) +
-                     mirrored_bufs_total_size + avb_stack_total_size) +
+                     mirrored_bufs_total_size + avb_stack_total_size + 128) +
                     page_size - 1) &
                    ~(page_size - 1);
   size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
@@ -2675,11 +2769,13 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   pool->cap = nmemb;
   pool->depth_reached = 0;
 
-  pool->mirrored_bufs = (mirrored_buf_t *)((uintptr_t)pool_mem +
-                                           sizeof(struct mirrored_buf_pool));
-  pool->avb_stack = (mirrored_buf_t **)((uintptr_t)pool_mem +
-                                        sizeof(struct mirrored_buf_pool) +
-                                        mirrored_bufs_total_size);
+  pool->mirrored_bufs =
+      (mirrored_buf_t *)((uintptr_t)pool_mem +
+                         ((sizeof(struct mirrored_buf_pool) + 31) & ~31));
+  pool->avb_stack =
+      (mirrored_buf_t **)((uintptr_t)pool_mem +
+                          ((sizeof(struct mirrored_buf_pool) + 31) & ~31) +
+                          mirrored_bufs_total_size);
 
   pool->fd = memfd_create("buf", 0);
   if (pool->fd == -1) {
@@ -2732,7 +2828,13 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 
 static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
   if (bp->avb) {
-    return bp->avb_stack[--bp->avb];
+    mirrored_buf_t *b = bp->avb_stack[--bp->avb];
+    register size_t current_depth = bp->cap - bp->avb;
+
+    bp->depth_reached =
+        current_depth > bp->depth_reached ? current_depth : bp->depth_reached;
+
+    return b;
   }
 
   return NULL;
@@ -2741,13 +2843,8 @@ static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
 static void mirrored_buf_put(struct mirrored_buf_pool *bp,
                              mirrored_buf_t *buf) {
   if (buf) {
-    register size_t current_depth =
-        bp->cap - bp->avb; // record allocation depth reached
-
     buf->rpos = 0;
     buf->wpos = 0;
-    bp->depth_reached =
-        current_depth > bp->depth_reached ? current_depth : bp->depth_reached;
     bp->avb_stack[bp->avb++] = buf;
   }
 }
