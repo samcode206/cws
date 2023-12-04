@@ -8,22 +8,34 @@ ws.onopen = (ev) => {
   console.log("opened");
 };
 
-
 ws.onerror = (err) => {
   console.log("err", err);
 };
 
-
 ws.on("close", (code, reason) => {
-  console.log('closed with code = ', code, 'reason=', reason.toString().length ? reason.toString() : null);
-})
+  console.log(
+    "closed with code = ",
+    code,
+    "reason=",
+    reason.toString().length ? reason.toString() : null
+  );
+});
 
 ws.on("message", (msg, bin) => {
-  console.log(bin ? " binary": "text", "msg",  msg.toString());
-})
+  console.log(
+    "Received",
+    bin ? " binary" : "text",
+    "msg",
+    "size",
+    msg.length,
+    msg.toString()
+  );
+});
 
 ws.on("ping", (data) => {
   console.log("ping", data.toString());
+  // ws.pong("hi");
+  // ws.send("hello");
 });
 
 ws.on("pong", (data) => {
@@ -37,7 +49,7 @@ ws.on("unexpected-response", (req, res) => {
 let i = 1;
 process.stdin.on("data", (data) => {
   if (ws.OPEN) {
-    let data = Buffer.from('*'.repeat(i++));
+    let data = Buffer.from("*".repeat(i++));
     ws.send(data.toString(), (err) => {
       if (err) {
         console.error(err);
