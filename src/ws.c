@@ -165,8 +165,8 @@ struct mirrored_buf_pool {
 
   size_t touched_bufs; // total used since last gc
 
-  size_t avg_depths[BUF_POOL_LONG_AVG_TICKS]; // average depth for the last BUF_POOL_LONG_AVG_TICKS
-                                              
+  size_t avg_depths[BUF_POOL_LONG_AVG_TICKS]; // average depth for the last
+                                              // BUF_POOL_LONG_AVG_TICKS
 
   mirrored_buf_t **avb_stack;
   mirrored_buf_t *mirrored_bufs;
@@ -829,11 +829,11 @@ static void server_do_mirrored_buf_pool_gc(ws_server_t *s) {
         size_t madvise_from = p->cap - p->touched_bufs;
         size_t madvise_to = madvise_from + madvise_count;
 
-        assert(madvise_to <= p->cap-2);
+        assert(madvise_to <= p->cap - 2);
 
         for (size_t i = madvise_from; i < madvise_to; ++i) {
           // printf("MADV_DONTNEED %p\n", p->avb_stack[i]->buf);
-          assert(madvise(p->avb_stack[i]->buf, p->buf_sz*2, MADV_DONTNEED) ==
+          assert(madvise(p->avb_stack[i]->buf, p->buf_sz * 2, MADV_DONTNEED) ==
                  0);
         }
 
@@ -1424,6 +1424,12 @@ static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
 #ifdef WITH_COMPRESSION
   space = space > 4 ? space - 4 : 0;
 #endif /* WITH_COMPRESSION */
+
+
+  if (conn->needed_bytes < 16384 && space > 16388) {
+    // limit to 16kb if we don't specifically need to read more
+    space = 16384;
+  }
 
   ssize_t n = buf_recv(buf, conn->fd, space, 0);
   if (n == -1 || n == 0) {
