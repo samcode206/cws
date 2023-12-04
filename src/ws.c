@@ -818,20 +818,26 @@ static void server_do_mirrored_buf_pool_gc(ws_server_t *s) {
       }
 
       if (unneeded > 2 && avb_bufs > unneeded) {
-        size_t len = unneeded - 2;
-        if (len > 4096) {
+        size_t madvise_count = unneeded - 2;
+        if (madvise_count > 4096) {
           // limit calls to madvise to 4096 per GC cycle
           // the aim is to increase frequency of GC runs but limit time spent
           // per GC cycle at the cost of slower memory reclamation
-          len = 4096;
+          madvise_count = 4096;
         }
 
-        for (size_t i = p->cap - p->touched_bufs; i < len; ++i) {
-          assert(madvise(p->avb_stack[i]->buf, p->buf_sz * 2, MADV_DONTNEED) ==
+        size_t madvise_from = p->cap - p->touched_bufs;
+        size_t madvise_to = madvise_from + madvise_count;
+
+        assert(madvise_to <= p->cap-2);
+
+        for (size_t i = madvise_from; i < madvise_to; ++i) {
+          // printf("MADV_DONTNEED %p\n", p->avb_stack[i]->buf);
+          assert(madvise(p->avb_stack[i]->buf, p->buf_sz*2, MADV_DONTNEED) ==
                  0);
         }
 
-        p->touched_bufs -= len;
+        p->touched_bufs -= madvise_count;
       }
     }
   }
