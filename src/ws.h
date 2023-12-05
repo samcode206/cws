@@ -584,6 +584,20 @@ void ws_conn_pause_read(ws_conn_t *c);
 
 void ws_conn_resume_reads(ws_conn_t *c);
 
+/**
+* Sets the read timeout for the connection if secs is zero read timeouts will be disabled
+* @param c Pointer to the WebSocket connection (`ws_conn_t`).
+* @param secs Number of seconds until timeout 
+*/
+void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs);
+
+/**
+* Sets the write timeout for the connection if secs is zero write timeouts will be disabled
+* @param c Pointer to the WebSocket connection (`ws_conn_t`).
+* @param secs Number of seconds until timeout 
+*/
+void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs);
+
 
 int ws_conn_fd(ws_conn_t *c);
 

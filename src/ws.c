@@ -2522,6 +2522,22 @@ inline bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
 
 inline size_t ws_server_open_conns(ws_server_t *s) { return s->open_conns; }
 
+void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
+  if ((secs != 0) & !is_closing(c->flags)) {
+    c->read_timeout = time(NULL) + secs;
+  } else {
+    c->read_timeout = 0;
+  }
+};
+
+void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
+  if ((secs != 0) & !is_closing(c->flags)) {
+    c->write_timeout = time(NULL) + secs;
+  } else {
+    c->write_timeout = 0;
+  }
+};
+
 static unsigned utf8_is_valid(uint8_t *s, size_t n) {
   for (uint8_t *e = s + n; s != e;) {
     if (s + 4 <= e) {
@@ -2570,8 +2586,7 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
 
   size_t pool_sz = (sizeof(struct ws_conn_pool) + 63) & ~63;
   size_t pool_and_avb_stk_sz =
-      ((pool_sz + (nmemb * sizeof(ws_conn_t *))) +
-       (page_size - 1)) &
+      ((pool_sz + (nmemb * sizeof(ws_conn_t *))) + (page_size - 1)) &
       ~(page_size - 1);
 
   size_t ws_conns_sz =
@@ -2581,23 +2596,21 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
       mmap(NULL, pool_and_avb_stk_sz + ws_conns_sz, PROT_READ | PROT_WRITE,
            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   assert(pool_mem != MAP_FAILED);
-  
+
   struct ws_conn_pool *pool = pool_mem;
   pool->avb = nmemb;
   pool->cap = nmemb;
   pool->avb_stack = (ws_conn_t **)((uintptr_t)pool_mem + pool_sz);
   pool->base = (ws_conn_t *)((uintptr_t)pool_mem + pool_and_avb_stk_sz);
 
-
   assert((uintptr_t)pool + pool_sz == (uintptr_t)pool->avb_stack);
-  assert((uintptr_t)pool->avb_stack + (sizeof(ws_conn_t*) * nmemb) < (uintptr_t)pool->base);
-
-
+  assert((uintptr_t)pool->avb_stack + (sizeof(ws_conn_t *) * nmemb) <
+         (uintptr_t)pool->base);
 
   size_t i = nmemb;
   size_t j = 0;
 
-  while (i--){
+  while (i--) {
     pool->avb_stack[i] = &pool->base[j++];
   }
 
@@ -2607,13 +2620,13 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
 static struct ws_conn_t *ws_conn_get(struct ws_conn_pool *p) {
   if (p->avb) {
     return p->avb_stack[--p->avb];
-  } 
+  }
 
   return NULL;
 }
 
 static void ws_conn_put(struct ws_conn_pool *p, struct ws_conn_t *c) {
-  if (c){
+  if (c) {
     p->avb_stack[p->avb++] = c;
   }
 }
@@ -2729,8 +2742,6 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 }
 
 #endif /* WITH_COMPRESSION */
-
-
 
 static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
                                                           size_t buf_sz) {
@@ -3010,7 +3021,7 @@ int ws_epoll_create1(ws_server_t *s) {
 }
 
 int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                         int events) {
+                     int events) {
   if (!s->user_epoll || !cb_ctx) {
     return -1;
   }
@@ -3033,7 +3044,7 @@ int ws_epoll_ctl_del(ws_server_t *s, int fd) {
 }
 
 int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                       int events) {
+                     int events) {
   if (!s->user_epoll || !cb_ctx) {
     return -1;
   }
