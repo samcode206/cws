@@ -86,7 +86,6 @@ struct ws_conn_pool {
   ws_conn_t **avb_stack;
 };
 
-
 typedef struct {
   size_t rpos;
   size_t wpos;
@@ -236,7 +235,6 @@ static void conn_dyn_buf_dispose(ws_conn_t *c) {
   }
 }
 
-
 // maybe later we can support dedicated compression
 // z_stream *conn_inflate_stream(ws_conn_t *c) {
 //   if (c->buffers[3]) {
@@ -273,9 +271,7 @@ static void conn_dyn_buf_dispose(ws_conn_t *c) {
 //   }
 // }
 
-
 #endif /* WITH_COMPRESSION */
-
 
 // connection state utils so we don't fill the code with bit manipulation
 
@@ -497,7 +493,8 @@ static int base64_encode(char *coded_dst, const char *plain_src,
 
 static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
                                                           uint8_t const *buf) {
-  return (buf[0] & 0x10) != 0 || (buf[0] & 0x20) != 0 || ((buf[0] & 0x40) != 0 && !is_compression_allowed(c));
+  return (buf[0] & 0x10) != 0 || (buf[0] & 0x20) != 0 ||
+         ((buf[0] & 0x40) != 0 && !is_compression_allowed(c));
 }
 
 static inline uint32_t frame_is_masked(const unsigned char *buf) {
@@ -627,7 +624,11 @@ static void server_closeable_conns_append(ws_conn_t *c, unsigned long reason) {
   mark_closing(c);
   clear_writeable(c);
   server_pending_timers_remove(c);
+
+#ifdef WITH_COMPRESSION
   conn_dyn_buf_dispose(c);
+#endif /* WITH_COMPRESSION */
+
   // we store the closure reason in needed_bytes
   // because it won't be used at this stage
   // this allows use to save some space
@@ -659,7 +660,7 @@ static void server_check_pending_timers(ws_server_t *s) {
         } else {
           ws_conn_destroy(c, timeout_kind);
         }
-    
+
         timeout_kind = 993;
       }
     }
@@ -1797,7 +1798,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
 
 #else
           if (!is_bin(conn) && !utf8_is_valid(msg, payload_len)) {
-            ws_conn_destroy(conn);
+            ws_conn_destroy(conn, WS_ERR_INVALID_UTF8);
             return; // TODO(sah): send a Close frame, & call close callback
           }
           s->on_ws_msg(conn, msg, payload_len, is_bin(conn));
@@ -1898,7 +1899,7 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
             uint8_t *msg = buf_peek(conn->recv_buf);
             buf_consume(conn->recv_buf, conn->fragments_len);
             if (!is_bin(conn) && !utf8_is_valid(msg, conn->fragments_len)) {
-              ws_conn_destroy(conn);
+              ws_conn_destroy(conn, WS_ERR_INVALID_UTF8);
               return; // TODO(sah): send a Close frame, & call close callback
             }
             s->on_ws_msg(conn, msg, conn->fragments_len, is_bin(conn));
