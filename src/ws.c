@@ -48,18 +48,12 @@
 #include <zlib.h>
 #endif /* WITH_COMPRESSION */
 
-#define SECONDS_PER_TICK 1
 
-#define TIMER_CHECK_TICKS 5 // gives a timeout granularity of 5 seconds
-
-#define READ_TIMEOUT 60
 
 #define FIN 0x80
-
 #define OP_CONT 0x0
 #define OP_TXT 0x1
 #define OP_BIN 0x2
-
 #define OP_CLOSE 0x8
 #define OP_PING 0x9
 #define OP_PONG 0xA
@@ -67,18 +61,49 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
+
+
+#define SECONDS_PER_TICK 1
+#define TIMER_CHECK_TICKS 5
+#define READ_TIMEOUT 60
+#define BUF_POOL_LONG_AVG_TICKS 256
+#define BUF_POOL_GC_TICKS 16
+
+
+
+#define CONN_CLOSE_QUEUED (1u << 0)
+#define CONN_UPGRADED (1u << 1)
+#define CONN_RX_BIN (1u << 2)
+#define CONN_RX_FRAGMENTED (1u << 3)
+#define CONN_RX_GET_REQUEST (1u << 4)
+#define CONN_TX_WRITEABLE (1u << 5)
+#define CONN_TX_WRITE_QUEUED (1u << 6)
+#define CONN_TX_DISPOSING (1u << 7)
+#define CONN_COMPRESSION_ALLOWED (1u << 8)
+#define CONN_RX_COMPRESSED_FRAGMENTS (1u << 9)
+#define CONN_TIMER_QUEUED (1u << 10)
+#define CONN_RX_PROCESSING_FRAMES (1u << 11)
+#define CONN_TX_SENDING_FRAGMENTS (1u << 12)
+#define CONN_RX_PAUSED (1u << 13)
+
+
+
+struct buf_node {
+  void *b;
+  struct buf_node *next;
+};
+
+struct ws_conn_pool {
+  ws_conn_t *base;
+  struct buf_node *head;
+  struct buf_node _buf_nodes[];
+};
+
 struct dyn_buf {
   size_t len;
   size_t cap;
   char data[];
 };
-
-// mirrored buffer defintion and helpers
-// this one is a ring buffer with hardware handled wrap around
-// uses two memory mappings that are backed by the same physical memory (memfd)
-// the two mapping are contigious in the virtual address space but both start at
-// the beginning of the physical buffer to allow contigious access in all cases
-// used for socket IO and HTTP/Websocket protocol parsing
 
 typedef struct {
   size_t rpos;
@@ -87,73 +112,17 @@ typedef struct {
   uint8_t *buf;
 } mirrored_buf_t;
 
-static inline size_t buf_len(mirrored_buf_t *r) { return r->wpos - r->rpos; }
 
-static inline void buf_reset(mirrored_buf_t *r) {
-  // we can do this because indexes are in the beginning
-  memset(r, 0, sizeof(size_t) * 2);
-}
-
-static inline size_t buf_space(mirrored_buf_t *r) {
-  return r->buf_sz - (r->wpos - r->rpos);
-}
-
-static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n);
-
-static inline uint8_t *buf_peek(mirrored_buf_t *r) { return r->buf + r->rpos; }
-
-static inline uint8_t *buf_peek_at(mirrored_buf_t *r, size_t at) {
-  return r->buf + at;
-}
-
-static inline uint8_t *buf_peekn(mirrored_buf_t *r, size_t n) {
-  if (buf_len(r) < n) {
-    return NULL;
-  }
-
-  return r->buf + r->rpos;
-}
-
-static inline int buf_consume(mirrored_buf_t *r, size_t n);
-
-static inline void buf_move(mirrored_buf_t *src_b, mirrored_buf_t *dst_b,
-                            size_t n) {
-  buf_put(dst_b, src_b->buf + src_b->rpos, n);
-  buf_consume(src_b, n);
-}
-
-static inline void buf_debug(mirrored_buf_t *r, const char *label) {
-  printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
-}
-
-static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
-                               int flags);
-
-static inline ssize_t buf_send(mirrored_buf_t *r, int fd, int flags);
-
-static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd,
-                                  struct iovec const *iovs, size_t const total);
-
-static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
-                                        struct iovec const *iovs,
-                                        size_t const total,
-                                        mirrored_buf_t *rem_dst, int fd);
-
-struct buf_node {
-  void *b;
-  struct buf_node *next;
-};
-
-#define BUF_POOL_LONG_AVG_TICKS 256
-#define BUF_POOL_GC_TICKS 16
-
+// mirrored buffer is a ring buffer with two contiguous memory mappings pointing to the same
+// memory, used to enable contiguous memory access even in wrap around cases
+// the underlying memory comes from memfd_create which give us an fd to allow mmaping 
 struct mirrored_buf_pool {
-  int fd;
+  int fd; // memfd_create file descriptor
   uint32_t nmemb;
-  size_t buf_sz;
-  void *base;
-  size_t avb;
-  size_t cap;
+  size_t buf_sz; // size of each buffer
+  void *base; // raw memory
+  size_t avb; // number of buffers available
+  size_t cap; // total buffers
   size_t depth_reached; // current max depth reached per tick
 
   size_t max_depth_since_gc; // max depth reached since last time gc ran
@@ -168,8 +137,8 @@ struct mirrored_buf_pool {
   size_t avg_depths[BUF_POOL_LONG_AVG_TICKS]; // average depth for the last
                                               // BUF_POOL_LONG_AVG_TICKS
 
-  mirrored_buf_t **avb_stack;
-  mirrored_buf_t *mirrored_bufs;
+  mirrored_buf_t **avb_stack; // LIFO used for handing out and putting back buffers
+  mirrored_buf_t *mirrored_bufs; // the buffer structures each pointing to their respective segment of base
 };
 
 static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
@@ -198,51 +167,12 @@ struct ws_conn_t {
 #endif /* WITH_COMPRESSION */
 };
 
-struct ws_conn_pool {
-  ws_conn_t *base;
-  struct buf_node *head;
-  struct buf_node _buf_nodes[];
-};
-
-struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
-struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p);
-
-void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
-
-#define CONN_CLOSE_QUEUED (1u << 0)
-#define CONN_UPGRADED (1u << 1)
-#define CONN_RX_BIN (1u << 2)
-#define CONN_RX_FRAGMENTED (1u << 3)
-#define CONN_RX_GET_REQUEST (1u << 4)
-#define CONN_TX_WRITEABLE (1u << 5)
-#define CONN_TX_WRITE_QUEUED (1u << 6)
-#define CONN_TX_DISPOSING (1u << 7)
-#define CONN_COMPRESSION_ALLOWED (1u << 8)
-#define CONN_RX_COMPRESSED_FRAGMENTS (1u << 9)
-#define CONN_TIMER_QUEUED (1u << 10)
-#define CONN_RX_PROCESSING_FRAMES (1u << 11)
-#define CONN_TX_SENDING_FRAGMENTS (1u << 12)
-#define CONN_RX_PAUSED (1u << 13)
-
 struct conn_list {
   size_t len;
   size_t cap;
   ws_conn_t **conns;
 };
 
-#ifdef WITH_COMPRESSION
-static z_stream *inflation_stream_init();
-
-static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
-                                        size_t in_len, char *out,
-                                        size_t out_len, bool no_ctx_takeover);
-
-static z_stream *deflation_stream_init();
-
-static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
-                                        size_t in_len, char *out,
-                                        size_t out_len, bool no_ctx_takeover);
-#endif /* WITH_COMPRESSION */
 
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
@@ -279,6 +209,30 @@ typedef struct server {
   struct conn_list writeable_conns;
   int user_epoll;
 } ws_server_t;
+
+
+struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
+struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p);
+
+void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
+
+
+
+
+#ifdef WITH_COMPRESSION
+static z_stream *inflation_stream_init();
+
+static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover);
+
+static z_stream *deflation_stream_init();
+
+static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover);
+#endif /* WITH_COMPRESSION */
+
 
 #ifdef WITH_COMPRESSION
 static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
@@ -1239,6 +1193,69 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
     }
   }
 }
+
+
+// mirrored buffer helpers
+// this one is a ring buffer with hardware handled wrap around
+// uses two memory mappings that are backed by the same physical memory (memfd)
+// the two mapping are contigious in the virtual address space but both start at
+// the beginning of the physical buffer to allow contigious access in all cases
+// used for socket IO and HTTP/Websocket protocol parsing
+
+static inline size_t buf_len(mirrored_buf_t *r) { return r->wpos - r->rpos; }
+
+static inline void buf_reset(mirrored_buf_t *r) {
+  // we can do this because indexes are in the beginning
+  memset(r, 0, sizeof(size_t) * 2);
+}
+
+static inline size_t buf_space(mirrored_buf_t *r) {
+  return r->buf_sz - (r->wpos - r->rpos);
+}
+
+static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n);
+
+static inline uint8_t *buf_peek(mirrored_buf_t *r) { return r->buf + r->rpos; }
+
+static inline uint8_t *buf_peek_at(mirrored_buf_t *r, size_t at) {
+  return r->buf + at;
+}
+
+static inline uint8_t *buf_peekn(mirrored_buf_t *r, size_t n) {
+  if (buf_len(r) < n) {
+    return NULL;
+  }
+
+  return r->buf + r->rpos;
+}
+
+static inline int buf_consume(mirrored_buf_t *r, size_t n);
+
+static inline void buf_move(mirrored_buf_t *src_b, mirrored_buf_t *dst_b,
+                            size_t n) {
+  buf_put(dst_b, src_b->buf + src_b->rpos, n);
+  buf_consume(src_b, n);
+}
+
+static inline void buf_debug(mirrored_buf_t *r, const char *label) {
+  printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
+}
+
+static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
+                               int flags);
+
+static inline ssize_t buf_send(mirrored_buf_t *r, int fd, int flags);
+
+static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd,
+                                  struct iovec const *iovs, size_t const total);
+
+static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
+                                        struct iovec const *iovs,
+                                        size_t const total,
+                                        mirrored_buf_t *rem_dst, int fd);
+
+
+
 
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = listen(s->fd, backlog);
