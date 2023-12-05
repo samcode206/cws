@@ -22,9 +22,13 @@
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
    SOFTWARE.
 */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 
 #ifndef WS_PROTOCOL_PARSING23_H
 #define WS_PROTOCOL_PARSING23_H
+
 #include <errno.h>
 #include <netinet/in.h>
 #include <openssl/sha.h>
