@@ -1,6 +1,6 @@
 /* The MIT License
 
-   Copyright (c) 2008, 2009, 2011 by Sam H
+   Copyright (c) 2023 by Sam H
 
    Permission is hereby granted, free of charge, to any person obtaining
    a copy of this software and associated documentation files (the
@@ -48,8 +48,6 @@
 #include <zlib.h>
 #endif /* WITH_COMPRESSION */
 
-
-
 #define FIN 0x80
 #define OP_CONT 0x0
 #define OP_TXT 0x1
@@ -61,15 +59,11 @@
 #define PAYLOAD_LEN_16 126
 #define PAYLOAD_LEN_64 127
 
-
-
 #define SECONDS_PER_TICK 1
 #define TIMER_CHECK_TICKS 5
 #define READ_TIMEOUT 60
 #define BUF_POOL_LONG_AVG_TICKS 256
 #define BUF_POOL_GC_TICKS 16
-
-
 
 #define CONN_CLOSE_QUEUED (1u << 0)
 #define CONN_UPGRADED (1u << 1)
@@ -86,17 +80,11 @@
 #define CONN_TX_SENDING_FRAGMENTS (1u << 12)
 #define CONN_RX_PAUSED (1u << 13)
 
-
-
-struct buf_node {
-  void *b;
-  struct buf_node *next;
-};
-
 struct ws_conn_pool {
   ws_conn_t *base;
-  struct buf_node *head;
-  struct buf_node _buf_nodes[];
+  size_t avb;
+  size_t cap;
+  ws_conn_t **avb_stack;
 };
 
 struct dyn_buf {
@@ -112,17 +100,16 @@ typedef struct {
   uint8_t *buf;
 } mirrored_buf_t;
 
-
-// mirrored buffer is a ring buffer with two contiguous memory mappings pointing to the same
-// memory, used to enable contiguous memory access even in wrap around cases
-// the underlying memory comes from memfd_create which give us an fd to allow mmaping 
+// mirrored buffer is a ring buffer with two contiguous memory mappings pointing
+// to the same memory, used to enable contiguous memory access even in wrap
+// around cases the underlying memory comes from memfd_create which give us an
+// fd to allow mmaping
 struct mirrored_buf_pool {
-  int fd; // memfd_create file descriptor
-  uint32_t nmemb;
-  size_t buf_sz; // size of each buffer
-  void *base; // raw memory
-  size_t avb; // number of buffers available
-  size_t cap; // total buffers
+  int fd;               // memfd_create file descriptor
+  size_t buf_sz;        // size of each buffer
+  void *base;           // raw memory
+  size_t avb;           // number of buffers available
+  size_t cap;           // total buffers
   size_t depth_reached; // current max depth reached per tick
 
   size_t max_depth_since_gc; // max depth reached since last time gc ran
@@ -137,8 +124,10 @@ struct mirrored_buf_pool {
   size_t avg_depths[BUF_POOL_LONG_AVG_TICKS]; // average depth for the last
                                               // BUF_POOL_LONG_AVG_TICKS
 
-  mirrored_buf_t **avb_stack; // LIFO used for handing out and putting back buffers
-  mirrored_buf_t *mirrored_bufs; // the buffer structures each pointing to their respective segment of base
+  mirrored_buf_t *
+      *avb_stack; // LIFO used for handing out and putting back buffers
+  mirrored_buf_t *mirrored_bufs; // the buffer structures each pointing to their
+                                 // respective segment of base
 };
 
 static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
@@ -172,7 +161,6 @@ struct conn_list {
   size_t cap;
   ws_conn_t **conns;
 };
-
 
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
@@ -210,14 +198,10 @@ typedef struct server {
   int user_epoll;
 } ws_server_t;
 
+static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
+static struct ws_conn_t *ws_conn_get(struct ws_conn_pool *p);
 
-struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
-struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p);
-
-void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c);
-
-
-
+static void ws_conn_put(struct ws_conn_pool *p, struct ws_conn_t *c);
 
 #ifdef WITH_COMPRESSION
 static z_stream *inflation_stream_init();
@@ -232,7 +216,6 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
                                         size_t in_len, char *out,
                                         size_t out_len, bool no_ctx_takeover);
 #endif /* WITH_COMPRESSION */
-
 
 #ifdef WITH_COMPRESSION
 static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
@@ -829,7 +812,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
       assert(close(c->fd) == 0);
       // needed_bytes holds the reason
       s->on_ws_disconnect(c, c->needed_bytes);
-      ws_conn_free(s->conn_pool, c);
+      ws_conn_put(s->conn_pool, c);
       --s->open_conns;
     }
 
@@ -1117,26 +1100,27 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return;
         }
 
-        ws_conn_t *conn = ws_conn_alloc(s->conn_pool);
+        ws_conn_t *conn = ws_conn_get(s->conn_pool);
         assert(conn != NULL); // TODO(sah): remove this
         s->ev.events = EPOLLIN | EPOLLRDHUP;
         conn->fd = client_fd;
-        conn->base = s;
+        conn->flags = 0;
+        conn->write_timeout = 0;
+        conn->read_timeout = now + READ_TIMEOUT;
         conn->needed_bytes = 12;
-        set_writeable(conn);
-        conn->fd = client_fd;
+        conn->fragments_len = 0;
         conn->base = s;
+        set_writeable(conn);
+        conn->ctx = NULL;
 
         assert(conn->send_buf == NULL);
         assert(conn->recv_buf == NULL);
-
-        s->ev.data.ptr = conn;
 
 #ifdef WITH_COMPRESSION
         conn->pmd_buf = NULL;
 #endif /* WITH_COMPRESSION*/
 
-        conn->read_timeout = now + READ_TIMEOUT;
+        s->ev.data.ptr = conn;
         ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
         ++s->open_conns;
 
@@ -1193,7 +1177,6 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
     }
   }
 }
-
 
 // mirrored buffer helpers
 // this one is a ring buffer with hardware handled wrap around
@@ -1253,9 +1236,6 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
                                         struct iovec const *iovs,
                                         size_t const total,
                                         mirrored_buf_t *rem_dst, int fd);
-
-
-
 
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = listen(s->fd, backlog);
@@ -1441,7 +1421,6 @@ static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
 #ifdef WITH_COMPRESSION
   space = space > 4 ? space - 4 : 0;
 #endif /* WITH_COMPRESSION */
-
 
   if (conn->needed_bytes < 16384 && space > 16388) {
     // limit to 16kb if we don't specifically need to read more
@@ -2586,49 +2565,57 @@ static unsigned utf8_is_valid(uint8_t *s, size_t n) {
   return 1;
 }
 
-struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
-  struct ws_conn_pool *pool = calloc(1, sizeof(struct ws_conn_pool) +
-                                            (nmemb * sizeof(struct buf_node)));
-  assert(pool != NULL);
-  pool->base = calloc(nmemb, sizeof(ws_conn_t));
-  assert(pool->base != NULL);
-  ws_conn_t *cur = pool->base;
+static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
+  long page_size = sysconf(_SC_PAGESIZE);
 
-  for (size_t i = 0; i < nmemb; ++i) {
-    pool->_buf_nodes[i].b = cur;
-    cur += 1;
+  size_t pool_sz = (sizeof(struct ws_conn_pool) + 63) & ~63;
+  size_t pool_and_avb_stk_sz =
+      ((pool_sz + (nmemb * sizeof(ws_conn_t *))) +
+       (page_size - 1)) &
+      ~(page_size - 1);
+
+  size_t ws_conns_sz =
+      ((sizeof(ws_conn_t) * nmemb) + (page_size - 1)) & ~(page_size - 1);
+
+  void *pool_mem =
+      mmap(NULL, pool_and_avb_stk_sz + ws_conns_sz, PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  assert(pool_mem != MAP_FAILED);
+  
+  struct ws_conn_pool *pool = pool_mem;
+  pool->avb = nmemb;
+  pool->cap = nmemb;
+  pool->avb_stack = (ws_conn_t **)((uintptr_t)pool_mem + pool_sz);
+  pool->base = (ws_conn_t *)((uintptr_t)pool_mem + pool_and_avb_stk_sz);
+
+
+  assert((uintptr_t)pool + pool_sz == (uintptr_t)pool->avb_stack);
+  assert((uintptr_t)pool->avb_stack + (sizeof(ws_conn_t*) * nmemb) < (uintptr_t)pool->base);
+
+
+
+  size_t i = nmemb;
+  size_t j = 0;
+
+  while (i--){
+    pool->avb_stack[i] = &pool->base[j++];
   }
-
-  for (size_t i = 0; i < nmemb - 1; i++) {
-    pool->_buf_nodes[i].next = &pool->_buf_nodes[i + 1];
-  }
-
-  pool->_buf_nodes[nmemb - 1].next = NULL;
-
-  pool->head = &pool->_buf_nodes[0];
 
   return pool;
 }
 
-struct ws_conn_t *ws_conn_alloc(struct ws_conn_pool *p) {
-  if (p->head) {
-    struct buf_node *bn = p->head;
-    p->head = p->head->next;
-    bn->next = NULL; // unlink the buf_node mainly useful for debugging
-    return bn->b;
-  } else {
-    return NULL;
-  }
+static struct ws_conn_t *ws_conn_get(struct ws_conn_pool *p) {
+  if (p->avb) {
+    return p->avb_stack[--p->avb];
+  } 
+
+  return NULL;
 }
 
-void ws_conn_free(struct ws_conn_pool *p, struct ws_conn_t *c) {
-  uintptr_t diff =
-      ((uintptr_t)c - (uintptr_t)p->base) / sizeof(struct ws_conn_t);
-
-  memset(c, 0, sizeof(struct ws_conn_t));
-
-  p->_buf_nodes[diff].next = p->head;
-  p->head = &p->_buf_nodes[diff];
+static void ws_conn_put(struct ws_conn_pool *p, struct ws_conn_t *c) {
+  if (c){
+    p->avb_stack[p->avb++] = c;
+  }
 }
 
 inline bool ws_conn_compression_allowed(ws_conn_t *c) {
@@ -2743,20 +2730,7 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 
 #endif /* WITH_COMPRESSION */
 
-// static void buf_pool_destroy(struct buf_pool *p) {
-//   long page_size = sysconf(_SC_PAGESIZE);
 
-//   size_t pool_sz = (sizeof(struct buf_pool) +
-//                     (p->nmemb * sizeof(struct buf_node)) + page_size - 1) &
-//                    ~(page_size - 1);
-
-//   size_t buf_pool_sz = p->buf_sz * p->nmemb * 2;
-
-//   void *pool_mem_addr = ((uint8_t *)p->base) - pool_sz;
-
-//   assert(close(p->fd) == 0);
-//   assert(munmap(pool_mem_addr, pool_sz + buf_pool_sz) == 0);
-// }
 
 static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
                                                           size_t buf_sz) {
@@ -2813,7 +2787,6 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   }
 
   pool->buf_sz = buf_sz;
-  pool->nmemb = nmemb;
   pool->base = ((uint8_t *)pool_mem) + pool_sz;
 
   if (ftruncate(pool->fd, buf_sz * nmemb) == -1) {

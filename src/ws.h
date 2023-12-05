@@ -1,6 +1,6 @@
 /* The MIT License
 
-   Copyright (c) 2008, 2009, 2011 by Sam H
+   Copyright (c) 2023 by Sam H
 
    Permission is hereby granted, free of charge, to any person obtaining
    a copy of this software and associated documentation files (the
@@ -403,7 +403,6 @@ enum ws_send_status ws_conn_put_bin(ws_conn_t *c, void *msg, size_t n, bool comp
 
 
 
-enum ws_send_status ws_conn_fd(ws_conn_t *c);
 
 /**
  * Sends a pong message synchronously over the WebSocket connection.
@@ -584,6 +583,9 @@ bool ws_conn_is_read_paused(ws_conn_t *c);
 void ws_conn_pause_read(ws_conn_t *c);
 
 void ws_conn_resume_reads(ws_conn_t *c);
+
+
+int ws_conn_fd(ws_conn_t *c);
 
 typedef struct ws_poll_cb_ctx_t ws_poll_cb_ctx_t;
 
