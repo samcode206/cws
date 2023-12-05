@@ -658,8 +658,10 @@ static void server_check_pending_timers(ws_server_t *s) {
 
         if (cb) {
           cb(c, timeout_kind);
+        } else {
+          ws_conn_destroy(c, timeout_kind);
         }
-        ws_conn_destroy(c, timeout_kind);
+    
         timeout_kind = 993;
       }
     }
