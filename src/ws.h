@@ -598,7 +598,10 @@ void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs);
 */
 void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs);
 
-
+/**
+* @param c Pointer to the WebSocket connection (`ws_conn_t`).
+* @return  Connection File Descriptor
+*/
 int ws_conn_fd(ws_conn_t *c);
 
 typedef struct ws_poll_cb_ctx_t ws_poll_cb_ctx_t;
