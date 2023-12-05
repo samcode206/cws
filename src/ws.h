@@ -292,7 +292,7 @@ struct ws_server_params {
   ws_err_cb_t on_ws_err;               // Callback for when an internal error occurs.
   ws_accept_cb_t on_ws_accept;         // Callback for when a new connection has been accepted
   ws_err_accept_cb_t on_ws_accept_err; // Callback for when accept() fails.
-  ws_on_upgrade_req_cb_t on_ws_upgrade_req;
+  ws_on_upgrade_req_cb_t on_ws_upgrade_req; // Callback for when a Websocket upgrade request is received
 };
 
 
