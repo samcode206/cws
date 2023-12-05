@@ -20,7 +20,7 @@ void myTimerFdPollCB(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev) {
   if (!myTimerFdPollCBMaxCalls) {
     printf("stopping interval\n");
     close(*tfd);
-    ws_pollable_unregister(s, *tfd);
+    ws_epoll_ctl_del(s, *tfd);
     free(tfd);
     free(ctx);
   } else {
@@ -57,7 +57,7 @@ void createPollableIntervalTimer(ws_server_t *s) {
   assert(timerfd_settime(*tfd, 0, &timer, NULL) != -1);
 
 
-  ws_pollable_register(s, *tfd, ctx, EPOLLIN);
+  ws_epoll_ctl_add(s, *tfd, ctx, EPOLLIN);
 }
 
 
@@ -92,7 +92,7 @@ int main(void) {
   int stat;
   ws_server_t *s = ws_server_create(&p, &stat);
 
-  ws_poller_init(s); // register user's epoll
+  ws_epoll_create1(s); // register user's epoll
 
   createPollableIntervalTimer(s); // create a pollable fd (this case it's timer fd)
 

@@ -596,14 +596,14 @@ struct ws_poll_cb_ctx_t {
     void *ctx;
 };
 
-int ws_poller_init(ws_server_t *s);
+int ws_epoll_create1(ws_server_t *s);
 
-int ws_pollable_register(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
+int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
                          int events);
 
-int ws_pollable_unregister(ws_server_t *s, int fd);
+int ws_epoll_ctl_del(ws_server_t *s, int fd);
 
-int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
+int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
                        int events);
 
 

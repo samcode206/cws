@@ -2993,7 +2993,7 @@ static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
   return n;
 }
 
-int ws_poller_init(ws_server_t *s) {
+int ws_epoll_create1(ws_server_t *s) {
   if (!s->user_epoll) {
     s->user_epoll = epoll_create1(O_CLOEXEC);
     if (s->user_epoll == -1) {
@@ -3006,10 +3006,10 @@ int ws_poller_init(ws_server_t *s) {
     }
   }
 
-  return s->user_epoll ? 0 : -1;
+  return s->user_epoll ? s->user_epoll : -1;
 }
 
-int ws_pollable_register(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
+int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
                          int events) {
   if (!s->user_epoll || !cb_ctx) {
     return -1;
@@ -3021,7 +3021,7 @@ int ws_pollable_register(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
   return epoll_ctl(s->user_epoll, EPOLL_CTL_ADD, fd, &s->ev);
 }
 
-int ws_pollable_unregister(ws_server_t *s, int fd) {
+int ws_epoll_ctl_del(ws_server_t *s, int fd) {
   if (!s->user_epoll) {
     return -1;
   }
@@ -3032,7 +3032,7 @@ int ws_pollable_unregister(ws_server_t *s, int fd) {
   return epoll_ctl(s->user_epoll, EPOLL_CTL_DEL, fd, &s->ev);
 }
 
-int ws_pollable_modify(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
+int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
                        int events) {
   if (!s->user_epoll || !cb_ctx) {
     return -1;
