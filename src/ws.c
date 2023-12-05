@@ -2077,6 +2077,7 @@ static int conn_drain_write_buf(ws_conn_t *conn) {
     mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
     conn->send_buf = NULL;
     set_writeable(conn);
+    conn->write_timeout = 0;
     return 1;
   } else {
     if (is_writeable(conn)) {
