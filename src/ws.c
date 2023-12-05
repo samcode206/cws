@@ -87,11 +87,6 @@ struct ws_conn_pool {
   ws_conn_t **avb_stack;
 };
 
-struct dyn_buf {
-  size_t len;
-  size_t cap;
-  char data[];
-};
 
 typedef struct {
   size_t rpos;
@@ -136,6 +131,12 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp);
 
 static void mirrored_buf_put(struct mirrored_buf_pool *bp, mirrored_buf_t *buf);
+
+struct dyn_buf {
+  size_t len;
+  size_t cap;
+  char data[];
+};
 
 struct ws_conn_t {
   int fd;                     // socket fd
@@ -215,9 +216,7 @@ static z_stream *deflation_stream_init();
 static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
                                         size_t in_len, char *out,
                                         size_t out_len, bool no_ctx_takeover);
-#endif /* WITH_COMPRESSION */
 
-#ifdef WITH_COMPRESSION
 static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
   if (!c->pmd_buf) {
     c->pmd_buf = malloc(sizeof(struct dyn_buf) +
@@ -237,25 +236,7 @@ static void conn_dyn_buf_dispose(ws_conn_t *c) {
     c->pmd_buf = NULL;
   }
 }
-#endif /* WITH_COMPRESSION */
 
-static void conn_prep_send_buf(ws_conn_t *conn) {
-  if (!conn->send_buf) {
-    // mirrored_buf_t *recv_buf = conn->recv_buf;
-    // // can we swap buffers so we don't go all the way to the buffer pool
-    // // commented out because we may overwrite the msg when user sends
-    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's
-    // us know that
-    // // that they no longer want the msg and we can make this safe
-    // if (recv_buf && !buf_len(recv_buf)) {
-    //   conn->send_buf = recv_buf;
-    //   conn->recv_buf = NULL;
-    // } else {
-    conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-    assert(conn->send_buf != NULL);
-    // }
-  }
-}
 
 // maybe later we can support dedicated compression
 // z_stream *conn_inflate_stream(ws_conn_t *c) {
@@ -292,6 +273,10 @@ static void conn_prep_send_buf(ws_conn_t *conn) {
 //     c->buffers[4] = NULL;
 //   }
 // }
+
+
+#endif /* WITH_COMPRESSION */
+
 
 // connection state utils so we don't fill the code with bit manipulation
 
@@ -439,6 +424,24 @@ static inline void clear_read_paused(ws_conn_t *c) {
   c->flags &= ~CONN_RX_PAUSED;
 }
 
+static void conn_prep_send_buf(ws_conn_t *conn) {
+  if (!conn->send_buf) {
+    // mirrored_buf_t *recv_buf = conn->recv_buf;
+    // // can we swap buffers so we don't go all the way to the buffer pool
+    // // commented out because we may overwrite the msg when user sends
+    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's
+    // us know that
+    // // that they no longer want the msg and we can make this safe
+    // if (recv_buf && !buf_len(recv_buf)) {
+    //   conn->send_buf = recv_buf;
+    //   conn->recv_buf = NULL;
+    // } else {
+    conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
+    assert(conn->send_buf != NULL);
+    // }
+  }
+}
+
 // Frame Parsing Utils
 static inline uint8_t frame_get_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
@@ -495,11 +498,7 @@ static int base64_encode(char *coded_dst, const char *plain_src,
 
 static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
                                                           uint8_t const *buf) {
-  // printf("%d\n", is_compression_allowed(c));
-  bool rsv1 = (buf[0] & 0x40) != 0;
-  bool rsv2 = (buf[0] & 0x20) != 0;
-  bool rsv3 = (buf[0] & 0x10) != 0;
-  return rsv3 || rsv2 || (rsv1 && !is_compression_allowed(c));
+  return (buf[0] & 0x10) != 0 || (buf[0] & 0x20) != 0 || ((buf[0] & 0x40) != 0 && !is_compression_allowed(c));
 }
 
 static inline uint32_t frame_is_masked(const unsigned char *buf) {
@@ -2530,7 +2529,7 @@ void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
   } else {
     c->read_timeout = 0;
   }
-};
+}
 
 void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closing(c->flags)) {
@@ -2538,7 +2537,7 @@ void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
   } else {
     c->write_timeout = 0;
   }
-};
+}
 
 static unsigned utf8_is_valid(uint8_t *s, size_t n) {
   for (uint8_t *e = s + n; s != e;) {
