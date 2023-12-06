@@ -8,6 +8,9 @@ static const char msg[] =
 
 static const size_t msg_len = sizeof msg - 1;
 
+
+// creates a new small frame 
+// should call free when done (not going to do that for a test script....)
 unsigned char *new_frame(const char *src, size_t len, unsigned frame_cfg) {
   // only handle sending small frames
   if (len > 125) {
