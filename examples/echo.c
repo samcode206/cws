@@ -10,7 +10,7 @@
 void onOpen(ws_conn_t *conn) {}
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
-  printf("msg %zu\n", n);
+  // printf("msg %zu\n", n);
   ws_conn_send(conn, msg, n, 0);
 }
 

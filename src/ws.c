@@ -1749,7 +1749,11 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
         // fin and never fragmented
         // this handles both text and binary hence the fallthrough
         if (fin & (!is_fragmented(conn))) {
-          buf_consume(conn->recv_buf, full_frame_len);
+          if (!total_trimmed) {
+            buf_consume(conn->recv_buf, full_frame_len);
+          } else {
+            total_trimmed += full_frame_len;
+          }
           conn->needed_bytes = 2;
 
 #ifdef WITH_COMPRESSION
