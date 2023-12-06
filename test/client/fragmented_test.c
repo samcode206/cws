@@ -206,12 +206,160 @@ void do_fragmented_msg_test3() {
   test3(fd);
 }
 
+void test5(int fd) {
+
+  struct iovec vecs[] = {
+      {
+          .iov_base = new_frame("hello ", 6, OP_TXT),
+          .iov_len = 12,
+      },
+      {
+          .iov_base = new_frame("ping", 4, OP_PING | 0x80),
+          .iov_len = 10,
+      },
+      {
+          .iov_base = new_frame("World", 5, 0),
+          .iov_len = 11,
+      },
+      {
+          .iov_base = new_frame("ping", 4, OP_PING | 0x80),
+          .iov_len = 10,
+      },
+      {
+          .iov_base = new_frame(".", 1, 0X80),
+          .iov_len = 7,
+      },
+      {
+          .iov_base = new_frame("ping", 4, OP_PING | 0x80),
+          .iov_len = 10,
+      },
+      {
+          .iov_base = new_frame("How Are you?", 12, 0X80 | OP_TXT),
+          .iov_len = 18,
+      },
+      {
+          .iov_base = new_frame("ping", 4, OP_PING | 0x80),
+          .iov_len = 10,
+      },
+  };
+
+  writev(fd, vecs, 8);
+
+  char buf[512];
+
+  int read = sock_recvall(fd, buf, 6);
+  assert(read == 6);
+  assert(memcmp("ping", buf + 2, 4) == 0);
+
+  read = sock_recvall(fd, buf, 6);
+  assert(read == 6);
+  assert(memcmp("ping", buf + 2, 4) == 0);
+
+  read = sock_recvall(fd, buf, 14);
+  assert(read == 14);
+
+  assert(memcmp("hello World.", buf + 2, 12) == 0);
+
+  read = sock_recvall(fd, buf, 6);
+  assert(read == 6);
+  assert(memcmp("ping", buf + 2, 4) == 0);
+
+  read = sock_recvall(fd, buf, 14);
+  assert(read == 14);
+
+  assert(memcmp("How Are you?", buf + 2, 12) == 0);
+
+  read = sock_recvall(fd, buf, 6);
+  assert(read == 6);
+  assert(memcmp("ping", buf + 2, 4) == 0);
+
+  printf("[Success] Received all messages and interleaved pongs\n");
+}
+
+
+void test6(int fd) {
+
+  struct iovec vecs[] = {
+      {
+          .iov_base = new_frame("hello ", 6, OP_TXT),
+          .iov_len = 12,
+      },
+      {
+          .iov_base = new_frame("ping", 4, OP_PING | 0x80),
+          .iov_len = 10,
+      },
+      {
+          .iov_base = new_frame("World", 5, 0),
+          .iov_len = 11,
+      },
+      {
+          .iov_base = new_frame("ping", 4, OP_PING | 0x80),
+          .iov_len = 10,
+      },
+      {
+          .iov_base = new_frame(".", 1, 0X80),
+          .iov_len = 7,
+      },
+      {
+          .iov_base = new_frame("How Are you?", 12, 0X80 | OP_TXT),
+          .iov_len = 18,
+      },
+      {
+          .iov_base = new_frame("ping", 4, OP_PING | 0x80),
+          .iov_len = 10,
+      },
+  };
+
+
+  for (size_t i = 0; i < 7; i++){
+    for (size_t j = 0; j < vecs[i].iov_len; j++){
+      assert(send(fd, vecs[i].iov_base+j, 1, 0) == 1);
+    }
+  }
+
+
+  char buf[512];
+
+  int read = sock_recvall(fd, buf, 6);
+  assert(read == 6);
+  assert(memcmp("ping", buf + 2, 4) == 0);
+
+  read = sock_recvall(fd, buf, 6);
+  assert(read == 6);
+  assert(memcmp("ping", buf + 2, 4) == 0);
+
+  read = sock_recvall(fd, buf, 14);
+  assert(read == 14);
+
+  assert(memcmp("hello World.", buf + 2, 12) == 0);
+
+  read = sock_recvall(fd, buf, 14);
+  assert(read == 14);
+
+  assert(memcmp("How Are you?", buf + 2, 12) == 0);
+
+  read = sock_recvall(fd, buf, 6);
+  assert(read == 6);
+  assert(memcmp("ping", buf + 2, 4) == 0);
+
+  printf("[Success] Received all messages and interleaved pongs\n");
+}
+
+
 int main(void) {
   assert(!(msg_len % 4));
 
   int fd = sock_new(1);
   sock_connect(fd, 9919, "::1", 1);
   sock_upgrade_ws(fd);
+
+
+  printf("test6....................\n");
+  test6(fd);
+
+  printf("test5....................\n");
+  test5(fd);
+
   printf("test4....................\n");
   test4(fd);
 
