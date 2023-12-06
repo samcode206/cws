@@ -1,4 +1,4 @@
-#include "../../src/ws.h"
+#include "../src/ws.h"
 #include "sock_util.h"
 #include <assert.h>
 #include <pthread.h>
@@ -38,7 +38,39 @@ void *server_init(void *_) {
   return NULL;
 }
 
+void do_handshake_test() {
+  int ipv6 = 1;
+  int fd = sock_new(ipv6);
 
+  sock_connect(fd, PORT, ADDR, ipv6);
+
+  ssize_t sent = sock_sendall(fd, EXAMPLE_REQUEST, sizeof EXAMPLE_REQUEST - 1);
+  if (sent != sizeof EXAMPLE_REQUEST - 1) {
+    fprintf(stderr, "failed to send upgrade request\n");
+    exit(EXIT_FAILURE);
+  }
+
+  char buf[4096] = {0};
+
+  ssize_t read = sock_recv(fd, buf, 4096);
+  if (read == 0) {
+    fprintf(stderr, "connection dropped before receiving upgrade response\n");
+    exit(EXIT_FAILURE);
+  } else if (read == -1) {
+    perror("recv");
+    exit(EXIT_FAILURE);
+  }
+
+  if (strstr(buf, EXAMPLE_REQUEST_EXPECTED_ACCEPT_KEY) != NULL) {
+    printf("PASS");
+  } else {
+    fprintf(stderr, "unexpected response\n");
+  }
+
+  printf("-------------------------------\n");
+  printf("%s\n", buf);
+  printf("-------------------------------\n");
+}
 
 int main(void) {
   pthread_t server_w;
@@ -49,39 +81,7 @@ int main(void) {
   };
 
   sleep(1);
-
-  int fd = sock_new(1);
-  sock_connect(fd, PORT, ADDR, 1);
-  sock_upgrade_ws(fd);
-
-  int runs = 300;
-
-  char out_buf[256];
-  char in_buf[256];
-
-  unsigned frame_cfg = OP_BIN | 0x80;
-
-  while (runs--) {
-    if (runs < 200 && runs > 100) {
-      frame_cfg = OP_TXT | 0x80;
-    } else if (runs < 100) {
-      frame_cfg = OP_PING | 0x80;
-    }
-
-    int msg_len = sprintf(out_buf, "count %d", runs);
-    unsigned char *frame = new_frame(out_buf, msg_len, frame_cfg);
-    ssize_t sent = sock_sendall(fd, frame, msg_len + 6);
-    assert(sent == msg_len + 6);
-    ssize_t read = sock_recvall(fd, in_buf, msg_len + 2);
-    assert(read == msg_len + 2);
-
-    if (memcmp(in_buf + 2, out_buf, msg_len) != 0) {
-      fprintf(stderr, "mismatched data received expected: %s got %.*s\n",
-              out_buf, msg_len, in_buf);
-    }
-
-    free(frame);
-  }
-
-  printf("PASS\n");
+  signal(SIGPIPE, SIG_IGN);
+  do_handshake_test();
+  return EXIT_SUCCESS;
 }
