@@ -23,6 +23,15 @@
 #include <sys/uio.h>
 #include <time.h>
 
+
+
+#define OP_TXT 0x1
+#define OP_BIN 0x2
+#define OP_CLOSE 0x8
+#define OP_PING 0x9
+#define OP_PONG 0xA
+
+
 #define HDR_END "\r\n"
 
 #define HDRS_END "\r\n\r\n"
