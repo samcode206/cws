@@ -3,7 +3,7 @@ online:
 
 
 autobahn:
-	gcc ./src/** ./examples/autobahn.c -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./src/** ./test/autobahn/autobahn.c -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 
 broadcast: 
