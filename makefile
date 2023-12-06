@@ -47,7 +47,7 @@ echo:
 	gcc ./examples/echo.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 fragmented_send:
-	gcc ./examples/fragmented_send.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./test/fragmented_send.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 online:
 	gcc ./examples/online.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
