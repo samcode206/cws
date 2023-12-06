@@ -2393,7 +2393,7 @@ size_t ws_conn_max_sendable_len(ws_conn_t *c) {
   return 0;
 }
 
-size_t ws_conn_readable_len(ws_conn_t *c) {
+size_t ws_conn_estimate_readable_len(ws_conn_t *c) {
   if (c->recv_buf) {
     return buf_len(c->recv_buf);
   } else {
