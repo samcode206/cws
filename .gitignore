@@ -2,3 +2,6 @@ server
 node_modules
 reports
 online
+*.a
+*.o
+*.so

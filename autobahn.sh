@@ -1,4 +1,4 @@
-#!bin/bash
+#!bin/sh
 
 sudo rm -rf ./test/autobahn/reports && cd ./test/autobahn && sudo docker run -it --rm \
     -v "${PWD}/config:/config"  -v "${PWD}/reports:/reports" \

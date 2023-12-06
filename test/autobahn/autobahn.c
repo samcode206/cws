@@ -1,4 +1,4 @@
-#include "../../src/ws.h"
+#include "ws.h"
 
 #include <arpa/inet.h>
 #include <assert.h>
