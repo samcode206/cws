@@ -23,6 +23,8 @@ void myTimerFdPollCB(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev) {
     ws_epoll_ctl_del(s, *tfd);
     free(tfd);
     free(ctx);
+    printf("PASS\n");
+    exit(EXIT_SUCCESS);
   } else {
     // read from the timerfd to drain it
     // otherwise it will keep triggering
