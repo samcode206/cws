@@ -15,7 +15,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
 }
 
 void onDisconnect(ws_conn_t *conn, int err) {
-  printf("%s\n", ws_conn_strerror(conn));
+
 }
 
 int main(void) {
