@@ -104,8 +104,48 @@ void do_fragmented_msg_test2() {
 }
 
 
+
+
+void do_fragmented_msg_test3() {
+  // one one write
+  // send the same message 3 times first is fragmented then twice un fragmented
+  // expect the message to be echoed back 3 times
+  int fd = sock_new(1);
+  sock_connect(fd, 9919, "::1", 1);
+  sock_upgrade_ws(fd);
+
+  size_t nvecs = (msg_len / 4) + 2;
+  struct iovec *vecs = malloc(sizeof(struct iovec) * nvecs);
+  size_t total_size = (nvecs-2) * 10;
+
+  vecs[0].iov_len = 10;
+  vecs[0].iov_base = new_frame(msg, 4, OP_TXT);
+  size_t iov_idx = 1;
+  for (size_t i = 4; i < msg_len - 4; i += 4) {
+    vecs[iov_idx].iov_base = new_frame(msg + i, 4, 0);
+    vecs[iov_idx].iov_len = 10;
+    iov_idx++;
+  }
+  vecs[iov_idx].iov_len = 10;
+  vecs[iov_idx].iov_base = new_frame(msg + (msg_len - 4), 4, 0X80);
+
+  vecs[nvecs-2].iov_len = 122;
+  vecs[nvecs-2].iov_base = new_frame(msg, msg_len, 0x80 | OP_TXT);
+  total_size += 122;
+
+  vecs[nvecs-1].iov_len = 122;
+  vecs[nvecs-1].iov_base = new_frame(msg, msg_len, 0x80 | OP_TXT);
+  total_size += 122;
+
+  ssize_t n = writev(fd, vecs, nvecs);
+  printf("%zu %zu\n", n, total_size);
+
+}
+
+
 int main(void) {
   assert(!(msg_len % 4));
-  do_fragmented_msg_test1();
-  do_fragmented_msg_test2();
+//   do_fragmented_msg_test1();
+//   do_fragmented_msg_test2();
+  do_fragmented_msg_test3();
 }

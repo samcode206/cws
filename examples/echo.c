@@ -7,22 +7,19 @@
 
 #define MAX_CONNS 1024
 
-
-void onOpen(ws_conn_t *conn) {
-
-}
+void onOpen(ws_conn_t *conn) {}
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
-    ws_conn_send(conn, msg, n, 0);
+  printf("msg %zu\n", n);
+  ws_conn_send(conn, msg, n, 0);
 }
 
 void onDisconnect(ws_conn_t *conn, int err) {
+  printf("%s\n", ws_conn_strerror(conn));
 }
-
 
 int main(void) {
   printf("echo example starting on 9919\n");
-
 
   struct ws_server_params p = {
       .addr = "::1",
@@ -37,7 +34,6 @@ int main(void) {
   int stat;
   ws_server_t *s = ws_server_create(&p, &stat);
 
-
-  ws_server_start(s, 1024); 
+  ws_server_start(s, 1024);
   return 0;
 }
