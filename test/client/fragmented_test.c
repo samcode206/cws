@@ -9,38 +9,6 @@ static const char msg[] =
 static const size_t msg_len = sizeof msg - 1;
 
 
-// creates a new small frame 
-// should call free when done (not going to do that for a test script....)
-unsigned char *new_frame(const char *src, size_t len, unsigned frame_cfg) {
-  // only handle sending small frames
-  if (len > 125) {
-    return NULL;
-  }
-  // 2 byte header + 4 byte mask key
-  unsigned char *dst = malloc(len + 6);
-  if (!dst) {
-    return NULL;
-  }
-
-  dst[0] = frame_cfg;
-  dst[1] = (uint8_t)len;
-  dst[1] |= 0x80; // masked frame
-
-  unsigned char *mask = dst + 2;
-  unsigned char *payload = dst + 6;
-
-  for (unsigned i = 0; i < 4; ++i) {
-    mask[i] = rand() % 256;
-  }
-
-  memcpy(dst + 6, src, len);
-
-  for (size_t i = 0; i < len; ++i) {
-    payload[i] ^= mask[i % 4];
-  }
-
-  return dst;
-}
 
 void test1(int fd) {
   unsigned char *first_frame = new_frame(msg, 4, OP_TXT);

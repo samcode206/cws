@@ -20,7 +20,6 @@ void server_on_disconnect(ws_conn_t *conn, int err) {
 }
 
 void *server_init(void *_) {
-  printf("here\n");
   struct ws_server_params p = {
       .addr = ADDR,
       .port = PORT,
@@ -39,36 +38,7 @@ void *server_init(void *_) {
   return NULL;
 }
 
-unsigned char *new_frame(const char *src, size_t len, unsigned frame_cfg) {
-  // only handle sending small frames
-  if (len > 125) {
-    return NULL;
-  }
-  // 2 byte header + 4 byte mask key
-  unsigned char *dst = malloc(len + 6);
-  if (!dst) {
-    return NULL;
-  }
 
-  dst[0] = frame_cfg;
-  dst[1] = (uint8_t)len;
-  dst[1] |= 0x80; // masked frame
-
-  unsigned char *mask = dst + 2;
-  unsigned char *payload = dst + 6;
-
-  for (unsigned i = 0; i < 4; ++i) {
-    mask[i] = rand() % 256;
-  }
-
-  memcpy(dst + 6, src, len);
-
-  for (size_t i = 0; i < len; ++i) {
-    payload[i] ^= mask[i % 4];
-  }
-
-  return dst;
-}
 
 int main(void) {
   pthread_t server_w;
@@ -109,6 +79,8 @@ int main(void) {
       fprintf(stderr, "mismatched data received expected: %s got %.*s\n",
               out_buf, msg_len, in_buf);
     }
+
+    free(frame);
   }
 
   printf("PASS\n");

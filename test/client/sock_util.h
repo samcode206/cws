@@ -177,4 +177,36 @@ static inline uint8_t frame_get_opcode(const unsigned char *buf) {
   return buf[0] & 0x0F;
 }
 
+
+static unsigned char *new_frame(const char *src, size_t len, unsigned frame_cfg) {
+  // only handle sending small frames
+  if (len > 125) {
+    return NULL;
+  }
+  // 2 byte header + 4 byte mask key
+  unsigned char *dst = (unsigned char *)malloc(len + 6);
+  if (!dst) {
+    return NULL;
+  }
+
+  dst[0] = frame_cfg;
+  dst[1] = (uint8_t)len;
+  dst[1] |= 0x80; // masked frame
+
+  unsigned char *mask = dst + 2;
+  unsigned char *payload = dst + 6;
+
+  for (unsigned i = 0; i < 4; ++i) {
+    mask[i] = rand() % 256;
+  }
+
+  memcpy(dst + 6, src, len);
+
+  for (size_t i = 0; i < len; ++i) {
+    payload[i] ^= mask[i % 4];
+  }
+
+  return dst;
+}
+
 #endif /* WS_SOCK_UTIL_1235412X */

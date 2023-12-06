@@ -1,13 +1,49 @@
+#include "../../src/ws.h"
 #include "sock_util.h"
+#include <assert.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#define PORT 9919
+#define ADDR "::1"
+
+void server_on_open(ws_conn_t *conn) {}
+
+void server_on_msg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
+  // printf("msg %zu\n", n);
+  ws_conn_send(conn, msg, n, 0);
+}
+
+void server_on_disconnect(ws_conn_t *conn, int err) {
+  printf("%s\n", ws_conn_strerror(conn));
+}
+
+void *server_init(void *_) {
+  struct ws_server_params p = {
+      .addr = ADDR,
+      .port = PORT,
+      .on_ws_open = server_on_open,
+      .on_ws_msg = server_on_msg,
+      .on_ws_disconnect = server_on_disconnect,
+      .max_buffered_bytes = 2048,
+      .max_conns = 2,
+  };
+
+  int stat;
+  ws_server_t *s = ws_server_create(&p, &stat);
+
+  ws_server_start(s, 1024);
+
+  return NULL;
+}
 
 void do_handshake_test() {
   int ipv6 = 1;
   int fd = sock_new(ipv6);
 
   sock_connect(fd, 9919, "::1", ipv6);
-  
+
   ssize_t sent = sock_sendall(fd, EXAMPLE_REQUEST, sizeof EXAMPLE_REQUEST - 1);
   if (sent != sizeof EXAMPLE_REQUEST - 1) {
     fprintf(stderr, "failed to send upgrade request\n");
@@ -26,7 +62,7 @@ void do_handshake_test() {
   }
 
   if (strstr(buf, EXAMPLE_REQUEST_EXPECTED_ACCEPT_KEY) != NULL) {
-    printf("[SUCCESS] received response of length = %zi\n", read);
+    printf("PASS");
   } else {
     fprintf(stderr, "unexpected response\n");
   }
@@ -37,6 +73,14 @@ void do_handshake_test() {
 }
 
 int main(void) {
+  pthread_t server_w;
+
+  if (pthread_create(&server_w, NULL, server_init, NULL) == -1) {
+    perror("pthread_create");
+    exit(EXIT_FAILURE);
+  };
+
+  sleep(1);
   signal(SIGPIPE, SIG_IGN);
   do_handshake_test();
   return EXIT_SUCCESS;
