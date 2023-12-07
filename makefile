@@ -32,11 +32,12 @@ $(SHARED_LIB): $(DOBJ)
 $(STATIC_LIB): $(SOBJ)
 	ar rcs $@ $^
 
-install: clean all
+install: clean uninstall all
 	sudo install -m 644 $(SHARED_LIB) $(INSTALL_LIB_PATH)
 	sudo install -m 644 $(STATIC_LIB) $(INSTALL_LIB_PATH)
 	sudo ldconfig
 	sudo install -m 644 $(HDR) $(INSTALL_INCLUDE_PATH)
+	
 
 uninstall:
 	sudo rm -f $(INSTALL_LIB_PATH)/$(SHARED_LIB)
