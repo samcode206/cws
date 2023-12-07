@@ -14,6 +14,10 @@ INSTALL_INCLUDE_PATH=$(PREFIX)/include
 
 .PHONY: all clean install uninstall
 
+ifdef WITH_COMPRESSION
+CFLAGS += -DWITH_COMPRESSION
+endif
+
 all: $(SHARED_LIB) $(STATIC_LIB)
 
 
@@ -26,7 +30,7 @@ $(DOBJ): $(SRC)
 
 
 $(SHARED_LIB): $(DOBJ)
-	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^ -lcrypto -lz
+	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^ -lcrypto $(if $(WITH_COMPRESSION),-lz)
 
 
 $(STATIC_LIB): $(SOBJ)

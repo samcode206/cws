@@ -39,7 +39,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define WITH_COMPRESSION
+// #define WITH_COMPRESSION
 
 
 /**
