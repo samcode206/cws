@@ -70,8 +70,7 @@ void test1(int fd) {
 
 void do_fragmented_msg_test1() {
   printf("do_fragmented_msg_test1.........\n");
-  int fd = sock_new(1);
-  sock_connect(fd, PORT, ADDR, 1);
+  int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
   test1(fd);
 }
@@ -108,8 +107,7 @@ void test2(int fd) {
 
 void do_fragmented_msg_test2() {
   printf("do_fragmented_msg_test2.........\n");
-  int fd = sock_new(1);
-  sock_connect(fd, PORT, ADDR, 1);
+  int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
 }
 
@@ -204,8 +202,7 @@ void do_fragmented_msg_test3() {
   // one one write
   // send the same message 3 times first is fragmented then twice un fragmented
   // expect the message to be echoed back 3 times
-  int fd = sock_new(1);
-  sock_connect(fd, PORT, ADDR, 1);
+  int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
 
   test3(fd);
@@ -357,9 +354,8 @@ int main(void) {
   };
 
   sleep(1);
-
-  int fd = sock_new(1);
-  sock_connect(fd, PORT, ADDR, 1);
+  
+  int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
 
   printf("test6....................\n");

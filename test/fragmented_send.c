@@ -143,8 +143,7 @@ void *server_init(void *_) {
 }
 
 void test_client_init() {
-  int fd = sock_new(1);
-  sock_connect(fd, PORT, ADDR, 1);
+  int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
 
   // +10 for header

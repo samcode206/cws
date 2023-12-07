@@ -42,11 +42,33 @@
 #define EXAMPLE_REQUEST_EXPECTED_ACCEPT_KEY                                    \
   "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 
-static int sock_new(int ipv6) {
-  int fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
-  if (fd == -1) {
-    perror("socket");
-    exit(EXIT_FAILURE);
+static int sock_new_connect(short port, char *addr) {
+  struct sockaddr_in _;
+  bool ipv6 = 0;
+  if (inet_pton(AF_INET, addr, &_) != 1) {
+    struct sockaddr_in6 _;
+    if (inet_pton(AF_INET6, addr, &_) != 1) {
+      fprintf(stderr, "invalid address %s\n", addr);
+      exit(EXIT_FAILURE);
+    } else {
+      ipv6 = 1;
+    }
+  }
+
+  int fd;
+
+  if (ipv6) {
+    fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    if (fd == -1) {
+      perror("socket");
+      exit(EXIT_FAILURE);
+    }
+  } else {
+    fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd == -1) {
+      perror("socket");
+      exit(EXIT_FAILURE);
+    }
   }
 
   int on = 1;
@@ -55,10 +77,6 @@ static int sock_new(int ipv6) {
     exit(EXIT_FAILURE);
   };
 
-  return fd;
-}
-
-static void sock_connect(int fd, short port, char *addr, int ipv6) {
   if (ipv6) {
     struct sockaddr_in6 peerAddr = {0};
     peerAddr.sin6_family = AF_INET6;
@@ -80,6 +98,9 @@ static void sock_connect(int fd, short port, char *addr, int ipv6) {
       exit(EXIT_FAILURE);
     };
   }
+
+
+  return fd;
 }
 
 static ssize_t sock_sendall(int fd, const void *data, size_t len) {
@@ -218,7 +239,6 @@ static int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
 
   return 0;
 }
-
 
 static unsigned char *new_frame(const char *src, size_t len,
                                 unsigned frame_cfg) {

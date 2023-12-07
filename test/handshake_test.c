@@ -39,10 +39,9 @@ void *server_init(void *_) {
 }
 
 void do_handshake_test() {
-  int ipv6 = 1;
-  int fd = sock_new(ipv6);
+  int fd = sock_new();
 
-  sock_connect(fd, PORT, ADDR, ipv6);
+  sock_connect(fd, PORT, ADDR);
 
   ssize_t sent = sock_sendall(fd, EXAMPLE_REQUEST, sizeof EXAMPLE_REQUEST - 1);
   if (sent != sizeof EXAMPLE_REQUEST - 1) {

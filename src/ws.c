@@ -830,6 +830,78 @@ static void server_closeable_conns_close(ws_server_t *s) {
   }
 }
 
+static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
+  struct sockaddr_in _;
+  bool ipv6 = 0;
+  if (inet_pton(AF_INET, addr, &_) != 1) {
+    struct sockaddr_in6 _;
+    if (inet_pton(AF_INET6, addr, &_) != 1) {
+      return WS_EINVAL_ARGS;
+    } else {
+      ipv6 = 1;
+    }
+  }
+
+  int ret;
+
+  s->fd = socket(ipv6 ? AF_INET6 : AF_INET,
+                 SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+  if (s->fd < 0) {
+    free(s);
+    return WS_ESYS;
+  }
+
+  // socket config
+  int on = 1;
+  ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
+                   sizeof(int));
+  if (ret < 0) {
+    free(s);
+    return WS_ESYS;
+  }
+
+  printf("binding to %s %s:%d\n", ipv6 ? "IPV6" : "IPV4", addr, port);
+
+  if (ipv6) {
+    int off = 0;
+    ret = setsockopt(s->fd, SOL_IPV6, IPV6_V6ONLY, &off, sizeof(int));
+    if (ret < 0) {
+      free(s);
+      return WS_ESYS;
+    }
+
+    struct sockaddr_in6 srv_addr;
+    memset(&srv_addr, 0, sizeof(srv_addr));
+    srv_addr.sin6_family = AF_INET6;
+    srv_addr.sin6_port = htons(port);
+    inet_pton(AF_INET6, addr, &srv_addr.sin6_addr);
+
+    ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    if (ret < 0) {
+      ret = WS_ESYS;
+      close(s->fd);
+      free(s);
+      return WS_ESYS;
+    }
+  } else {
+    struct sockaddr_in srv_addr;
+    memset(&srv_addr, 0, sizeof(srv_addr));
+    srv_addr.sin_family = AF_INET;
+    srv_addr.sin_port = htons(port);
+    inet_pton(AF_INET, addr, &srv_addr.sin_addr);
+
+    ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    if (ret < 0) {
+      ret = WS_ESYS;
+      close(s->fd);
+      free(s);
+      return WS_ESYS;
+    }
+  }
+
+  return 0;
+}
+
 ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (ret == NULL) {
     return NULL;
@@ -854,47 +926,9 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     return NULL;
   }
 
-  // socket init
-  struct sockaddr_in6 srv_addr;
-
-  s->fd =
-      socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
-  if (s->fd < 0) {
-    *ret = WS_ESYS;
-    free(s);
-    return NULL;
-  }
-
-  // socket config
-  int on = 1;
-  *ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
-                    sizeof(int));
-  if (*ret < 0) {
-    *ret = WS_ESYS;
-    free(s);
-    return NULL;
-  }
-
-  int off = 0;
-  *ret = setsockopt(s->fd, SOL_IPV6, IPV6_V6ONLY, &off, sizeof(int));
-  if (*ret < 0) {
-    *ret = WS_ESYS;
-    free(s);
-    return NULL;
-  }
-
-  // fill in addr info
-  memset(&srv_addr, 0, sizeof(srv_addr));
-  srv_addr.sin6_family = AF_INET6;
-  srv_addr.sin6_port = htons(params->port);
-  inet_pton(AF_INET6, params->addr, &srv_addr.sin6_addr);
-
-  // bind server socket
-  *ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
-  if (*ret < 0) {
-    *ret = WS_ESYS;
-    close(s->fd);
-    free(s);
+  int res = ws_server_socket_bind(s, params->addr, params->port);
+  if (res != 0) {
+    *ret = res;
     return NULL;
   }
 

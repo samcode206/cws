@@ -11,6 +11,10 @@
 #define BIN "bin"
 #define CLOSE "close"
 
+
+#define PORT 9919
+#define ADDR "::1"
+
 size_t write_frame(char *dst, const char *src, size_t len, unsigned opcode) {
   uint8_t header[8] = {0};
   unsigned hlen;
@@ -113,9 +117,8 @@ int main(void) {
   char in_data[8192];
   char out_data[12288];
 
-  int ipv6 = 1;
-  int fd = sock_new(ipv6);
-  sock_connect(fd, 9919, "::1", ipv6);
+
+  int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
 
 

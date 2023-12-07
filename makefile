@@ -1,12 +1,12 @@
-
 CC=gcc
-CFLAGS=-I./src -fPIC
+CFLAGS=-O3 -march=native -mtune=native -Wall --pedantic -I./src
 LIB_NAME=ws
 SHARED_LIB=lib$(LIB_NAME).so
 STATIC_LIB=lib$(LIB_NAME).a
 SRC=./src/ws.c
 HDR=./src/ws.h
-OBJ=$(SRC:.c=.o)
+SOBJ=$(SRC:.c=.o)
+DOBJ=$(SRC:.c=.d.o)
 
 PREFIX=/usr/local
 INSTALL_LIB_PATH=$(PREFIX)/lib
@@ -16,16 +16,23 @@ INSTALL_INCLUDE_PATH=$(PREFIX)/include
 
 all: $(SHARED_LIB) $(STATIC_LIB)
 
-$(OBJ): $(SRC)
+
+$(SOBJ): $(SRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(SHARED_LIB): $(OBJ)
-	$(CC) -shared -o $@ $^
 
-$(STATIC_LIB): $(OBJ)
+$(DOBJ): $(SRC)
+	$(CC) $(CFLAGS) -fPIC -c $< -o $@
+
+
+$(SHARED_LIB): $(DOBJ)
+	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^
+
+
+$(STATIC_LIB): $(SOBJ)
 	ar rcs $@ $^
 
-install: all
+install: clean all
 	sudo install -m 644 $(SHARED_LIB) $(INSTALL_LIB_PATH)
 	sudo install -m 644 $(STATIC_LIB) $(INSTALL_LIB_PATH)
 	sudo ldconfig
@@ -38,13 +45,15 @@ uninstall:
 	sudo ldconfig
 
 clean:
-	rm -f $(OBJ) $(SHARED_LIB) $(STATIC_LIB)
+	rm -f $(SOBJ) $(DOBJ) $(SHARED_LIB) $(STATIC_LIB)
 
 
 
+
+# -flto
 
 echo:
-	gcc ./examples/echo.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./examples/echo.c -lws -lcrypto -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
 
 fragmented_send:
 	gcc ./test/fragmented_send.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
