@@ -39,9 +39,8 @@ void *server_init(void *_) {
 }
 
 void do_handshake_test() {
-  int fd = sock_new();
 
-  sock_connect(fd, PORT, ADDR);
+  int fd = sock_new_connect(PORT, ADDR);
 
   ssize_t sent = sock_sendall(fd, EXAMPLE_REQUEST, sizeof EXAMPLE_REQUEST - 1);
   if (sent != sizeof EXAMPLE_REQUEST - 1) {
