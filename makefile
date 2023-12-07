@@ -26,7 +26,7 @@ $(DOBJ): $(SRC)
 
 
 $(SHARED_LIB): $(DOBJ)
-	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^
+	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^ -lcrypto -lz
 
 
 $(STATIC_LIB): $(SOBJ)
@@ -51,14 +51,14 @@ clean:
 
 
 echo:
-	gcc ./examples/echo.c -flto -lws -lcrypto -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./examples/echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
 
 online:
-	gcc ./examples/online.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./examples/online.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 broadcast:
-	gcc ./examples/broadcast.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./examples/broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 autobahn:
-	gcc ./test/autobahn/autobahn.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
