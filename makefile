@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-O3 -march=native -mtune=native -Wall --pedantic -I./src
+CFLAGS=-O3 -flto -march=native -mtune=native -Wall --pedantic -I./src
 LIB_NAME=ws
 SHARED_LIB=lib$(LIB_NAME).so
 STATIC_LIB=lib$(LIB_NAME).a
@@ -53,17 +53,17 @@ clean:
 # -flto
 
 echo:
-	gcc ./examples/echo.c -lws -lcrypto -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./examples/echo.c -flto -lws -lcrypto -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
 
 fragmented_send:
-	gcc ./test/fragmented_send.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./test/fragmented_send.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 online:
-	gcc ./examples/online.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./examples/online.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 broadcast:
-	gcc ./examples/broadcast.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./examples/broadcast.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 autobahn:
-	gcc ./test/autobahn/autobahn.c -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./test/autobahn/autobahn.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
