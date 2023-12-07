@@ -23,14 +23,11 @@
 #include <sys/uio.h>
 #include <time.h>
 
-
-
 #define OP_TXT 0x1
 #define OP_BIN 0x2
 #define OP_CLOSE 0x8
 #define OP_PING 0x9
 #define OP_PONG 0xA
-
 
 #define HDR_END "\r\n"
 
@@ -85,7 +82,6 @@ static void sock_connect(int fd, short port, char *addr, int ipv6) {
   }
 }
 
-// send all data for non blocking sockets
 static ssize_t sock_sendall(int fd, const void *data, size_t len) {
   size_t sent = 0;
   ssize_t n;
@@ -159,7 +155,7 @@ static int sock_upgrade_ws(int fd) {
 
   char buf[4096] = {0};
 
-  ssize_t read = sock_recv(fd, buf, 4096);
+  ssize_t read = recv(fd, buf, 4096, MSG_PEEK);
   if (read == 0) {
     fprintf(stderr, "connection dropped before receiving upgrade response\n");
     exit(EXIT_FAILURE);
@@ -168,17 +164,64 @@ static int sock_upgrade_ws(int fd) {
     exit(EXIT_FAILURE);
   }
 
+  char *upgrade_end = strstr(buf, "\r\n\r\n");
+  assert(upgrade_end != NULL);
+  upgrade_end += 4;
 
+  read = recv(fd, buf, upgrade_end - buf, 0);
+  assert(read == upgrade_end - buf);
 
   return 0;
+}
+
+// Frame Parsing Utils
+static inline uint8_t frame_get_fin(const unsigned char *buf) {
+  return (buf[0] >> 7) & 0x01;
 }
 
 static inline uint8_t frame_get_opcode(const unsigned char *buf) {
   return buf[0] & 0x0F;
 }
 
+static inline size_t frame_payload_get_len126(const unsigned char *buf) {
+  return (buf[2] << 8) | buf[3];
+}
 
-static unsigned char *new_frame(const char *src, size_t len, unsigned frame_cfg) {
+static inline size_t frame_payload_get_len127(const unsigned char *buf) {
+  return ((uint64_t)buf[2] << 56) | ((uint64_t)buf[3] << 48) |
+         ((uint64_t)buf[4] << 40) | ((uint64_t)buf[5] << 32) |
+         ((uint64_t)buf[6] << 24) | ((uint64_t)buf[7] << 16) |
+         ((uint64_t)buf[8] << 8) | (uint64_t)buf[9];
+}
+
+static inline size_t frame_payload_get_raw_len(const unsigned char *buf) {
+  return buf[1] & 0X7F;
+}
+
+static int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
+                                    size_t *res) {
+  size_t raw_len = frame_payload_get_raw_len(buf);
+  *res = raw_len;
+  if (raw_len == 126) {
+    if (rbuf_len > 3) {
+      *res = frame_payload_get_len126(buf);
+    } else {
+      return 4;
+    }
+  } else if (raw_len == 127) {
+    if (rbuf_len > 9) {
+      *res = frame_payload_get_len127(buf);
+    } else {
+      return 10;
+    }
+  }
+
+  return 0;
+}
+
+
+static unsigned char *new_frame(const char *src, size_t len,
+                                unsigned frame_cfg) {
   // only handle sending small frames
   if (len > 125) {
     return NULL;
