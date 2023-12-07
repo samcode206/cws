@@ -50,13 +50,8 @@ clean:
 
 
 
-# -flto
-
 echo:
 	gcc ./examples/echo.c -flto -lws -lcrypto -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
-
-fragmented_send:
-	gcc ./test/fragmented_send.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 online:
 	gcc ./examples/online.c -flto -lws -lcrypto -lz -O3  -march=native -mtune=native -Wall --pedantic -o server
