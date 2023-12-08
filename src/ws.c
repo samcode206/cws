@@ -3245,7 +3245,7 @@ int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
 
     assert(write(ar->chanfd, &one, 8) == 8);
 
-    printf("ws_server_sched_async done\n");
+
     return 0;
   }
 
@@ -3256,7 +3256,6 @@ static void ws_server_async_runner_run_pending_callbacks(
     ws_server_t *s, struct ws_server_async_runner *ar) {
   uint64_t val;
   assert(read(ar->chanfd, &val, 8) == 8);
-  printf("val %zu\n", val);
 
   assert(pthread_mutex_lock(&ar->mu) == 0);
   size_t len = ar->len;

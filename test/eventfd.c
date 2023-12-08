@@ -1,7 +1,7 @@
 #include "../src/ws.h"
+#include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
-#include <assert.h>
 
 #define PORT 9919
 #define ADDR "::1"
@@ -38,12 +38,36 @@ void *server_init(void *_) {
   return NULL;
 }
 
-void server_async_task(ws_server_t *rs, async_cb_ctx_t *ctx) { 
-    printf("Hello I am running on %p\n", (void*)rs);
-    assert(srv == rs);
+void server_async_task4(ws_server_t *rs, async_cb_ctx_t *ctx) {
+  printf("Final Task 4 running on %p\n", (void *)rs);
+  assert(srv == rs);
+  exit(EXIT_SUCCESS);
+  ws_server_sched_async(rs, ctx);
+}
 
-    ws_server_sched_async(rs, ctx);
- }
+void server_async_task3(ws_server_t *rs, async_cb_ctx_t *ctx) {
+  printf("Task 3 running on %p\n", (void *)rs);
+  assert(srv == rs);
+
+  ctx->cb = server_async_task4;
+  ws_server_sched_async(rs, ctx);
+}
+
+void server_async_task2(ws_server_t *rs, async_cb_ctx_t *ctx) {
+  printf("Task 2 running on %p\n", (void *)rs);
+  assert(srv == rs);
+
+  ctx->cb = server_async_task3;
+  ws_server_sched_async(rs, ctx);
+}
+
+void server_async_task(ws_server_t *rs, async_cb_ctx_t *ctx) {
+  printf("Task 1 running on %p\n", (void *)rs);
+  assert(srv == rs);
+
+  ctx->cb = server_async_task2;
+  ws_server_sched_async(rs, ctx);
+}
 
 int main() {
   pthread_t server_w;
@@ -55,13 +79,12 @@ int main() {
 
   sleep(1);
 
-  struct async_cb_ctx *task_info = malloc(sizeof (struct async_cb_ctx));
+  struct async_cb_ctx *task_info = malloc(sizeof(struct async_cb_ctx));
   task_info->ctx = NULL;
   task_info->cb = server_async_task;
 
   ws_server_sched_async(srv, task_info);
-  
 
+  sleep(5);
 
-  sleep(10);
 }
