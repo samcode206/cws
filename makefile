@@ -68,5 +68,5 @@ autobahn: install
 	gcc ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 
-eventfd:
-	gcc ./src/*.c ./test/eventfd.c -lz -lcrypto -O3 -march=native -mtune=native -Wall --pedantic -o server
+async_task:
+	gcc ./src/*.c ./test/async_task.c -lz -lcrypto -O3 -march=native -mtune=native -Wall --pedantic -o server

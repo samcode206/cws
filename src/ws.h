@@ -642,6 +642,10 @@ struct async_cb_ctx {
 
 int ws_server_sched_async(ws_server_t *runner, struct async_cb_ctx *cb_info);
 
+// how many callbacks currently queued
+size_t ws_server_pending_async_callbacks(ws_server_t *runner);
+
+
 
 enum ws_conn_err {
     WS_ERR_READ = 990,

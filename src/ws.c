@@ -81,6 +81,9 @@
 #define CONN_TX_SENDING_FRAGMENTS (1u << 12)
 #define CONN_RX_PAUSED (1u << 13)
 
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 struct ws_conn_pool {
   ws_conn_t *base;
   size_t avb;
@@ -163,12 +166,17 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
-struct ws_server_async_runner {
-  pthread_mutex_t mu;
+struct ws_server_async_runner_buf {
   size_t len;
   size_t cap;
-  int chanfd;
   struct async_cb_ctx **cbs;
+};
+
+struct ws_server_async_runner {
+  pthread_mutex_t mu;
+  int chanfd;
+  struct ws_server_async_runner_buf *pending;
+  struct ws_server_async_runner_buf *ready;
 };
 
 static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap);
@@ -3204,6 +3212,19 @@ const char *ws_conn_strerror(ws_conn_t *c) {
   }
 }
 
+static struct ws_server_async_runner_buf *
+ws_server_async_runner_buf_create(size_t init_cap) {
+  struct ws_server_async_runner_buf *arb;
+  arb = calloc(1, sizeof *arb);
+  assert(arb != NULL);
+
+  arb->cbs = calloc(init_cap, sizeof arb->cbs);
+  assert(arb->cbs != NULL);
+  arb->cap = init_cap;
+
+  return arb;
+}
+
 static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   if (!init_cap) {
     init_cap = 1;
@@ -3212,14 +3233,11 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
       calloc(1, sizeof(struct ws_server_async_runner));
   assert(ar != NULL);
 
-  ar->cbs = calloc(init_cap, sizeof ar->cbs);
-  assert(ar->cbs != NULL);
+  ar->pending = ws_server_async_runner_buf_create(init_cap);
+  ar->ready = ws_server_async_runner_buf_create(init_cap);
 
   ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
   assert(ar->chanfd != -1);
-
-  ar->cap = init_cap;
-  ar->len = 0;
 
   assert(pthread_mutex_init(&ar->mu, NULL) != -1);
 
@@ -3233,18 +3251,48 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
 int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
   if (cb_info != NULL) {
     struct ws_server_async_runner *ar = s->async_runner;
+
     assert(pthread_mutex_lock(&ar->mu) == 0);
-    if (ar->len + 1 > ar->cap) {
-      ar->cbs = realloc(ar->cbs, sizeof ar->cbs * (ar->cap + ar->cap));
-      assert(ar->cbs != NULL);
-      ar->cap = ar->cap + ar->cap;
+    // mu start
+
+    struct ws_server_async_runner_buf *q = ar->pending;
+
+    size_t new_len = q->len + 1;
+
+    // make sure we have/get the space needed
+    if (new_len > q->cap) {
+      struct async_cb_ctx **new_cbs =
+          realloc(q->cbs, sizeof q->cbs * (q->cap + q->cap));
+      if (new_cbs != NULL) {
+        q->cbs = new_cbs;
+        q->cap = q->cap + q->cap;
+      } else {
+        // mu early end
+        assert(pthread_mutex_unlock(&ar->mu) == 0);
+        return -1;
+      }
     }
-    ar->cbs[ar->len++] = cb_info;
+
+    q->cbs[q->len++] = cb_info;
+
+    // mu end
     assert(pthread_mutex_unlock(&ar->mu) == 0);
 
-    uint64_t one = 1;
-
-    assert(write(ar->chanfd, &one, 8) == 8);
+    // notify
+    register int fd = ar->chanfd;
+    for (;;) {
+      if (likely(eventfd_write(fd, 1) == 0)) {
+        break;
+      } else {
+        if (errno == EINTR) {
+          continue;
+        } else {
+          // if EAGAIN it will be processed eventually
+          assert(errno == EAGAIN || errno == EWOULDBLOCK);
+          break;
+        }
+      }
+    }
 
     return 0;
   }
@@ -3257,22 +3305,38 @@ static void ws_server_async_runner_run_pending_callbacks(
   uint64_t val;
   assert(read(ar->chanfd, &val, 8) == 8);
 
+  // grab the lock to swap the buffers
+  // and get the count of ready callbacks
   assert(pthread_mutex_lock(&ar->mu) == 0);
-  size_t len = ar->len;
+  // mu start
+
+  struct ws_server_async_runner_buf *ready = ar->pending;
+  ar->pending = ar->ready;
+  ar->ready = ready;
+  size_t len = ready->len;
+
+  // mu end
   assert(pthread_mutex_unlock(&ar->mu) == 0);
 
+  // run all ready callbacks (no lock)
+  struct async_cb_ctx **cbs = ready->cbs;
   for (size_t i = 0; i < len; ++i) {
     // run all callbacks
-    ar->cbs[i]->cb(s, ar->cbs[i]);
+    cbs[i]->cb(s, cbs[i]);
   }
 
+  ready->len = 0;
+}
+
+size_t ws_server_pending_async_callbacks(ws_server_t *s) {
+  struct ws_server_async_runner *ar = s->async_runner;
+  size_t count = 0;
+
   assert(pthread_mutex_lock(&ar->mu) == 0);
-  if (ar->len == len) {
-    ar->len = 0;
-  } else {
-    assert(ar->len > len);
-    memcpy(ar->cbs, ar->cbs + len, sizeof ar->cbs * (ar->len - len));
-    ar->len = ar->len - len;
-  }
+  // mu start
+  count = ar->pending->len;
+  // mu end
   assert(pthread_mutex_unlock(&ar->mu) == 0);
+
+  return count;
 }

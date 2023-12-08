@@ -73,6 +73,7 @@ void server_async_task(ws_server_t *rs, async_cb_ctx_t *ctx) {
   printf("Task 1 running for %d\n", *chanid);
   assert(srv == rs);
 
+
   ctx->cb = server_async_task2;
   ws_server_sched_async(rs, ctx);
 }
@@ -113,7 +114,7 @@ int main() {
 
   sleep(1);
 
-#define NUM_TEST_THREADS 32
+#define NUM_TEST_THREADS 128 
   pthread_t client_threads[NUM_TEST_THREADS];
 
   for (size_t i = 0; i < NUM_TEST_THREADS; i++) {
