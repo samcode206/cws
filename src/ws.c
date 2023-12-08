@@ -1080,7 +1080,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->dstrm = deflation_stream_init();
 #endif /* WITH_COMPRESSION */
 
-  ws_server_async_runner_create(s, 8);
+  ws_server_async_runner_create(s, 2);
 
   // server resources all ready
   return s;
@@ -3219,6 +3219,7 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   assert(ar->chanfd != -1);
 
   ar->cap = init_cap;
+  ar->len = 0;
 
   assert(pthread_mutex_init(&ar->mu, NULL) != -1);
 
@@ -3234,7 +3235,7 @@ int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
     struct ws_server_async_runner *ar = s->async_runner;
     assert(pthread_mutex_lock(&ar->mu) == 0);
     if (ar->len + 1 > ar->cap) {
-      ar->cbs = realloc(ar->cbs, ar->cap + ar->cap);
+      ar->cbs = realloc(ar->cbs, sizeof ar->cbs * (ar->cap + ar->cap));
       assert(ar->cbs != NULL);
       ar->cap = ar->cap + ar->cap;
     }
@@ -3244,7 +3245,6 @@ int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
     uint64_t one = 1;
 
     assert(write(ar->chanfd, &one, 8) == 8);
-
 
     return 0;
   }

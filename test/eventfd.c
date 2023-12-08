@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <sys/eventfd.h>
 
 #define PORT 9919
 #define ADDR "::1"
@@ -39,14 +40,19 @@ void *server_init(void *_) {
 }
 
 void server_async_task4(ws_server_t *rs, async_cb_ctx_t *ctx) {
-  printf("Final Task 4 running on %p\n", (void *)rs);
+  int *chanid = ctx->ctx;
+  printf("Final Task 4 running for %d\n", *chanid);
+  int *evfd = ctx->ctx;
+
+  uint64_t v = 1;
+  assert(write(*evfd, &v, 8) == 8);
+
   assert(srv == rs);
-  exit(EXIT_SUCCESS);
-  ws_server_sched_async(rs, ctx);
 }
 
 void server_async_task3(ws_server_t *rs, async_cb_ctx_t *ctx) {
-  printf("Task 3 running on %p\n", (void *)rs);
+  int *chanid = ctx->ctx;
+  printf("Task 3 running for %d\n", *chanid);
   assert(srv == rs);
 
   ctx->cb = server_async_task4;
@@ -54,7 +60,8 @@ void server_async_task3(ws_server_t *rs, async_cb_ctx_t *ctx) {
 }
 
 void server_async_task2(ws_server_t *rs, async_cb_ctx_t *ctx) {
-  printf("Task 2 running on %p\n", (void *)rs);
+  int *chanid = ctx->ctx;
+  printf("Task 2 running for %d\n", *chanid);
   assert(srv == rs);
 
   ctx->cb = server_async_task3;
@@ -62,11 +69,38 @@ void server_async_task2(ws_server_t *rs, async_cb_ctx_t *ctx) {
 }
 
 void server_async_task(ws_server_t *rs, async_cb_ctx_t *ctx) {
-  printf("Task 1 running on %p\n", (void *)rs);
+  int *chanid = ctx->ctx;
+  printf("Task 1 running for %d\n", *chanid);
   assert(srv == rs);
 
   ctx->cb = server_async_task2;
   ws_server_sched_async(rs, ctx);
+}
+
+void *test_init(void *_) {
+  struct async_cb_ctx *task_info = malloc(sizeof(struct async_cb_ctx));
+
+  // will use a blocking eventfd to know when all tasks are run
+  int evfd = eventfd(0, 0);
+
+  task_info->ctx = &evfd;
+  task_info->cb = server_async_task;
+
+  ws_server_sched_async(srv, task_info);
+
+  uint64_t val;
+  // once read is done we know we are done because write to eventfd happens in
+  // the final task
+  assert(read(evfd, &val, 8) == 8);
+  printf("thread %d scheduled And Ran All tasks\n", gettid());
+
+  // free the task ctx
+  // note* the task_info struct was reused across tasks for the same thread, but
+  // it doesn't have to be there is just no point in allocating a new one for
+  // each task in this particular case
+  free(task_info);
+
+  return NULL;
 }
 
 int main() {
@@ -79,12 +113,19 @@ int main() {
 
   sleep(1);
 
-  struct async_cb_ctx *task_info = malloc(sizeof(struct async_cb_ctx));
-  task_info->ctx = NULL;
-  task_info->cb = server_async_task;
+#define NUM_TEST_THREADS 32
+  pthread_t client_threads[NUM_TEST_THREADS];
 
-  ws_server_sched_async(srv, task_info);
+  for (size_t i = 0; i < NUM_TEST_THREADS; i++) {
+    if (pthread_create(&client_threads[i], NULL, test_init, (void *)(long)i) ==
+        -1) {
+      perror("pthread_create");
+      exit(EXIT_FAILURE);
+    }
+  }
 
-  sleep(5);
-
+  // wait for the tests to complete
+  for (size_t i = 0; i < NUM_TEST_THREADS; i++) {
+    pthread_join(client_threads[i], NULL);
+  }
 }
