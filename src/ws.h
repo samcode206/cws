@@ -629,6 +629,20 @@ int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
                        int events);
 
 
+
+
+typedef struct async_cb_ctx async_cb_ctx_t;
+
+typedef void (*ws_server_async_cb_t)(ws_server_t *s, async_cb_ctx_t *ctx);
+
+struct async_cb_ctx {
+  void *ctx;
+  ws_server_async_cb_t cb;
+};
+
+int ws_server_sched_async(ws_server_t *runner, struct async_cb_ctx *cb_info);
+
+
 enum ws_conn_err {
     WS_ERR_READ = 990,
 

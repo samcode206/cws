@@ -55,15 +55,18 @@ clean:
 
 
 
-echo:
+echo: install
 	gcc ./examples/echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
 
-online:
+online: install
 	gcc ./examples/online.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
-broadcast:
+broadcast: install
 	gcc ./examples/broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
-autobahn:
+autobahn: install
 	gcc ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
+
+eventfd:
+	gcc ./src/*.c ./test/eventfd.c -lz -lcrypto -O3 -march=native -mtune=native -Wall --pedantic -o server

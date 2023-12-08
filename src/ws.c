@@ -29,12 +29,14 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/signal.h>
@@ -161,6 +163,20 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
+struct ws_server_async_runner {
+  pthread_mutex_t mu;
+  size_t len;
+  size_t cap;
+  int chanfd;
+  struct async_cb_ctx **cbs;
+};
+
+static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap);
+
+static void
+ws_server_async_runner_run_pending_callbacks(ws_server_t *s,
+                                             struct ws_server_async_runner *ar);
+
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
   ws_msg_cb_t on_ws_msg;
@@ -179,6 +195,7 @@ typedef struct server {
   ws_pong_cb_t on_ws_pong;
   ws_on_timeout_t on_ws_conn_timeout;
   struct ws_conn_pool *conn_pool;
+  struct ws_server_async_runner *async_runner;
 
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
@@ -797,7 +814,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
   if (s->writeable_conns.len > n) {
     memcpy(s->writeable_conns.conns,
            s->writeable_conns.conns + s->writeable_conns.len,
-           s->writeable_conns.len - n);
+           sizeof s->writeable_conns.conns * (s->writeable_conns.len - n));
     s->writeable_conns.len = s->writeable_conns.len - n;
   } else {
     s->writeable_conns.len = 0;
@@ -822,7 +839,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
     if (s->closeable_conns.len > n) {
       memcpy(s->closeable_conns.conns,
              s->closeable_conns.conns + s->closeable_conns.len,
-             s->closeable_conns.len - n);
+             sizeof s->closeable_conns.conns * (s->closeable_conns.len - n));
       s->closeable_conns.len = s->closeable_conns.len - n;
     } else {
       s->closeable_conns.len = 0;
@@ -1062,6 +1079,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   s->istrm = inflation_stream_init();
   s->dstrm = deflation_stream_init();
 #endif /* WITH_COMPRESSION */
+
+  ws_server_async_runner_create(s, 8);
 
   // server resources all ready
   return s;
@@ -1310,6 +1329,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
   size_t timer_check_counter = TIMER_CHECK_TICKS;
 
+  struct ws_server_async_runner *arptr = s->async_runner;
+
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
     if (n_evs < 0) {
@@ -1328,7 +1349,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
       if ((s->events[i].data.ptr == &tfd) |
-          (s->events[i].data.ptr == user_epoll_ptr)) {
+          (s->events[i].data.ptr == user_epoll_ptr) |
+          (s->events[i].data.ptr == arptr)) {
+
         if (s->events[i].data.ptr == &tfd) {
           uint64_t _;
           assert(read(tfd, &_, 8) == 8);
@@ -1342,9 +1365,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
           server_do_mirrored_buf_pool_gc(s);
 
+        } else if (s->events[i].data.ptr == arptr) {
+          ws_server_async_runner_run_pending_callbacks(s, arptr);
         } else {
           check_user_epoll = true;
         }
+
       } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
@@ -3176,4 +3202,78 @@ const char *ws_conn_strerror(ws_conn_t *c) {
   } else {
     return NULL;
   }
+}
+
+static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
+  if (!init_cap) {
+    init_cap = 1;
+  }
+  struct ws_server_async_runner *ar =
+      calloc(1, sizeof(struct ws_server_async_runner));
+  assert(ar != NULL);
+
+  ar->cbs = calloc(init_cap, sizeof ar->cbs);
+  assert(ar->cbs != NULL);
+
+  ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  assert(ar->chanfd != -1);
+
+  ar->cap = init_cap;
+
+  assert(pthread_mutex_init(&ar->mu, NULL) != -1);
+
+  s->ev.events = EPOLLIN;
+  s->ev.data.ptr = ar;
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd);
+
+  s->async_runner = ar;
+}
+
+int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
+  if (cb_info != NULL) {
+    struct ws_server_async_runner *ar = s->async_runner;
+    assert(pthread_mutex_lock(&ar->mu) == 0);
+    if (ar->len + 1 > ar->cap) {
+      ar->cbs = realloc(ar->cbs, ar->cap + ar->cap);
+      assert(ar->cbs != NULL);
+      ar->cap = ar->cap + ar->cap;
+    }
+    ar->cbs[ar->len++] = cb_info;
+    assert(pthread_mutex_unlock(&ar->mu) == 0);
+
+    uint64_t one = 1;
+
+    assert(write(ar->chanfd, &one, 8) == 8);
+
+    printf("ws_server_sched_async done\n");
+    return 0;
+  }
+
+  return -1;
+}
+
+static void ws_server_async_runner_run_pending_callbacks(
+    ws_server_t *s, struct ws_server_async_runner *ar) {
+  uint64_t val;
+  assert(read(ar->chanfd, &val, 8) == 8);
+  printf("val %zu\n", val);
+
+  assert(pthread_mutex_lock(&ar->mu) == 0);
+  size_t len = ar->len;
+  assert(pthread_mutex_unlock(&ar->mu) == 0);
+
+  for (size_t i = 0; i < len; ++i) {
+    // run all callbacks
+    ar->cbs[i]->cb(s, ar->cbs[i]);
+  }
+
+  assert(pthread_mutex_lock(&ar->mu) == 0);
+  if (ar->len == len) {
+    ar->len = 0;
+  } else {
+    assert(ar->len > len);
+    memcpy(ar->cbs, ar->cbs + len, sizeof ar->cbs * (ar->len - len));
+    ar->len = ar->len - len;
+  }
+  assert(pthread_mutex_unlock(&ar->mu) == 0);
 }
