@@ -797,7 +797,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
   if (s->writeable_conns.len > n) {
     memcpy(s->writeable_conns.conns,
            s->writeable_conns.conns + s->writeable_conns.len,
-           s->writeable_conns.len - n);
+           sizeof s->writeable_conns.conns * (s->writeable_conns.len - n));
     s->writeable_conns.len = s->writeable_conns.len - n;
   } else {
     s->writeable_conns.len = 0;
@@ -822,7 +822,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
     if (s->closeable_conns.len > n) {
       memcpy(s->closeable_conns.conns,
              s->closeable_conns.conns + s->closeable_conns.len,
-             s->closeable_conns.len - n);
+            sizeof s->closeable_conns.conns * (s->closeable_conns.len - n));
       s->closeable_conns.len = s->closeable_conns.len - n;
     } else {
       s->closeable_conns.len = 0;
