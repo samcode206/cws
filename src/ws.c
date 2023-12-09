@@ -1074,7 +1074,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
     return NULL;
   }
 
-  if (params->ctx){
+  if (params->ctx) {
     s->ctx = params->ctx;
   }
 
@@ -1312,8 +1312,7 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
                                         size_t const total,
                                         mirrored_buf_t *rem_dst, int fd);
 
-
-static void ws_server_register_timer(ws_server_t *s, int* tfd) {
+static void ws_server_register_timer(ws_server_t *s, int *tfd) {
   struct itimerspec timer = {.it_interval =
                                  {
                                      .tv_nsec = 0,
@@ -2617,14 +2616,9 @@ inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
 inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
 
-inline void *ws_server_ctx(ws_server_t *s){
-  return s->ctx;
-}
+inline void *ws_server_ctx(ws_server_t *s) { return s->ctx; }
 
-inline void ws_server_set_ctx(ws_server_t *s, void *ctx){
-  s->ctx = ctx;
-}
-
+inline void ws_server_set_ctx(ws_server_t *s, void *ctx) { s->ctx = ctx; }
 
 inline bool ws_server_accept_paused(ws_server_t *s) { return s->accept_paused; }
 
@@ -2705,7 +2699,11 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   void *pool_mem =
       mmap(NULL, pool_and_avb_stk_sz + ws_conns_sz, PROT_READ | PROT_WRITE,
            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  assert(pool_mem != MAP_FAILED);
+  if (pool_mem == MAP_FAILED) {
+    perror("mmap");
+    exit(EXIT_FAILURE);
+    return NULL;
+  }
 
   struct ws_conn_pool *pool = pool_mem;
   pool->avb = nmemb;
@@ -2879,11 +2877,13 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 
   if (pool_mem == MAP_FAILED) {
     perror("mmap");
+    exit(EXIT_FAILURE);
     return NULL;
   }
 
   if (mprotect(pool_mem, pool_sz, PROT_READ | PROT_WRITE) == -1) {
     perror("mprotect");
+    exit(EXIT_FAILURE);
     return NULL;
   };
 
@@ -2912,6 +2912,7 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 
   if (ftruncate(pool->fd, buf_sz * nmemb) == -1) {
     perror("ftruncate");
+    exit(EXIT_FAILURE);
     return NULL;
   };
 
@@ -2923,13 +2924,17 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   for (i = 0; i < nmemb; ++i) {
     if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
              pool->fd, offset) == MAP_FAILED) {
+      perror("mmap");
       close(pool->fd);
+      exit(EXIT_FAILURE);
       return NULL;
     };
 
     if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
              MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
+      perror("mmap");
       close(pool->fd);
+      exit(EXIT_FAILURE);
       return NULL;
     };
 
