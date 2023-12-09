@@ -191,6 +191,7 @@ typedef struct server {
   ws_msg_fragment_cb_t on_ws_msg_fragment;
   ws_ping_cb_t on_ws_ping;
   struct mirrored_buf_pool *buffer_pool;
+  void *ctx;
   size_t open_conns; // open websocket connections
   size_t max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
@@ -1071,6 +1072,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (s == NULL) {
     *ret = WS_ESYS;
     return NULL;
+  }
+
+  if (params->ctx){
+    s->ctx = params->ctx;
   }
 
   // init epoll
@@ -2611,6 +2616,15 @@ inline ws_server_t *ws_conn_server(ws_conn_t *c) { return c->base; }
 inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
 inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
+
+inline void *ws_server_ctx(ws_server_t *s){
+  return s->ctx;
+}
+
+inline void ws_server_set_ctx(ws_server_t *s, void *ctx){
+  s->ctx = ctx;
+}
+
 
 inline bool ws_server_accept_paused(ws_server_t *s) { return s->accept_paused; }
 

@@ -293,6 +293,7 @@ struct ws_server_params {
   ws_accept_cb_t on_ws_accept;         // Callback for when a new connection has been accepted
   ws_err_accept_cb_t on_ws_accept_err; // Callback for when accept() fails.
   ws_on_upgrade_req_cb_t on_ws_upgrade_req; // Callback for when a Websocket upgrade request is received
+  void *ctx;                                // attaches a pointer to the server
 };
 
 
@@ -560,6 +561,11 @@ ws_server_t *ws_conn_server(ws_conn_t *c);
 void *ws_conn_ctx(ws_conn_t *c);
 
 void ws_conn_set_ctx(ws_conn_t *c, void *ctx);
+
+void *ws_server_ctx(ws_server_t *s);
+
+void ws_server_set_ctx(ws_server_t *s, void *ctx);
+
 
 ws_server_t *ws_server_create(struct ws_server_params *params,
                               int *ret); // allocates server resources
