@@ -1,80 +1,18 @@
 # cws
 
+## Introduction
+`cws` is a high-performance, Linux-only WebSocket server library written in C. It is designed for efficient handling of WebSocket connections and messaging, with a focus on server-side applications requiring high throughput and low latency.
 
-### Example Sever
-
-```c
-
-#include "ws.h"
-
-void on_open(ws_conn_t *c) { ws_conn_ping(ws_conn_server(c), c, "welcome", 8); }
-
-void on_ping(ws_conn_t *c, void *msg, size_t n) {
-  printf("on_ping: %s\n", (char *)msg);
-  int stat = ws_conn_pong(ws_conn_server(c), c, msg, n);
-  if (stat == 1) {
-    printf("pong sent\n");
-  } else {
-    printf("partial pong sent or an error occurred waiting for <on_ws_drain | "
-           "on_ws_disconnect>\n");
-  }
-}
-
-void on_pong(ws_conn_t *c, void *msg, size_t n) {
-  printf("on_pong: %s\n", (char *)msg);
-}
-
-void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
-  msg_unmask(msg, msg, n);
-  printf("on_msg: %s\n", (char *)msg);
-  int stat = ws_conn_send_txt(ws_conn_server(c), c, msg, n);
-  if (stat == 1) {
-    printf("msg sent\n");
-  } else {
-    printf("partial send or an error occurred waiting for <on_ws_drain | "
-           "on_ws_disconnect>\n");
-  }
-}
-
-void on_close(ws_conn_t *ws_conn, int reason) { printf("on_close\n"); }
-
-void on_disconnect(ws_conn_t *ws_conn, int err) { printf("on_disconnect\n"); }
-
-void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
-
-void on_server_err(ws_server_t *s, int err) {
-  fprintf(stderr, "on_server_err: %s\n", strerror(err));
-}
-
-int main(void) {
-  const size_t max_events = 1024;
-  const uint16_t port = 9919;
-  const int backlog = 1024;
-  struct ws_server_params sp = {.addr = INADDR_ANY,
-                                .port = port,
-                                .max_events = max_events,
-                                .on_ws_open = on_open,
-                                .on_ws_msg = on_msg,
-                                .on_ws_ping = on_ping,
-                                .on_ws_pong = on_pong,
-                                .on_ws_drain = on_drain,
-                                .on_ws_close = on_close,
-                                .on_ws_disconnect = on_disconnect,
-                                .on_ws_err = on_server_err};
-
-  int ret = 0;
-  ws_server_t *s = ws_server_create(&sp, &ret);
-
-  if (ret < 0) {
-    fprintf(stderr, "ws_server_create: %d\n", ret);
-    exit(1);
-  }
-
-  printf("websocket server starting on port : %d\n", sp.port);
-
-  ret = ws_server_start(s, backlog);
-
-  exit(ret);
-}
-
-```
+## Key Features
+- **Linux Optimization**: Tailored specifically for Linux environments for optimal performance.
+- **WebSocket Server Handling**: Efficient management of WebSocket server side operations.
+- **Compliance and Reliability**: Fully compliant with WebSocket standards and passes the extensive Autobahn Test Suite.
+- **Advanced Callbacks**: Extensive callback support for connection handling, message processing, and more.
+- **Message Compression**: Optional per message deflate compression support.
+- **Text and Binary Message Support**: Handles both text and binary WebSocket messages.
+- **Synchronous and Asynchronous Messaging**: Supports both synchronous message sending and asynchronous queuing.
+- **Customizable Connection Parameters**: sers can tailor server parameters to their needs, such as maximum connections, buffer sizing, and IO timeout settings.
+- **IPv4 and IPv6 Support**: Compatible with both IPv4 and IPv6 networks.
+- **Familiar Event-Loop Architecture**: Implements an event-loop based architecture, akin to Node.js, providing familiarity and ease of use while delivering orders of magnitude better performance.
+- **Control**: Enables granular control over connection upgrades and supports efficient fragmented message streaming for large data sets.
+- **Scalability**: Designed for scalability and can be easily configured to run on multiple threads, with simple yet powerful synchronization primitives
