@@ -18,6 +18,10 @@ ifdef WITH_COMPRESSION
 CFLAGS += -DWITH_COMPRESSION
 endif
 
+ifdef NO_DEBUG
+CFLAGS += -DNDEBUG
+endif
+
 all: $(SHARED_LIB) $(STATIC_LIB)
 
 
