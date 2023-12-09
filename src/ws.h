@@ -556,14 +556,44 @@ enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, b
 bool ws_conn_sending_fragments(ws_conn_t *c);
 
 
+/**
+* @param c Pointer to the WebSocket connection (`ws_conn_t`).
+* @return  Pointer to ws_server_t that owns the websocket client
+*/
 ws_server_t *ws_conn_server(ws_conn_t *c);
 
+
+
+/**
+* get the connection's ctx (see `ws_conn_set_ctx` below)
+* @param c Pointer to the WebSocket connection (`ws_conn_t`).
+* @return  Pointer to the client ctx 
+*/
 void *ws_conn_ctx(ws_conn_t *c);
 
+
+
+/**
+* set the connection's ctx (see `ws_conn_get_ctx` above)
+* @param c Pointer to the WebSocket connection (`ws_conn_t`).
+* @param ctx ctx pointer
+*/
 void ws_conn_set_ctx(ws_conn_t *c, void *ctx);
 
+
+
+/**
+* @param s Pointer to the WebSocket connection (`ws_conn_t`).
+* @return  Pointer to ws_server_t that owns the websocket client
+*/
 void *ws_server_ctx(ws_server_t *s);
 
+
+
+/**
+* @param s Pointer to the WebSocket connection (`ws_conn_t`).
+* @param ctx ctx pointer
+*/
 void ws_server_set_ctx(ws_server_t *s, void *ctx);
 
 
