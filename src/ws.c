@@ -2586,8 +2586,6 @@ inline bool ws_conn_is_read_paused(ws_conn_t *c) { return is_read_paused(c); }
 void ws_conn_pause_read(ws_conn_t *c) {
   // if we aren't currently paused
   if (!is_read_paused(c)) {
-    printf("paused reads\n");
-
     ws_server_t *s = c->base;
     s->ev.data.ptr = c;
     s->ev.events = EPOLLRDHUP;
@@ -2603,7 +2601,6 @@ void ws_conn_pause_read(ws_conn_t *c) {
 
 void ws_conn_resume_reads(ws_conn_t *c) {
   if (is_read_paused(c)) {
-    printf("resuming reads\n");
     ws_server_t *s = c->base;
     s->ev.data.ptr = c;
     s->ev.events = EPOLLIN | EPOLLRDHUP;
