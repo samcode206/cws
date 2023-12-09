@@ -29,12 +29,14 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/signal.h>
@@ -78,6 +80,9 @@
 #define CONN_RX_PROCESSING_FRAMES (1u << 11)
 #define CONN_TX_SENDING_FRAGMENTS (1u << 12)
 #define CONN_RX_PAUSED (1u << 13)
+
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
 
 struct ws_conn_pool {
   ws_conn_t *base;
@@ -161,6 +166,25 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
+struct ws_server_async_runner_buf {
+  size_t len;
+  size_t cap;
+  struct async_cb_ctx **cbs;
+};
+
+struct ws_server_async_runner {
+  pthread_mutex_t mu;
+  int chanfd;
+  struct ws_server_async_runner_buf *pending;
+  struct ws_server_async_runner_buf *ready;
+};
+
+static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap);
+
+static void
+ws_server_async_runner_run_pending_callbacks(ws_server_t *s,
+                                             struct ws_server_async_runner *ar);
+
 typedef struct server {
   size_t max_msg_len; // max allowed msg length
   ws_msg_cb_t on_ws_msg;
@@ -179,6 +203,7 @@ typedef struct server {
   ws_pong_cb_t on_ws_pong;
   ws_on_timeout_t on_ws_conn_timeout;
   struct ws_conn_pool *conn_pool;
+  struct ws_server_async_runner *async_runner;
 
   ws_err_cb_t on_ws_err;
   ws_err_accept_cb_t on_ws_accept_err;
@@ -771,8 +796,7 @@ static void server_do_mirrored_buf_pool_gc(ws_server_t *s) {
 
         for (size_t i = madvise_from; i < madvise_to; ++i) {
           // printf("MADV_DONTNEED %p\n", p->avb_stack[i]->buf);
-          assert(madvise(p->avb_stack[i]->buf, p->buf_sz * 2, MADV_DONTNEED) ==
-                 0);
+          madvise(p->avb_stack[i]->buf, p->buf_sz * 2, MADV_DONTNEED);
         }
 
         p->touched_bufs -= madvise_count;
@@ -810,7 +834,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
     size_t n = s->closeable_conns.len;
     for (size_t i = 0; i < n; ++i) {
       ws_conn_t *c = s->closeable_conns.conns[i];
-      assert(close(c->fd) == 0);
+      close(c->fd);
       // needed_bytes holds the reason
       s->on_ws_disconnect(c, c->needed_bytes);
       ws_conn_put(s->conn_pool, c);
@@ -822,7 +846,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
     if (s->closeable_conns.len > n) {
       memcpy(s->closeable_conns.conns,
              s->closeable_conns.conns + s->closeable_conns.len,
-            sizeof s->closeable_conns.conns * (s->closeable_conns.len - n));
+             sizeof s->closeable_conns.conns * (s->closeable_conns.len - n));
       s->closeable_conns.len = s->closeable_conns.len - n;
     } else {
       s->closeable_conns.len = 0;
@@ -902,45 +926,8 @@ static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
   return 0;
 }
 
-ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
-  if (ret == NULL) {
-    return NULL;
-  };
-
-  if (params->port <= 0) {
-    *ret = WS_CREAT_EBAD_PORT;
-    return NULL;
-  }
-
-  if (!params->on_ws_open || !params->on_ws_msg || !params->on_ws_disconnect) {
-    *ret = WS_CREAT_ENO_CB;
-    return NULL;
-  }
-
-  ws_server_t *s;
-
-  // allocate memory for server and events for epoll
-  s = (ws_server_t *)calloc(1, (sizeof *s));
-  if (s == NULL) {
-    *ret = WS_ESYS;
-    return NULL;
-  }
-
-  int res = ws_server_socket_bind(s, params->addr, params->port);
-  if (res != 0) {
-    *ret = res;
-    return NULL;
-  }
-
-  // init epoll
-  s->epoll_fd = epoll_create1(0);
-  if (s->epoll_fd < 0) {
-    *ret = WS_ESYS;
-    close(s->fd);
-    free(s);
-    return NULL;
-  }
-
+static void ws_server_register_callbacks(ws_server_t *s,
+                                         struct ws_server_params *params) {
   // mandatory callbacks
   s->on_ws_open = params->on_ws_open;
   s->on_ws_msg = params->on_ws_msg;
@@ -985,7 +972,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   if (params->on_ws_conn_timeout) {
     s->on_ws_conn_timeout = params->on_ws_conn_timeout;
   }
+}
 
+static void ws_server_register_buffers(ws_server_t *s,
+                                       struct ws_server_params *params) {
   size_t max_backpressure =
       params->max_buffered_bytes ? params->max_buffered_bytes : 16000;
   size_t page_size = getpagesize();
@@ -999,7 +989,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   printf("max_backpressure = %zu\n", max_backpressure);
 
   struct rlimit rlim = {0};
-  assert(getrlimit(RLIMIT_NOFILE, &rlim) == 0);
+  getrlimit(RLIMIT_NOFILE, &rlim);
 
   if (!params->max_conns) {
     // account for already open files
@@ -1057,11 +1047,56 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   // make sure we got the mem needed
   assert(s->writeable_conns.conns != NULL && s->closeable_conns.conns != NULL &&
          s->pending_timers.conns != NULL);
+}
+
+ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
+  if (ret == NULL) {
+    return NULL;
+  };
+
+  if (params->port <= 0) {
+    *ret = WS_CREAT_EBAD_PORT;
+    return NULL;
+  }
+
+  if (!params->on_ws_open || !params->on_ws_msg || !params->on_ws_disconnect) {
+    *ret = WS_CREAT_ENO_CB;
+    return NULL;
+  }
+
+  ws_server_t *s;
+
+  // allocate memory for server and events for epoll
+  s = (ws_server_t *)calloc(1, (sizeof *s));
+  if (s == NULL) {
+    *ret = WS_ESYS;
+    return NULL;
+  }
+
+  // init epoll
+  s->epoll_fd = epoll_create1(0);
+  if (s->epoll_fd < 0) {
+    *ret = WS_ESYS;
+    close(s->fd);
+    free(s);
+    return NULL;
+  }
+
+  int res = ws_server_socket_bind(s, params->addr, params->port);
+  if (res != 0) {
+    *ret = res;
+    return NULL;
+  }
+
+  ws_server_register_callbacks(s, params);
+  ws_server_register_buffers(s, params);
 
 #ifdef WITH_COMPRESSION
   s->istrm = inflation_stream_init();
   s->dstrm = deflation_stream_init();
 #endif /* WITH_COMPRESSION */
+
+  ws_server_async_runner_create(s, 2);
 
   // server resources all ready
   return s;
@@ -1272,27 +1307,8 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
                                         size_t const total,
                                         mirrored_buf_t *rem_dst, int fd);
 
-int ws_server_start(ws_server_t *s, int backlog) {
-  int ret = listen(s->fd, backlog);
-  if (ret < 0) {
-    return ret;
-  }
 
-  int fd = s->fd;
-  int epfd = s->epoll_fd;
-
-  struct sockaddr_storage client_sockaddr;
-  socklen_t client_socklen;
-  client_socklen = sizeof client_sockaddr;
-  s->ev.data.ptr = s;
-  s->ev.events = EPOLLIN;
-
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
-
-  int tfd;
-  assert((tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK)) !=
-         -1);
-
+static void ws_server_register_timer(ws_server_t *s, int* tfd) {
   struct itimerspec timer = {.it_interval =
                                  {
                                      .tv_nsec = 0,
@@ -1303,12 +1319,46 @@ int ws_server_start(ws_server_t *s, int backlog) {
                                  .tv_sec = SECONDS_PER_TICK,
                              }};
 
-  assert(timerfd_settime(tfd, 0, &timer, NULL) != -1);
+  timerfd_settime(*tfd, 0, &timer, NULL);
 
-  s->ev.data.ptr = &tfd;
+  (void)timer;
+
+  s->ev.data.ptr = tfd;
   s->ev.events = EPOLLIN;
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, tfd);
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, *tfd);
+}
+
+static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
+  int ret = listen(s->fd, backlog);
+  if (ret < 0) {
+    return ret;
+  }
+
+  s->ev.data.ptr = s;
+  s->ev.events = EPOLLIN;
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd);
+
+  return 0;
+}
+
+int ws_server_start(ws_server_t *s, int backlog) {
+  int ret = ws_server_listen_and_serve(s, backlog);
+  if (ret < 0) {
+    return ret;
+  }
+
   size_t timer_check_counter = TIMER_CHECK_TICKS;
+  struct ws_server_async_runner *arptr = s->async_runner;
+
+  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+  ws_server_register_timer(s, &tfd);
+
+  int fd = s->fd;
+  int epfd = s->epoll_fd;
+
+  struct sockaddr_storage client_sockaddr;
+  socklen_t client_socklen;
+  client_socklen = sizeof client_sockaddr;
 
   for (;;) {
     int n_evs = epoll_wait(epfd, s->events, 1024, -1);
@@ -1328,10 +1378,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
       if ((s->events[i].data.ptr == &tfd) |
-          (s->events[i].data.ptr == user_epoll_ptr)) {
+          (s->events[i].data.ptr == user_epoll_ptr) |
+          (s->events[i].data.ptr == arptr)) {
+
         if (s->events[i].data.ptr == &tfd) {
           uint64_t _;
-          assert(read(tfd, &_, 8) == 8);
+          read(tfd, &_, 8);
+
           (void)_;
 
           timer_check_counter--;
@@ -1342,9 +1395,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
           server_do_mirrored_buf_pool_gc(s);
 
+        } else if (s->events[i].data.ptr == arptr) {
+          ws_server_async_runner_run_pending_callbacks(s, arptr);
         } else {
           check_user_epoll = true;
         }
+
       } else if (s->events[i].data.ptr == s) {
         ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
@@ -3176,4 +3232,140 @@ const char *ws_conn_strerror(ws_conn_t *c) {
   } else {
     return NULL;
   }
+}
+
+static struct ws_server_async_runner_buf *
+ws_server_async_runner_buf_create(size_t init_cap) {
+  struct ws_server_async_runner_buf *arb;
+  arb = calloc(1, sizeof *arb);
+  assert(arb != NULL);
+
+  arb->cbs = calloc(init_cap, sizeof arb->cbs);
+  assert(arb->cbs != NULL);
+  arb->cap = init_cap;
+
+  return arb;
+}
+
+static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
+  if (!init_cap) {
+    init_cap = 1;
+  }
+  struct ws_server_async_runner *ar =
+      calloc(1, sizeof(struct ws_server_async_runner));
+  assert(ar != NULL);
+
+  ar->pending = ws_server_async_runner_buf_create(init_cap);
+  ar->ready = ws_server_async_runner_buf_create(init_cap);
+
+  ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  assert(ar->chanfd != -1);
+
+  int ret = pthread_mutex_init(&ar->mu, NULL);
+  if (ret == -1) {
+    perror("pthread_mutex_init");
+    exit(EXIT_FAILURE);
+  }
+
+  s->ev.events = EPOLLIN;
+  s->ev.data.ptr = ar;
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd);
+
+  s->async_runner = ar;
+}
+
+int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
+  if (cb_info != NULL) {
+    struct ws_server_async_runner *ar = s->async_runner;
+
+    pthread_mutex_lock(&ar->mu);
+
+    // mu start
+
+    struct ws_server_async_runner_buf *q = ar->pending;
+
+    size_t new_len = q->len + 1;
+
+    // make sure we have/get the space needed
+    if (new_len > q->cap) {
+      struct async_cb_ctx **new_cbs =
+          realloc(q->cbs, sizeof q->cbs * (q->cap + q->cap));
+      if (new_cbs != NULL) {
+        q->cbs = new_cbs;
+        q->cap = q->cap + q->cap;
+      } else {
+        // mu early end
+        pthread_mutex_unlock(&ar->mu);
+        return -1;
+      }
+    }
+
+    q->cbs[q->len++] = cb_info;
+
+    // mu end
+    pthread_mutex_unlock(&ar->mu);
+
+    // notify
+    register int fd = ar->chanfd;
+    for (;;) {
+      if (likely(eventfd_write(fd, 1) == 0)) {
+        break;
+      } else {
+        if (errno == EINTR) {
+          continue;
+        } else {
+          // if EAGAIN it will be processed eventually
+          assert(errno == EAGAIN || errno == EWOULDBLOCK);
+          break;
+        }
+      }
+    }
+
+    return 0;
+  }
+
+  return -1;
+}
+
+static void ws_server_async_runner_run_pending_callbacks(
+    ws_server_t *s, struct ws_server_async_runner *ar) {
+  uint64_t val;
+  read(ar->chanfd, &val, 8);
+
+  (void)val;
+
+  // grab the lock to swap the buffers
+  // and get the count of ready callbacks
+  pthread_mutex_lock(&ar->mu);
+  // mu start
+
+  struct ws_server_async_runner_buf *ready = ar->pending;
+  ar->pending = ar->ready;
+  ar->ready = ready;
+  size_t len = ready->len;
+
+  // mu end
+  pthread_mutex_unlock(&ar->mu);
+
+  // run all ready callbacks (no lock)
+  struct async_cb_ctx **cbs = ready->cbs;
+  for (size_t i = 0; i < len; ++i) {
+    // run all callbacks
+    cbs[i]->cb(s, cbs[i]);
+  }
+
+  ready->len = 0;
+}
+
+size_t ws_server_pending_async_callbacks(ws_server_t *s) {
+  struct ws_server_async_runner *ar = s->async_runner;
+  size_t count = 0;
+
+  pthread_mutex_lock(&ar->mu);
+  // mu start
+  count = ar->pending->len;
+  // mu end
+  pthread_mutex_unlock(&ar->mu);
+
+  return count;
 }

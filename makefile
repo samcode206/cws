@@ -18,6 +18,10 @@ ifdef WITH_COMPRESSION
 CFLAGS += -DWITH_COMPRESSION
 endif
 
+ifdef NO_DEBUG
+CFLAGS += -DNDEBUG
+endif
+
 all: $(SHARED_LIB) $(STATIC_LIB)
 
 
@@ -55,15 +59,18 @@ clean:
 
 
 
-echo:
+echo: install
 	gcc ./examples/echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
 
-online:
+online: install
 	gcc ./examples/online.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
-broadcast:
+broadcast: install
 	gcc ./examples/broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
-autobahn:
+autobahn: install
 	gcc ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
+
+async_task:
+	gcc ./src/*.c ./test/async_task.c -lz -lcrypto -O3 -march=native -mtune=native -Wall --pedantic -o server
