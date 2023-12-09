@@ -597,33 +597,89 @@ void *ws_server_ctx(ws_server_t *s);
 void ws_server_set_ctx(ws_server_t *s, void *ctx);
 
 
-ws_server_t *ws_server_create(struct ws_server_params *params,
-                              int *ret); // allocates server resources
+/**
+ * Allocates and creates a new WebSocket server with the specified parameters.
+ *
+ * This function initializes a WebSocket server instance with the given configuration parameters.
+ * It allocates the necessary resources for the server to operate.
+ *
+ * @param params Pointer to the structure containing server configuration parameters (`ws_server_params`).
+ * @param ret    Pointer to an integer to store the return status of the server creation.
+ * @return       Pointer to the newly created WebSocket server (`ws_server_t`), or NULL on failure.
+ */
+ws_server_t *ws_server_create(struct ws_server_params *params, int *ret);
 
-int ws_server_start(ws_server_t *s, int backlog); // start serving connections
+/**
+ * Starts the WebSocket server, Blocks the calling thread
+ * 
+ * @param s       Pointer to the WebSocket server (`ws_server_t`).
+ * @param backlog accept queue size
+ * @return        Non-zero on failure, indicating an error in starting the server.
+ */
+int ws_server_start(ws_server_t *s, int backlog);
 
-// count of all open websocket connections
+/**
+ * Retrieves the count of all open WebSocket connections on the server.
+ *
+ * @param s Pointer to the WebSocket server (`ws_server_t`).
+ * @return  The number of open WebSocket connections.
+ */
 size_t ws_server_open_conns(ws_server_t *s);
 
-// is this a binary message?
-// only valid during on_ws_msg_fragment or on_ws_msg called
+/**
+ * Determines if the current message is a binary message.
+ *
+ * This function is valid only when called during `on_ws_msg_fragment` or `on_ws_msg` callbacks.
+ * It indicates whether the message being processed is binary.
+ *
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`) handling the message.
+ * @return  True if the current message is binary, false otherwise.
+ */
 bool ws_conn_msg_bin(ws_conn_t *c);
 
-
+/**
+ * Checks if compression is allowed for the given WebSocket connection.
+ *
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ * @return  True if compression is allowed, false otherwise.
+ */
 bool ws_conn_compression_allowed(ws_conn_t *c);
 
 
+/**
+ * Checks if the WebSocket server is currently pausing the acceptance of new connections.
+ *
+ * @param s Pointer to the WebSocket server (`ws_server_t`).
+ * @return  True if the server is pausing new connections, false otherwise.
+ */
 bool ws_server_accept_paused(ws_server_t *s);
 
 
 
-bool ws_server_accept_paused(ws_server_t *s);
-
+/**
+ * Checks if reading from the given WebSocket connection is currently paused.
+ *
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ * @return  True if reading is paused, false otherwise.
+ */
 bool ws_conn_is_read_paused(ws_conn_t *c);
 
+
+/**
+ * Pauses reading data from the specified WebSocket connection.
+ *
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ */
 void ws_conn_pause_read(ws_conn_t *c);
 
+
+/**
+ * Resumes reading data from a WebSocket connection that had reading paused.
+ *
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ */
 void ws_conn_resume_reads(ws_conn_t *c);
+
 
 /**
 * Sets the read timeout for the connection if secs is zero read timeouts will be disabled
@@ -632,12 +688,15 @@ void ws_conn_resume_reads(ws_conn_t *c);
 */
 void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs);
 
+
+
 /**
 * Sets the write timeout for the connection if secs is zero write timeouts will be disabled
 * @param c Pointer to the WebSocket connection (`ws_conn_t`).
 * @param secs Number of seconds until timeout 
 */
 void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs);
+
 
 /**
 * @param c Pointer to the WebSocket connection (`ws_conn_t`).
@@ -647,40 +706,104 @@ int ws_conn_fd(ws_conn_t *c);
 
 typedef struct ws_poll_cb_ctx_t ws_poll_cb_ctx_t;
 
+
 typedef void (*poll_ev_cb_t)(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev);
 
-struct ws_poll_cb_ctx_t {
-  poll_ev_cb_t cb;
-    void *ctx;
-};
+/**
+ * Structure representing the context for polling callbacks.
+ */
+typedef struct ws_poll_cb_ctx_t {
+  poll_ev_cb_t cb;  /**< Callback function to be invoked when a polling event occurs. */
+  void *ctx;        /**< User-defined context passed to the callback function. */
+} ws_poll_cb_ctx_t;
 
+/**
+ * Creates an epoll instance for the given WebSocket server.
+ *
+ * @param s Pointer to the WebSocket server (`ws_server_t`).
+ * @return  Non-zero on failure.
+ */
 int ws_epoll_create1(ws_server_t *s);
 
-int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                         int events);
+/**
+ * Adds a file descriptor to the epoll instance for monitoring.
+ *
+ * @param s       Pointer to the WebSocket server (`ws_server_t`).
+ * @param fd      File descriptor to be monitored.
+ * @param cb_ctx  Pointer to the `ws_poll_cb_ctx_t` structure, containing the callback and context.
+ * @param events  Epoll events to monitor (e.g., EPOLLIN, EPOLLOUT).
+ * @return        Non-zero on failure.
+ */
+int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, int events);
 
+/**
+ * Removes a file descriptor from the epoll instance.
+ *
+ * @param s  Pointer to the WebSocket server (`ws_server_t`).
+ * @param fd File descriptor to be removed from monitoring.
+ * @return   Non-zero on failure.
+ */
 int ws_epoll_ctl_del(ws_server_t *s, int fd);
 
-int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                       int events);
+/**
+ * Modifies the event subscription for a monitored file descriptor in the epoll instance.
+ *
+ * @param s       Pointer to the WebSocket server (`ws_server_t`).
+ * @param fd      File descriptor with modified event subscription.
+ * @param cb_ctx  Pointer to the `ws_poll_cb_ctx_t` structure, containing the updated callback and context.
+ * @param events  New set of epoll events to monitor for the file descriptor.
+ * @return        Non-zero on failure.
+ */
+int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, int events);
 
 
 
 
 typedef struct async_cb_ctx async_cb_ctx_t;
 
+/**
+ *
+ * This callback is used in conjunction with `ws_server_sched_async` to execute custom
+ * functions asynchronously within the context of the server's thread. 
+ *
+ * @param s    Pointer to the WebSocket server (`ws_server_t`) where the callback is executed.
+ * @param ctx  Pointer to an `async_cb_ctx_t` structure as provided when scheduling (see `ws_server_sched_async` below)
+ */
 typedef void (*ws_server_async_cb_t)(ws_server_t *s, async_cb_ctx_t *ctx);
 
-struct async_cb_ctx {
-  void *ctx;
-  ws_server_async_cb_t cb;
-};
 
+/**
+ * Structure representing the context for an asynchronous callback.
+ */
+typedef struct async_cb_ctx {
+  void *ctx;                /**< User-defined context passed to the callback function. */
+  ws_server_async_cb_t cb;  /**< Callback function to be executed asynchronously. */
+} async_cb_ctx;
+
+
+
+/**
+ * Schedules an asynchronous callback to be executed in the server's thread.
+ * This function enables users to run a callback function as part of the server's event loop,
+ * which is useful for thread-safe operations and synchronizing with the server's state.
+ *
+ * The `cb_info` structure must remain valid until the callback is called. After the callback
+ * execution, it can either be discarded or reused to schedule another callback. 
+ *
+ * @param runner   Pointer to the WebSocket server (`ws_server_t`) where the callback is scheduled.
+ * @param cb_info  Pointer to the `async_cb_ctx` structure containing the callback and its context.
+ * @return         Non-zero on failure, indicating an error in scheduling the callback.
+ */
 int ws_server_sched_async(ws_server_t *runner, struct async_cb_ctx *cb_info);
 
-// how many callbacks currently queued
+/**
+ * Returns the number of asynchronous callbacks currently queued in the server's event loop.
+ * This can be used to monitor the backlog of scheduled tasks.
+ *
+ * @param runner Pointer to the WebSocket server (`ws_server_t`) to query.
+ * @return       The number of pending asynchronous callbacks.
+ */
 size_t ws_server_pending_async_callbacks(ws_server_t *runner);
-
 
 
 enum ws_conn_err {
@@ -765,7 +888,10 @@ enum ws_conn_err {
 
   };
 
-
+/**
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ * @return  A constant character pointer to the error message string.
+ */
 const char *ws_conn_strerror(ws_conn_t *c);
 
 // errors
