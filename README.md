@@ -17,7 +17,7 @@ CWS is a high-performance, Linux-only WebSocket server library written in C. It 
 - **Control**: Enables granular control over connection upgrades and supports efficient fragmented message streaming for large data sets.
 - **Scalability**: Designed for scalability and can be easily configured to run on multiple threads, with simple yet powerful synchronization primitives
 - **Easy Integration**: The library is elegantly designed as a single C source file and a single header file, ensuring ease of integration and straightforward use in various projects.
-- **Determinist Memory Usage**: With minimal reliance on dynamic memory allocations when serving clients, the library ensures predictable and efficient memory management. This approach contributes to stable performance and optimized resource utilization & reuse, particularly suitable for Performance Critical Services.
+- **Determinist Memory Usage**: With minimal reliance on dynamic memory allocations when serving clients, the library ensures predictable and efficient memory management. This contributes to stable performance and optimized resource utilization & reuse, particularly suitable for Performance Critical Services.
 
 ## Samples
 
