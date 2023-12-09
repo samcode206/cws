@@ -1131,6 +1131,35 @@ static int conn_shutdown_wr(ws_conn_t *c) {
   return 0;
 }
 
+static void ws_server_new_conn(ws_server_t *s, int client_fd,
+                               unsigned int now) {
+  ws_conn_t *conn = ws_conn_get(s->conn_pool);
+  assert(conn != NULL); // TODO(sah): remove this
+  s->ev.events = EPOLLIN | EPOLLRDHUP;
+  conn->fd = client_fd;
+  conn->flags = 0;
+  conn->write_timeout = 0;
+  conn->read_timeout = now + READ_TIMEOUT;
+  conn->needed_bytes = 12;
+  conn->fragments_len = 0;
+  conn->base = s;
+  set_writeable(conn);
+  conn->ctx = NULL;
+
+  assert(conn->send_buf == NULL);
+  assert(conn->recv_buf == NULL);
+
+#ifdef WITH_COMPRESSION
+  conn->pmd_buf = NULL;
+#endif /* WITH_COMPRESSION*/
+
+  s->ev.data.ptr = conn;
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
+  ++s->open_conns;
+
+  server_pending_timers_append(conn);
+}
+
 static void ws_server_conns_establish(ws_server_t *s, int fd,
                                       struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
@@ -1175,31 +1204,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           return;
         }
 
-        ws_conn_t *conn = ws_conn_get(s->conn_pool);
-        assert(conn != NULL); // TODO(sah): remove this
-        s->ev.events = EPOLLIN | EPOLLRDHUP;
-        conn->fd = client_fd;
-        conn->flags = 0;
-        conn->write_timeout = 0;
-        conn->read_timeout = now + READ_TIMEOUT;
-        conn->needed_bytes = 12;
-        conn->fragments_len = 0;
-        conn->base = s;
-        set_writeable(conn);
-        conn->ctx = NULL;
-
-        assert(conn->send_buf == NULL);
-        assert(conn->recv_buf == NULL);
-
-#ifdef WITH_COMPRESSION
-        conn->pmd_buf = NULL;
-#endif /* WITH_COMPRESSION*/
-
-        s->ev.data.ptr = conn;
-        ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
-        ++s->open_conns;
-
-        server_pending_timers_append(conn);
+        ws_server_new_conn(s, client_fd, now);
 
       } else {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
