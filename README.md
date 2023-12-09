@@ -33,7 +33,7 @@ Coming Soon.
 Coming Soon.
 
 
-## Project Status
+## Development Status
 
 CWS is currently in an advanced stage of development and nearing completion. It is functional and incorporates a range of features designed for high-performance WebSocket handling, with ongoing work to add final touches, Documentation, Examples and Benchmarks against various Websocket Libraries in the same space.
 
