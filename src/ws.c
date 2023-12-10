@@ -3391,6 +3391,7 @@ static void ws_server_async_runner_destroy(ws_server_t *s) {
   free(s->async_runner->ready->cbs);
   free(s->async_runner->pending);
   free(s->async_runner->ready);
+  pthread_mutex_destroy(&s->async_runner->mu);
   free(s->async_runner);
   s->async_runner = NULL;
 }
