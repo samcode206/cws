@@ -1406,7 +1406,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   size_t timer_check_counter = TIMER_CHECK_TICKS;
   struct ws_server_async_runner *arptr = s->async_runner;
 
-
   int epfd = s->epoll_fd;
   int tfd = s->tfd;
 
@@ -2782,8 +2781,8 @@ static void server_ws_conn_pool_destroy(ws_server_t *s) {
 
   size_t total_size = pool_and_avb_stk_sz + ws_conns_sz;
 
-  int ret = munmap(s->conn_pool, total_size);
-  printf("connection pool munmap = %d\n", ret);
+  munmap(s->conn_pool, total_size);
+
   s->conn_pool = NULL;
 }
 
@@ -3044,7 +3043,7 @@ static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
 
   close(s->buffer_pool->fd);
 
-  printf("buffer pool munmap = %d\n", munmap(s->buffer_pool, total_size));
+  munmap(s->buffer_pool, total_size);
 
   s->buffer_pool = NULL;
 }
@@ -3509,8 +3508,6 @@ int ws_server_shutdown(ws_server_t *s) {
     return -1;
   }
 
-  printf("%zu\n", s->internal_polls);
-
   // remove and close listner fd
   s->ev.data.ptr = NULL;
   s->ev.events = 0;
@@ -3518,6 +3515,9 @@ int ws_server_shutdown(ws_server_t *s) {
   epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &s->ev);
   s->internal_polls--;
   s->fd = -1;
+
+  // write all writeables
+  server_writeable_conns_drain(s);
 
   // go over all connections and shut them down
   for (size_t i = s->conn_pool->avb; i < s->conn_pool->cap; ++i) {
@@ -3528,6 +3528,9 @@ int ws_server_shutdown(ws_server_t *s) {
       ws_conn_destroy(c, WS_CLOSE_GOAWAY);
     }
   }
+
+  // close all closeables
+  server_closeable_conns_close(s);
 
   // close user epoll
   if (s->user_epoll > 0) {
@@ -3553,15 +3556,10 @@ int ws_server_shutdown(ws_server_t *s) {
     s->internal_polls--;
   }
 
-  printf("%zu\n", s->internal_polls);
   return 0;
 }
 
 static int ws_server_do_shutdown(ws_server_t *s) {
-  printf("ws_server_do_shutdown\n");
-
-  printf("bufs avb = %zu\n", s->buffer_pool->avb);
-  printf("conns avb = %zu\n", s->conn_pool->avb);
 
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
