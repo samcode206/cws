@@ -273,6 +273,7 @@ typedef void (*ws_on_timeout_t)(ws_conn_t *ws_conn, unsigned kind);
 struct ws_server_params {
   const char *addr;
   uint16_t port;
+  bool verbose;              // logs server config to stdout 
   uint64_t max_conns;        // Maximum connections the server is willing to accept.
                              // Defaults to the system's limit for maximum open file descriptors.
   size_t max_buffered_bytes; // Maximum amount of websocket payload data to buffer before the connection

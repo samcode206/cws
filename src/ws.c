@@ -858,8 +858,13 @@ static void server_closeable_conns_close(ws_server_t *s) {
   }
 }
 
-static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
+static int ws_server_socket_bind(ws_server_t *s,
+                                 struct ws_server_params *params) {
   struct sockaddr_in _;
+
+  const char *addr = params->addr;
+  uint16_t port = params->port;
+
   bool ipv6 = 0;
   if (inet_pton(AF_INET, addr, &_) != 1) {
     struct sockaddr_in6 _;
@@ -886,7 +891,9 @@ static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
     return -1;
   }
 
-  printf("binding to %s %s:%d\n", ipv6 ? "IPV6" : "IPV4", addr, port);
+  if (params->verbose) {
+    printf("binding to %s %s:%d\n", ipv6 ? "IPV6" : "IPV4", addr, port);
+  }
 
   if (ipv6) {
     int off = 0;
@@ -980,8 +987,10 @@ static void ws_server_register_buffers(ws_server_t *s,
   size_t buffer_size =
       (max_backpressure + 192 + page_size - 1) & ~(page_size - 1);
 
-  printf("buffer size = %zu\n", buffer_size);
-  printf("max_backpressure = %zu\n", max_backpressure);
+  if (params->verbose) {
+    printf("buffer size = %zu\n", buffer_size);
+    printf("max_backpressure = %zu\n", max_backpressure);
+  }
 
   struct rlimit rlim = {0};
   getrlimit(RLIMIT_NOFILE, &rlim);
@@ -994,20 +1003,30 @@ static void ws_server_register_buffers(ws_server_t *s,
   } else if (params->max_conns < rlim.rlim_cur) {
     s->max_conns = params->max_conns;
 
-    if (s->max_conns > rlim.rlim_cur - 8) {
-      fprintf(stderr,
-              "[WARN] params->max_conns-%zu may be too high. RLIMIT_NOFILE=%zu "
-              "only %zu open files would remain\n",
-              s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
+    if (params->verbose) {
+      if (s->max_conns > rlim.rlim_cur - 8) {
+        fprintf(
+            stderr,
+            "[WARN] params->max_conns-%zu may be too high. RLIMIT_NOFILE=%zu "
+            "only %zu open files would remain\n",
+            s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
+      }
     }
 
   } else if (params->max_conns >= rlim.rlim_cur) {
     s->max_conns = params->max_conns;
-    fprintf(stderr, "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
-            s->max_conns, rlim.rlim_cur);
+
+    if (params->verbose) {
+      fprintf(stderr,
+              "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
+              s->max_conns, rlim.rlim_cur);
+    }
   }
 
-  printf("max_conns = %zu\n", s->max_conns);
+  if (params->verbose) {
+    printf("max_conns = %zu\n", s->max_conns);
+  }
+
   s->buffer_pool =
       mirrored_buf_pool_create(s->max_conns + s->max_conns, buffer_size);
 
@@ -1075,7 +1094,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
     return NULL;
   }
 
-  int res = ws_server_socket_bind(s, params->addr, params->port);
+  int res = ws_server_socket_bind(s, params);
   if (res != 0) {
     if (s->fd != -1)
       close(s->fd);
@@ -3384,7 +3403,7 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   struct ws_server_async_runner *ar =
       calloc(1, sizeof(struct ws_server_async_runner));
 
-  if (ar == NULL){
+  if (ar == NULL) {
     perror("calloc");
     exit(EXIT_FAILURE);
   }
@@ -3393,11 +3412,10 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   ar->ready = ws_server_async_runner_buf_create(init_cap);
 
   ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-  if (ar->chanfd == -1){
+  if (ar->chanfd == -1) {
     perror("eventfd");
     exit(EXIT_FAILURE);
   }
-
 
   int ret = pthread_mutex_init(&ar->mu, NULL);
   if (ret == -1) {
