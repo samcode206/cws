@@ -593,9 +593,9 @@ static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
     cl->conns[cl->len++] = conn;
   } else {
     // this would be a serious bug, we should always have enough space unless we
-    // are adding duplicates and theres a nasty bug so we can keep this check
-    // maybe ??
-    fprintf(stderr, "%s(): would overflow\n", "conn_list_append");
+    // are adding duplicates and theres a nasty bug
+    fprintf(stderr, "[PANIC] connection list reached capacity, this should "
+                    "never happen, app state is corrupted, shutting down\n");
     exit(EXIT_FAILURE);
   }
 }
@@ -1141,7 +1141,18 @@ static int conn_shutdown_wr(ws_conn_t *c) {
 static void ws_server_new_conn(ws_server_t *s, int client_fd,
                                unsigned int now) {
   ws_conn_t *conn = ws_conn_get(s->conn_pool);
-  assert(conn != NULL); // TODO(sah): remove this
+  if (unlikely(conn == NULL)) {
+    // this would NEVER happen
+    // because when the server is created we set up the limits
+    // to ensure that we can accommodate all incoming connections upto specified
+    // max this indicates a bug somewhere and it's best to exit because this is
+    // not within expected program behavior
+    fprintf(stderr, "[PANIC] connection pool empty, this should never happen, "
+                    "app state is corrupted, shutting down\n");
+    exit(EXIT_FAILURE);
+    return;
+  }
+
   s->ev.events = EPOLLIN | EPOLLRDHUP;
   conn->fd = client_fd;
   conn->flags = 0;
@@ -3049,7 +3060,7 @@ static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
 }
 
 static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
-  if (bp->avb) {
+  if (likely(bp->avb)) {
     mirrored_buf_t *b = bp->avb_stack[--bp->avb];
     register size_t current_depth = bp->cap - bp->avb;
 
@@ -3058,6 +3069,14 @@ static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
 
     return b;
   }
+
+  // we should NEVER EVER end up here
+  // if this does happen we are guarantee to have a bug somewhere
+  // we need to exit immediately because this is not within the expected program
+  // behavior
+  fprintf(stderr, "[PANIC] buffer pool is empty, this should never happen, app "
+                  "state is corrupted, shutting down\n");
+  exit(EXIT_FAILURE);
 
   return NULL;
 }
@@ -3559,8 +3578,7 @@ int ws_server_shutdown(ws_server_t *s) {
   return 0;
 }
 
-
-inline bool ws_server_shutting_down(ws_server_t *s){
+inline bool ws_server_shutting_down(ws_server_t *s) {
   return s->internal_polls <= 0;
 }
 
