@@ -1167,8 +1167,7 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd,
   server_pending_timers_append(conn);
 }
 
-static void ws_server_conns_establish(ws_server_t *s, int fd,
-                                      struct sockaddr *sockaddr,
+static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
   unsigned int now = (unsigned int)time(NULL);
   // how many conns should we try to accept in total
@@ -1179,8 +1178,12 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
 
   if (accepts) {
     while (accepts--) {
+      if (s->fd == -1) {
+        return;
+      }
+
       int client_fd =
-          accept4(fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+          accept4(s->fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
       if (client_fd != -1) {
         if (s->on_ws_accept &&
             s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr,
@@ -1220,7 +1223,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           // too many open files in either the proccess or entire system
           // remove the server from epoll, it must be re added when atleast one
           // fd closes
-          ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
+          ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd);
           s->accept_paused = 1;
           s->internal_polls--;
           if (s->on_ws_accept_err) {
@@ -1259,7 +1262,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
       // fd closes
       s->ev.data.ptr = NULL;
       s->ev.events = 0;
-      ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
+      ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd);
       s->accept_paused = 1;
       s->internal_polls--;
       if (s->on_ws_accept_err) {
@@ -1403,7 +1406,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   size_t timer_check_counter = TIMER_CHECK_TICKS;
   struct ws_server_async_runner *arptr = s->async_runner;
 
-  int fd = s->fd;
+
   int epfd = s->epoll_fd;
   int tfd = s->tfd;
 
@@ -1448,7 +1451,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
         }
 
       } else if (s->events[i].data.ptr == s) {
-        ws_server_conns_establish(s, fd, (struct sockaddr *)&client_sockaddr,
+        ws_server_conns_establish(s, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
       } else {
         ws_conn_t *c = s->events[i].data.ptr;
@@ -1527,7 +1530,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
     if (accept_resumable) {
       s->ev.events = EPOLLIN;
       s->ev.data.ptr = s;
-      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
+      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd);
       s->internal_polls++;
       s->accept_paused = 0;
     }
@@ -3519,7 +3522,11 @@ int ws_server_shutdown(ws_server_t *s) {
   // go over all connections and shut them down
   for (size_t i = s->conn_pool->avb; i < s->conn_pool->cap; ++i) {
     ws_conn_t *c = s->conn_pool->avb_stack[i];
-    ws_conn_close(c, NULL, 0, WS_CLOSE_GOAWAY);
+    if (is_upgraded(c)) {
+      ws_conn_close(c, NULL, 0, WS_CLOSE_GOAWAY);
+    } else {
+      ws_conn_destroy(c, WS_CLOSE_GOAWAY);
+    }
   }
 
   // close user epoll
@@ -3562,7 +3569,6 @@ static int ws_server_do_shutdown(ws_server_t *s) {
 
   close(s->epoll_fd);
   s->epoll_fd = -1;
-
 
   free(s->closeable_conns.conns);
   free(s->writeable_conns.conns);
