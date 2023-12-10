@@ -5,7 +5,7 @@
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 
-#define MAX_CONNS 50
+#define MAX_CONNS 1024
 
 size_t total = 0;
 
