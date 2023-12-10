@@ -201,17 +201,9 @@ void *start_server() {
       // .on_ws_msg_fragment = on_msg_fragment,
   };
 
-  int ret = 0;
-  ws_server_t *s = ws_server_create(&sp, &ret);
+  ws_server_t *s = ws_server_create(&sp);
 
-  if (ret < 0) {
-    fprintf(stderr, "ws_server_create: %d\n", ret);
-    exit(1);
-  }
-
-  printf("websocket server starting on port : %d\n", sp.port);
-
-  ret = ws_server_start(s, backlog);
+  ws_server_start(s, backlog);
 
   return NULL;
 }

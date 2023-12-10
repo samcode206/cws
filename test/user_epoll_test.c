@@ -91,8 +91,7 @@ int main(void) {
       .max_conns = MAX_CONNS,
   };
 
-  int stat;
-  ws_server_t *s = ws_server_create(&p, &stat);
+  ws_server_t *s = ws_server_create(&p);
 
   ws_epoll_create1(s); // register user's epoll
 

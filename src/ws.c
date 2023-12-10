@@ -864,7 +864,7 @@ static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
   if (inet_pton(AF_INET, addr, &_) != 1) {
     struct sockaddr_in6 _;
     if (inet_pton(AF_INET6, addr, &_) != 1) {
-      return WS_EINVAL_ARGS;
+      return -1;
     } else {
       ipv6 = 1;
     }
@@ -875,8 +875,7 @@ static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
   s->fd = socket(ipv6 ? AF_INET6 : AF_INET,
                  SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
   if (s->fd < 0) {
-    free(s);
-    return WS_ESYS;
+    return -1;
   }
 
   // socket config
@@ -884,8 +883,7 @@ static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
   ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
                    sizeof(int));
   if (ret < 0) {
-    free(s);
-    return WS_ESYS;
+    return -1;
   }
 
   printf("binding to %s %s:%d\n", ipv6 ? "IPV6" : "IPV4", addr, port);
@@ -894,8 +892,7 @@ static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
     int off = 0;
     ret = setsockopt(s->fd, SOL_IPV6, IPV6_V6ONLY, &off, sizeof(int));
     if (ret < 0) {
-      free(s);
-      return WS_ESYS;
+      return -1;
     }
 
     struct sockaddr_in6 srv_addr;
@@ -906,10 +903,7 @@ static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
 
     ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
     if (ret < 0) {
-      ret = WS_ESYS;
-      close(s->fd);
-      free(s);
-      return WS_ESYS;
+      return -1;
     }
   } else {
     struct sockaddr_in srv_addr;
@@ -920,10 +914,7 @@ static int ws_server_socket_bind(ws_server_t *s, const char *addr, short port) {
 
     ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
     if (ret < 0) {
-      ret = WS_ESYS;
-      close(s->fd);
-      free(s);
-      return WS_ESYS;
+      return -1;
     }
   }
 
@@ -1053,18 +1044,15 @@ static void ws_server_register_buffers(ws_server_t *s,
          s->pending_timers.conns != NULL);
 }
 
-ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
-  if (ret == NULL) {
-    return NULL;
-  };
+ws_server_t *ws_server_create(struct ws_server_params *params) {
 
   if (params->port <= 0) {
-    *ret = WS_CREAT_EBAD_PORT;
+    errno = EINVAL;
     return NULL;
   }
 
   if (!params->on_ws_open || !params->on_ws_msg || !params->on_ws_disconnect) {
-    *ret = WS_CREAT_ENO_CB;
+    errno = EINVAL;
     return NULL;
   }
 
@@ -1073,7 +1061,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   // allocate memory for server and events for epoll
   s = (ws_server_t *)calloc(1, (sizeof *s));
   if (s == NULL) {
-    *ret = WS_ESYS;
     return NULL;
   }
 
@@ -1084,19 +1071,33 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
   // init epoll
   s->epoll_fd = epoll_create1(0);
   if (s->epoll_fd < 0) {
-    *ret = WS_ESYS;
-    close(s->fd);
     free(s);
     return NULL;
   }
 
   int res = ws_server_socket_bind(s, params->addr, params->port);
   if (res != 0) {
-    *ret = res;
+    if (s->fd != -1)
+      close(s->fd);
+
+    close(s->epoll_fd);
+    free(s);
     return NULL;
   }
 
   ws_server_register_callbacks(s, params);
+
+  // register timer fd
+  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+  s->tfd = tfd;
+  if (s->tfd == -1) {
+    close(s->fd);
+    close(s->epoll_fd);
+    free(s);
+    return NULL;
+  }
+
+  // this crashes on failure (fix?)
   ws_server_register_buffers(s, params);
 
 #ifdef WITH_COMPRESSION
@@ -1105,10 +1106,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 #endif /* WITH_COMPRESSION */
 
   ws_server_async_runner_create(s, 2);
-
-  // register timer fd
-  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-  s->tfd = tfd;
 
   // server resources all ready
   return s;
@@ -1600,7 +1597,7 @@ static inline int get_header(const char *headers, const char *key, char *val,
         strchr(header_start,
                ':'); // skip colon symbol, if not found header is malformed
     if (header_start == NULL) {
-      return ERR_HDR_MALFORMED;
+      return -1;
     }
 
     ++header_start; // skipping colon symbol happens here after validating it's
@@ -1615,7 +1612,7 @@ static inline int get_header(const char *headers, const char *key, char *val,
     if (header_end) {
       // if string is larger than n, return to caller with ERR_HDR_TOO_LARGE
       if ((header_end - header_start) + 1 > n) {
-        return ERR_HDR_TOO_LARGE;
+        return -1;
       }
       memcpy(val, header_start, (header_end - header_start));
       val[header_end - header_start + 1] =
@@ -1623,11 +1620,11 @@ static inline int get_header(const char *headers, const char *key, char *val,
       return header_end - header_start +
              1; // we only add one here because of adding '\0'
     } else {
-      return ERR_HDR_MALFORMED; // if no CRLF is found the headers is malformed
+      return -1; // if no CRLF is found the headers is malformed
     }
   }
 
-  return ERR_HDR_NOT_FOUND; // header isn't found
+  return -1; // header isn't found
 }
 
 static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -3386,13 +3383,21 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   }
   struct ws_server_async_runner *ar =
       calloc(1, sizeof(struct ws_server_async_runner));
-  assert(ar != NULL);
+
+  if (ar == NULL){
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
 
   ar->pending = ws_server_async_runner_buf_create(init_cap);
   ar->ready = ws_server_async_runner_buf_create(init_cap);
 
   ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-  assert(ar->chanfd != -1);
+  if (ar->chanfd == -1){
+    perror("eventfd");
+    exit(EXIT_FAILURE);
+  }
+
 
   int ret = pthread_mutex_init(&ar->mu, NULL);
   if (ret == -1) {

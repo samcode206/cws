@@ -135,8 +135,8 @@ void *server_init(void *_) {
       .on_ws_pong = onPong,
   };
 
-  int stat;
-  ws_server_t *s = ws_server_create(&p, &stat);
+
+  ws_server_t *s = ws_server_create(&p);
   ws_server_start(s, 8);
 
   return NULL;

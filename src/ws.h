@@ -260,11 +260,8 @@ typedef size_t (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, char *request, const char
  * specific actions to be taken based on the timeout condition.
  *
  * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`) experiencing the timeout.
- * @param kind    Specifies the type of timeout. The possible values are:
- *                1 - Read timeout: Indicates a timeout occurred while waiting for incoming data.
- *                2 - Write timeout: Indicates a timeout occurred while attempting to send data.
- *                3 - Read/Write timeout: Indicates a timeout occurred in both reading and writing operations.
- *
+ * @param kind    Specifies the type of timeout. (see `enum ws_conn_err` below)
+
  * The callback provides an opportunity to handle these timeout conditions, such as
  * closing the connection or resetting the timeout. if this callback is not registered
  * the default action is to drop the connection.
@@ -350,115 +347,101 @@ enum ws_send_status {
 };
 
 
-
 /**
- * Sends a text message synchronously over the WebSocket connection, with fallback to queuing if the socket 
- * is not currently in a writeable state. Caller should check the return status to monitor the state (see Above)
- * This method sends the text message immediately, allowing for optimal buffer reuse,
- * especially when sending a single frame to multiple clients. 
+ * Attempts to send a text message immediately over the WebSocket connection. If the socket 
+ * is not in a writable state, the message is queued for later transmission. The caller should 
+ * check the return status to monitor the state.
  * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg      Pointer to the text message data.
  * @param n        Size of the text message in bytes.
  * @param compress Boolean indicating whether to compress the message.
- * @return         enum ws_send_status
+ * @return         enum ws_send_status indicating the result of the send attempt.
  */
 enum ws_send_status ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
 
-
-
 /**
  * Queues a text message for asynchronous sending over the WebSocket connection.
- * This method adds the text message to the send queue, beneficial for batching multiple small messages.
- * Use in conjunction with 'ws_conn_flush_pending' or allow the event loop to pick the queued messages and send later
+ * Beneficial for batching multiple small messages. Can be sent later either via 'ws_conn_flush_pending'
+ * or automatically by the event loop.
  * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg      Pointer to the text message data.
  * @param n        Size of the text message in bytes.
  * @param compress Boolean indicating whether to compress the message.
- * @return         enum ws_send_status
+ * @return         enum ws_send_status indicating the queuing result.
  */
 enum ws_send_status ws_conn_put_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
 
 
-
-
 /**
- * Sends a binary message synchronously over the WebSocket connection.
- * This function behaves similarly to 'ws_conn_send_txt', but for binary data.
+ * Attempts to send a binary message immediately over the WebSocket connection. If the socket 
+ * is not in a writable state, the message is queued for later transmission. The caller should 
+ * check the return status to monitor the state.
  * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg      Pointer to the binary message data.
  * @param n        Size of the binary message in bytes.
  * @param compress Boolean indicating whether to compress the message.
- * @return         enum ws_send_status
+ * @return         enum ws_send_status indicating the result of the send attempt.
  */
 enum ws_send_status ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress);
 
 
-
 /**
  * Queues a binary message for asynchronous sending over the WebSocket connection.
- * This function behaves similarly to 'ws_conn_put_txt', but for binary data.
+ * Useful for batching multiple small messages. Can be sent later either via 'ws_conn_flush_pending'
+ * or automatically by the event loop.
  * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg      Pointer to the binary message data.
  * @param n        Size of the binary message in bytes.
  * @param compress Boolean indicating whether to compress the message.
- * @return         enum ws_send_status
+ * @return         enum ws_send_status indicating the queuing result.
  */
 enum ws_send_status ws_conn_put_bin(ws_conn_t *c, void *msg, size_t n, bool compress);
 
 
-
-
-
 /**
- * Sends a pong message synchronously over the WebSocket connection.
- * This method attempts to send the pong message immediately, ensuring immediate response to a ping.
+ * Attempts to send a pong message immediately over the WebSocket connection, responding to a ping.
+ * If the socket is not writable, the message is queued. The caller should check the return status.
  * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg Pointer to the pong message data.
  * @param n   Size of the pong message in bytes.
- * @return    enum ws_send_status
+ * @return    enum ws_send_status indicating the result of the send attempt.
  */
 enum ws_send_status ws_conn_pong(ws_conn_t *c, void *msg, size_t n);
 
-
-
 /**
  * Queues a pong message for asynchronous sending over the WebSocket connection.
+ * Allows for batching and delayed sending controlled by the event loop.
  * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg Pointer to the pong message data.
  * @param n   Size of the pong message in bytes.
- * @return    enum ws_send_status
+ * @return    enum ws_send_status indicating the queuing result.
  */
 enum ws_send_status ws_conn_put_pong(ws_conn_t *c, void *msg, size_t n);
 
-
-
 /**
- * Sends a ping message synchronously over the WebSocket connection.
+ * Attempts to send a ping message immediately over the WebSocket connection.
+ * If the socket is not writable, the message is queued. The caller should check the return status.
  * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg Pointer to the ping message data.
  * @param n   Size of the ping message in bytes.
- * @return    enum ws_send_status
+ * @return    enum ws_send_status indicating the result of the send attempt.
  */
 enum ws_send_status ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
-
-
 
 /**
  * Queues a ping message for asynchronous sending over the WebSocket connection.
  * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg Pointer to the ping message data.
  * @param n   Size of the ping message in bytes.
- * @return    enum ws_send_status
+ * @return    enum ws_send_status indicating the queuing result.
  */
 enum ws_send_status ws_conn_put_ping(ws_conn_t *c, void *msg, size_t n);
 
-
-
 /**
- * Closes the WebSocket connection synchronously. (Fire and forget)
- * Sends a close frame with the provided message and status code but only
- * if the socket is in a writeable state otherwise the connection is dropped similar to `ws_conn_destroy` (See Below)
- * user may wait before freeing up resources until `on_ws_disconnect` is called (See Above)
+ * Closes the WebSocket connection with a "fire and forget" approach. 
+ * Sends a close frame with the provided message and status code if the socket is writable; 
+ * otherwise, the connection is dropped similar to `ws_conn_destroy`. The user should wait to free 
+ * resources until `on_ws_disconnect` is called.
  * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
  * @param msg  Pointer to the close message data.
  * @param n    Size of the close message in bytes.
@@ -604,10 +587,9 @@ void ws_server_set_ctx(ws_server_t *s, void *ctx);
  * It allocates the necessary resources for the server to operate.
  *
  * @param params Pointer to the structure containing server configuration parameters (`ws_server_params`).
- * @param ret    Pointer to an integer to store the return status of the server creation.
  * @return       Pointer to the newly created WebSocket server (`ws_server_t`), or NULL on failure.
  */
-ws_server_t *ws_server_create(struct ws_server_params *params, int *ret);
+ws_server_t *ws_server_create(struct ws_server_params *params);
 
 /**
  * Starts the WebSocket server, Blocks the calling thread
@@ -900,17 +882,6 @@ enum ws_conn_err {
  * @return  A constant character pointer to the error message string.
  */
 const char *ws_conn_strerror(ws_conn_t *c);
-
-// errors
-#define ERR_HDR_NOT_FOUND -2
-#define ERR_HDR_MALFORMED -3
-#define ERR_HDR_TOO_LARGE -4
-
-#define WS_ESYS -5        // system error call should check errno
-#define WS_EINVAL_ARGS -6 // invalid argument/arguments provided
-
-#define WS_CREAT_EBAD_PORT -7
-#define WS_CREAT_ENO_CB -8
 
 
 

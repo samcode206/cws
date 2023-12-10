@@ -31,8 +31,8 @@ void *server_init(void *_) {
       .max_conns = 2,
   };
 
-  int stat;
-  srv = ws_server_create(&p, &stat);
+
+  srv = ws_server_create(&p);
 
   ws_server_start(srv, 1024);
 
