@@ -47,26 +47,25 @@ static void appDisconnect(App *state, ws_conn_t *conn) {
   }
 }
 
-static App *state;
-
 void onOpen(ws_conn_t *conn) {
   // printf("on Open\n");
-  appNewConnection(state, conn);
+
+  appNewConnection(ws_server_ctx(ws_conn_server(conn)), conn);
 }
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
-  appBroadcast(state, msg, n);
+  appBroadcast(ws_server_ctx(ws_conn_server(conn)), msg, n);
 }
 
 void onDisconnect(ws_conn_t *conn, int err) {
   // printf("on Disconnect\n");
-  appDisconnect(state, conn);
+  appDisconnect(ws_server_ctx(ws_conn_server(conn)), conn);
 }
 
 int main(void) {
   printf("broadcast example starting on 9919\n");
 
-  state = calloc(1, sizeof *state);
+  App *state = calloc(1, sizeof *state);
   assert(state != NULL);
 
   struct ws_server_params p = {
@@ -77,9 +76,9 @@ int main(void) {
       .on_ws_disconnect = onDisconnect,
       .max_buffered_bytes = 1024 * 1024 * 32,
       .max_conns = MAX_CONNS,
+      .ctx = state,
   };
 
-  
   ws_server_t *s = ws_server_create(&p);
   ws_server_start(s, 1024);
   return 0;

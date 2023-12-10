@@ -49,11 +49,11 @@ static void appStateDisconnect(AppState *state, ws_conn_t *conn) {
   appStateAnnounceChange(state);
 }
 
-static AppState *state;
+
 
 void onOpen(ws_conn_t *conn) {
   printf("on Open\n");
-  appStateNewConnection(state, conn);
+  appStateNewConnection(ws_server_ctx(ws_conn_server(conn)), conn);
 }
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
@@ -62,13 +62,13 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
 
 void onDisconnect(ws_conn_t *conn, int err) {
   printf("on Disconnect\n");
-  appStateDisconnect(state, conn);
+  appStateDisconnect(ws_server_ctx(ws_conn_server(conn)), conn);
 }
 
 int main(void) {
   printf("online example starting on 9919\n");
   
-  state = calloc(1, sizeof *state);
+  AppState *state = calloc(1, sizeof *state);
   assert(state != NULL);
 
   struct ws_server_params p = {
@@ -79,6 +79,7 @@ int main(void) {
       .on_ws_disconnect = onDisconnect,
       .max_buffered_bytes = 1024,
       .max_conns = MAX_CONNS,
+      .ctx = state,
   };
 
   
