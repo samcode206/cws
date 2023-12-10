@@ -214,7 +214,9 @@ typedef struct server {
 #endif    /* WITH_COMPRESSION */
   int fd; // server file descriptor
   int epoll_fd;
-  bool accept_paused; // are we paused on accepting new connections
+  bool accept_paused;    // are we paused on accepting new connections
+  int tfd;               // timer fd
+  size_t internal_polls; // number of internal fds being watched by epoll
   struct epoll_event ev;
   struct epoll_event events[1024];
   struct conn_list pending_timers;
@@ -1104,6 +1106,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params, int *ret) {
 
   ws_server_async_runner_create(s, 2);
 
+  // register timer fd
+  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+  s->tfd = tfd;
+
   // server resources all ready
   return s;
 }
@@ -1216,6 +1222,7 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
           // fd closes
           ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
           s->accept_paused = 1;
+          s->internal_polls--;
           if (s->on_ws_accept_err) {
             int err = errno;
             s->on_ws_accept_err(s, err);
@@ -1250,8 +1257,11 @@ static void ws_server_conns_establish(ws_server_t *s, int fd,
     if (s->max_conns == s->open_conns) {
       // remove the server from epoll, it must be re added when atleast one
       // fd closes
+      s->ev.data.ptr = NULL;
+      s->ev.events = 0;
       ws_server_epoll_ctl(s, EPOLL_CTL_DEL, fd);
       s->accept_paused = 1;
+      s->internal_polls--;
       if (s->on_ws_accept_err) {
         s->on_ws_accept_err(s, 0);
       }
@@ -1336,6 +1346,7 @@ static void ws_server_register_timer(ws_server_t *s, int *tfd) {
   s->ev.data.ptr = tfd;
   s->ev.events = EPOLLIN;
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, *tfd);
+  s->internal_polls++;
 }
 
 static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
@@ -1347,8 +1358,40 @@ static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
   s->ev.data.ptr = s;
   s->ev.events = EPOLLIN;
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd);
+  s->internal_polls++;
 
   return 0;
+}
+
+static int ws_server_do_shutdown(ws_server_t *s);
+
+static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
+
+  if (likely(s->internal_polls > 0)) {
+    int n_evs;
+    for (;;) {
+      n_evs = epoll_wait(epfd, s->events, 1024, -1);
+      if (likely(n_evs >= 0)) {
+        break;
+      } else {
+        if (errno == EINTR) {
+          continue;
+        } else {
+          if (s->on_ws_err) {
+            int err = errno;
+            s->on_ws_err(s, err);
+          } else {
+            perror("epoll_wait");
+            exit(EXIT_FAILURE);
+          }
+          return -1;
+        }
+      }
+    }
+    return n_evs;
+  } else {
+    return ws_server_do_shutdown(s);
+  }
 }
 
 int ws_server_start(ws_server_t *s, int backlog) {
@@ -1360,27 +1403,20 @@ int ws_server_start(ws_server_t *s, int backlog) {
   size_t timer_check_counter = TIMER_CHECK_TICKS;
   struct ws_server_async_runner *arptr = s->async_runner;
 
-  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-  ws_server_register_timer(s, &tfd);
-
   int fd = s->fd;
   int epfd = s->epoll_fd;
+  int tfd = s->tfd;
+
+  ws_server_register_timer(s, &tfd);
 
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
 
   for (;;) {
-    int n_evs = epoll_wait(epfd, s->events, 1024, -1);
-    if (n_evs < 0) {
-      if (s->on_ws_err) {
-        int err = errno;
-        s->on_ws_err(s, err);
-      } else {
-        perror("epoll_wait");
-        exit(EXIT_FAILURE);
-      }
-      return -1;
+    int n_evs = ws_server_do_epoll_wait(s, epfd);
+    if (unlikely((n_evs == 0) | (n_evs == -1))) {
+      return n_evs;
     }
 
     bool check_user_epoll = false;
@@ -1492,6 +1528,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
       s->ev.events = EPOLLIN;
       s->ev.data.ptr = s;
       ws_server_epoll_ctl(s, EPOLL_CTL_ADD, fd);
+      s->internal_polls++;
       s->accept_paused = 0;
     }
 
@@ -2728,6 +2765,25 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   return pool;
 }
 
+static void server_ws_conn_pool_destroy(ws_server_t *s) {
+  size_t nmemb = s->conn_pool->cap;
+  long page_size = sysconf(_SC_PAGESIZE);
+
+  size_t pool_sz = (sizeof(struct ws_conn_pool) + 63) & ~63;
+  size_t pool_and_avb_stk_sz =
+      ((pool_sz + (nmemb * sizeof(ws_conn_t *))) + (page_size - 1)) &
+      ~(page_size - 1);
+
+  size_t ws_conns_sz =
+      ((sizeof(ws_conn_t) * nmemb) + (page_size - 1)) & ~(page_size - 1);
+
+  size_t total_size = pool_and_avb_stk_sz + ws_conns_sz;
+
+  int ret = munmap(s->conn_pool, total_size);
+  printf("connection pool munmap = %d\n", ret);
+  s->conn_pool = NULL;
+}
+
 static struct ws_conn_t *ws_conn_get(struct ws_conn_pool *p) {
   if (p->avb) {
     return p->avb_stack[--p->avb];
@@ -2957,6 +3013,39 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   return pool;
 }
 
+static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size == -1) {
+    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+    exit(1);
+  }
+
+  size_t nmemb = s->buffer_pool->cap;
+  size_t buf_sz = s->buffer_pool->buf_sz;
+
+  size_t mirrored_bufs_total_size = nmemb * sizeof(mirrored_buf_t);
+  size_t avb_stack_total_size = nmemb * sizeof(mirrored_buf_t *);
+
+  size_t pool_sz = ((sizeof(struct mirrored_buf_pool) +
+                     mirrored_bufs_total_size + avb_stack_total_size + 128) +
+                    page_size - 1) &
+                   ~(page_size - 1);
+  size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
+  size_t total_size = pool_sz + buf_pool_sz;
+
+  for (size_t i = 0; i < s->buffer_pool->cap; i++) {
+    munmap(s->buffer_pool->mirrored_bufs[i].buf, buf_sz);
+    munmap(s->buffer_pool->mirrored_bufs[i].buf + buf_sz, buf_sz);
+    s->buffer_pool->mirrored_bufs[i].buf = NULL;
+  }
+
+  close(s->buffer_pool->fd);
+
+  printf("buffer pool munmap = %d\n", munmap(s->buffer_pool, total_size));
+
+  s->buffer_pool = NULL;
+}
+
 static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
   if (bp->avb) {
     mirrored_buf_t *b = bp->avb_stack[--bp->avb];
@@ -3131,6 +3220,7 @@ int ws_epoll_create1(ws_server_t *s) {
       s->ev.events = EPOLLIN;
       s->ev.data.ptr = &s->user_epoll;
       ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->user_epoll);
+      s->internal_polls++;
       return 0;
     }
   }
@@ -3292,8 +3382,17 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   s->ev.events = EPOLLIN;
   s->ev.data.ptr = ar;
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd);
-
+  s->internal_polls++;
   s->async_runner = ar;
+}
+
+static void ws_server_async_runner_destroy(ws_server_t *s) {
+  free(s->async_runner->pending->cbs);
+  free(s->async_runner->ready->cbs);
+  free(s->async_runner->pending);
+  free(s->async_runner->ready);
+  free(s->async_runner);
+  s->async_runner = NULL;
 }
 
 int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
@@ -3301,8 +3400,14 @@ int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
     struct ws_server_async_runner *ar = s->async_runner;
 
     pthread_mutex_lock(&ar->mu);
-
     // mu start
+
+    // if we are shutting down chanfd will be -1
+    if (unlikely(ar->chanfd == -1)) {
+      // mu early end
+      pthread_mutex_unlock(&ar->mu);
+      return -1;
+    }
 
     struct ws_server_async_runner_buf *q = ar->pending;
 
@@ -3337,8 +3442,11 @@ int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
           continue;
         } else {
           // if EAGAIN it will be processed eventually
-          assert(errno == EAGAIN || errno == EWOULDBLOCK);
-          break;
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+          } else {
+            return -1;
+          };
         }
       }
     }
@@ -3390,4 +3498,75 @@ size_t ws_server_pending_async_callbacks(ws_server_t *s) {
   pthread_mutex_unlock(&ar->mu);
 
   return count;
+}
+
+int ws_server_shutdown(ws_server_t *s) {
+  if (s->internal_polls <= 0) {
+    return -1;
+  }
+
+  printf("%zu\n", s->internal_polls);
+
+  // remove and close listner fd
+  s->ev.data.ptr = NULL;
+  s->ev.events = 0;
+  close(s->fd);
+  epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &s->ev);
+  s->internal_polls--;
+  s->fd = -1;
+
+  // go over all connections and shut them down
+  for (size_t i = s->conn_pool->avb; i < s->conn_pool->cap; ++i) {
+    ws_conn_t *c = s->conn_pool->avb_stack[i];
+    ws_conn_close(c, NULL, 0, WS_CLOSE_GOAWAY);
+  }
+
+  // close user epoll
+  if (s->user_epoll > 0) {
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &s->ev);
+    close(s->user_epoll);
+    s->user_epoll = -1;
+    s->internal_polls--;
+  }
+
+  // close timer fd
+  if (s->tfd) {
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &s->ev);
+    close(s->tfd);
+    s->tfd = -1;
+    s->internal_polls--;
+  }
+
+  // close event fd
+  if (s->async_runner->chanfd) {
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &s->ev);
+    close(s->async_runner->chanfd);
+    s->async_runner->chanfd = -1;
+    s->internal_polls--;
+  }
+
+  printf("%zu\n", s->internal_polls);
+  return 0;
+}
+
+static int ws_server_do_shutdown(ws_server_t *s) {
+  printf("ws_server_do_shutdown\n");
+
+  printf("bufs avb = %zu\n", s->buffer_pool->avb);
+  printf("conns avb = %zu\n", s->conn_pool->avb);
+
+  server_ws_conn_pool_destroy(s);
+  server_mirrored_buf_pool_destroy(s);
+  ws_server_async_runner_destroy(s);
+
+  close(s->epoll_fd);
+  s->epoll_fd = -1;
+
+
+  free(s->closeable_conns.conns);
+  free(s->writeable_conns.conns);
+  free(s->pending_timers.conns);
+  free(s);
+
+  return 0;
 }

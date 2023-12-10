@@ -704,6 +704,10 @@ void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs);
 */
 int ws_conn_fd(ws_conn_t *c);
 
+
+int ws_server_shutdown(ws_server_t *s);
+
+
 typedef struct ws_poll_cb_ctx_t ws_poll_cb_ctx_t;
 
 

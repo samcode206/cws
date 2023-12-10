@@ -5,13 +5,23 @@
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 
-#define MAX_CONNS 1024
+#define MAX_CONNS 50
+
+size_t total = 0;
 
 void onOpen(ws_conn_t *conn) {}
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
   // printf("msg %zu\n", n);
   ws_conn_send(conn, msg, n, 0);
+
+  if (total++ > 54000){
+    
+    if (ws_server_shutdown(ws_conn_server(conn)) == 0){
+      printf("starting to shut down\n");
+    };
+  }
+
 }
 
 void onDisconnect(ws_conn_t *conn, int err) {
