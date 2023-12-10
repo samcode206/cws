@@ -3559,6 +3559,11 @@ int ws_server_shutdown(ws_server_t *s) {
   return 0;
 }
 
+
+inline bool ws_server_shutting_down(ws_server_t *s){
+  return s->internal_polls <= 0;
+}
+
 static int ws_server_do_shutdown(ws_server_t *s) {
 
   server_ws_conn_pool_destroy(s);
