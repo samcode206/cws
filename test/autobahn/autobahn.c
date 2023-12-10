@@ -198,7 +198,7 @@ void *start_server() {
       .on_ws_accept_err = on_accept_err,
       .on_ws_conn_timeout = on_timeout,
       .verbose = 1,
-      .max_conns = 1000,
+      // .max_conns = 1000,
       // .on_ws_msg_fragment = on_msg_fragment,
   };
 
