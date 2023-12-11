@@ -2754,20 +2754,24 @@ static unsigned utf8_is_valid(uint8_t *s, size_t n) {
   return 1;
 }
 
+static inline size_t align_to(size_t n, size_t to) {
+  return (n + (to - 1)) & ~(to - 1);
+}
+
 static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   long page_size = sysconf(_SC_PAGESIZE);
 
-  size_t pool_sz = (sizeof(struct ws_conn_pool) + 63) & ~63;
+  size_t pool_sz = align_to(sizeof(struct ws_conn_pool), 64);
+
   size_t pool_and_avb_stk_sz =
-      ((pool_sz + (nmemb * sizeof(ws_conn_t *))) + (page_size - 1)) &
-      ~(page_size - 1);
+      align_to(pool_sz + (nmemb * sizeof(ws_conn_t *)), 128);
 
-  size_t ws_conns_sz =
-      ((sizeof(ws_conn_t) * nmemb) + (page_size - 1)) & ~(page_size - 1);
+  size_t ws_conns_sz = align_to((sizeof(ws_conn_t) * nmemb), 128);
 
-  void *pool_mem =
-      mmap(NULL, pool_and_avb_stk_sz + ws_conns_sz, PROT_READ | PROT_WRITE,
-           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  size_t total_size = align_to(pool_and_avb_stk_sz + ws_conns_sz, page_size);
+
+  void *pool_mem = mmap(NULL, total_size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (pool_mem == MAP_FAILED) {
     perror("mmap");
     exit(EXIT_FAILURE);
@@ -2777,7 +2781,9 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   struct ws_conn_pool *pool = pool_mem;
   pool->avb = nmemb;
   pool->cap = nmemb;
+
   pool->avb_stack = (ws_conn_t **)((uintptr_t)pool_mem + pool_sz);
+
   pool->base = (ws_conn_t *)((uintptr_t)pool_mem + pool_and_avb_stk_sz);
 
   assert((uintptr_t)pool + pool_sz == (uintptr_t)pool->avb_stack);
@@ -2798,15 +2804,14 @@ static void server_ws_conn_pool_destroy(ws_server_t *s) {
   size_t nmemb = s->conn_pool->cap;
   long page_size = sysconf(_SC_PAGESIZE);
 
-  size_t pool_sz = (sizeof(struct ws_conn_pool) + 63) & ~63;
+  size_t pool_sz = align_to(sizeof(struct ws_conn_pool), 64);
+
   size_t pool_and_avb_stk_sz =
-      ((pool_sz + (nmemb * sizeof(ws_conn_t *))) + (page_size - 1)) &
-      ~(page_size - 1);
+      align_to(pool_sz + (nmemb * sizeof(ws_conn_t *)), 128);
 
-  size_t ws_conns_sz =
-      ((sizeof(ws_conn_t) * nmemb) + (page_size - 1)) & ~(page_size - 1);
+  size_t ws_conns_sz = align_to((sizeof(ws_conn_t) * nmemb), 128);
 
-  size_t total_size = pool_and_avb_stk_sz + ws_conns_sz;
+  size_t total_size = align_to(pool_and_avb_stk_sz + ws_conns_sz, page_size);
 
   munmap(s->conn_pool, total_size);
 
@@ -2954,10 +2959,11 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
   size_t mirrored_bufs_total_size = nmemb * sizeof(mirrored_buf_t);
   size_t avb_stack_total_size = nmemb * sizeof(mirrored_buf_t *);
 
-  size_t pool_sz = ((sizeof(struct mirrored_buf_pool) +
-                     mirrored_bufs_total_size + avb_stack_total_size + 128) +
-                    page_size - 1) &
-                   ~(page_size - 1);
+  size_t pool_sz =
+      align_to((sizeof(struct mirrored_buf_pool) + mirrored_bufs_total_size +
+                avb_stack_total_size + 128),
+               page_size);
+
   size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
 
   void *pool_mem = mmap(NULL, pool_sz + buf_pool_sz, PROT_NONE,
@@ -2983,10 +2989,10 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 
   pool->mirrored_bufs =
       (mirrored_buf_t *)((uintptr_t)pool_mem +
-                         ((sizeof(struct mirrored_buf_pool) + 31) & ~31));
+                         align_to(sizeof(struct mirrored_buf_pool), 32));
   pool->avb_stack =
       (mirrored_buf_t **)((uintptr_t)pool_mem +
-                          ((sizeof(struct mirrored_buf_pool) + 31) & ~31) +
+                          align_to(sizeof(struct mirrored_buf_pool), 32) +
                           mirrored_bufs_total_size);
 
   pool->fd = memfd_create("buf", 0);
@@ -3055,10 +3061,11 @@ static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
   size_t mirrored_bufs_total_size = nmemb * sizeof(mirrored_buf_t);
   size_t avb_stack_total_size = nmemb * sizeof(mirrored_buf_t *);
 
-  size_t pool_sz = ((sizeof(struct mirrored_buf_pool) +
-                     mirrored_bufs_total_size + avb_stack_total_size + 128) +
-                    page_size - 1) &
-                   ~(page_size - 1);
+  size_t pool_sz =
+      align_to((sizeof(struct mirrored_buf_pool) + mirrored_bufs_total_size +
+                avb_stack_total_size + 128),
+               page_size);
+
   size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
   size_t total_size = pool_sz + buf_pool_sz;
 
