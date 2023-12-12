@@ -3,6 +3,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+void onOpen(ws_conn_t *conn) {}
+
+void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {}
+
+void onDisconnect(ws_conn_t *conn, int err) {}
+
+
 int test_ws_server_create_bad_args(const char *name) {
   struct ws_server_params p = {0};
 
@@ -19,11 +26,6 @@ int test_ws_server_create_bad_args(const char *name) {
   return EXIT_SUCCESS;
 }
 
-void onOpen(ws_conn_t *conn) {}
-
-void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {}
-
-void onDisconnect(ws_conn_t *conn, int err) {}
 
 int test_ws_server_create_no_mandatory_cbs(const char *name) {
   struct ws_server_params p = {
