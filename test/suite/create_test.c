@@ -114,6 +114,39 @@ int test_ws_server_create_ipv4_ipv6(const char *name) {
   return EXIT_SUCCESS;
 }
 
+int test_ws_create_buffer_sizing(const char *name) {
+  struct ws_server_params p = {
+      .port = 9919,
+      .addr = "::1",
+      .on_ws_msg = onMsg,
+      .on_ws_open = onOpen,
+      .on_ws_disconnect = onDisconnect,
+      .max_conns = 1,
+      .max_buffered_bytes = 1,
+  };
+
+  ws_server_t *s = ws_server_create(&p);
+  if (s == NULL) {
+    fprintf(stderr,
+            "[FAIL] %s : expected server to be created"
+            "\n",
+            name);
+    return EXIT_FAILURE;
+  }
+
+  if (s->buffer_pool->buf_sz != getpagesize()) {
+    fprintf(stderr,
+            "[FAIL] %s : expected buffer size to be %d got %zu"
+            "\n",
+            name, getpagesize(), s->buffer_pool->buf_sz);
+    return EXIT_FAILURE;
+  }
+
+  fprintf(stdout, "[PASS] %s\n", name);
+
+  return EXIT_SUCCESS;
+}
+
 void result(int *ret, int cur) {
   if (*ret == EXIT_SUCCESS) {
     if (cur != EXIT_SUCCESS) {
@@ -131,6 +164,9 @@ int main(void) {
 
   result(&ret, test_ws_server_create_ipv4_ipv6(
                    "ws_server_create binds to ipv4 or ipv6"));
+
+  result(&ret, test_ws_create_buffer_sizing(
+                   "test_ws_create_buffer_size to next page size multiple"));
 
   exit(ret);
 }
