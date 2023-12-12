@@ -3565,21 +3565,16 @@ int ws_server_shutdown(ws_server_t *s) {
   s->internal_polls--;
   s->fd = -1;
 
-  // write all writeables
-  server_writeable_conns_drain(s);
-
   // go over all connections and shut them down
-  for (size_t i = s->conn_pool->avb; i < s->conn_pool->cap; ++i) {
-    ws_conn_t *c = s->conn_pool->avb_stack[i];
-    if (is_upgraded(c)) {
-      ws_conn_close(c, NULL, 0, WS_CLOSE_GOAWAY);
+  for (size_t i = 0; i < s->conn_pool->cap; ++i) {
+    if (s->conn_pool->base[i].fd != -1 && s->conn_pool->base[i].fd != 0 &&
+        !is_closing(s->conn_pool->base[i].flags) &&
+        is_upgraded(&s->conn_pool->base[i])) {
+      ws_conn_close(&s->conn_pool->base[i], NULL, 0, WS_CLOSE_GOAWAY);
     } else {
-      ws_conn_destroy(c, WS_CLOSE_GOAWAY);
+      ws_conn_destroy(&s->conn_pool->base[i], WS_CLOSE_GOAWAY);
     }
   }
-
-  // close all closeables
-  server_closeable_conns_close(s);
 
   // close user epoll
   if (s->user_epoll > 0) {
