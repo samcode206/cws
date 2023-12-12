@@ -841,6 +841,7 @@ static void server_closeable_conns_close(ws_server_t *s) {
       // needed_bytes holds the reason
       s->on_ws_disconnect(c, c->needed_bytes);
       c->fd = -1;
+      clear_upgraded(c);
       ws_conn_put(s->conn_pool, c);
       --s->open_conns;
     }
