@@ -74,3 +74,6 @@ autobahn: install
 
 async_task:
 	gcc ./src/*.c ./test/async_task.c -lz -lcrypto -O3 -march=native -mtune=native -Wall --pedantic -o server
+
+tests:
+	gcc ./test/probe/create_shutdown_test.c -lz -lcrypto -O4 -march=native -mtune=native -Wall --pedantic -o server
