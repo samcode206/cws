@@ -42,6 +42,8 @@ void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
     ws_conn_put_bin(slc->conns[i], req->msg, req->msg_len, 0);
   }
 
+  // when each thread is done with it's work decrement ref count
+  // note* needs locking (what if two servers do this at the same time and lose the correct ref value)
   req->refs--;
   
   assert(req->refs <= NUM_SERVERS);
