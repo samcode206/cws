@@ -35,7 +35,11 @@ void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
   BroadcastRequest *req = ctx->ctx;
 
   for (size_t i = 0; i < slc->numConnections; i++) {
-    ws_conn_send(slc->conns[i], req->msg, req->msg_len, 0);
+    if (!ws_conn_can_put_msg(slc->conns[i], req->msg_len)){
+      ws_conn_flush_pending(slc->conns[i]);
+    }
+
+    ws_conn_put_bin(slc->conns[i], req->msg, req->msg_len, 0);
   }
 
   req->refs--;
