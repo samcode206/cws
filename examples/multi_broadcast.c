@@ -22,7 +22,7 @@ typedef struct {
   size_t msg_len;
   void *msg;
   size_t refs;
-} Broadcast;
+} BroadcastRequest;
 
 void onOpen(ws_conn_t *conn) {
   ws_server_t *s = ws_conn_server(conn);
@@ -32,19 +32,19 @@ void onOpen(ws_conn_t *conn) {
 
 void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
   Slice *slc = ws_server_ctx(s);
-  Broadcast *b = ctx->ctx;
+  BroadcastRequest *req = ctx->ctx;
 
   for (size_t i = 0; i < slc->numConnections; i++) {
-    ws_conn_send(slc->conns[i], b->msg, b->msg_len, 0);
+    ws_conn_send(slc->conns[i], req->msg, req->msg_len, 0);
   }
 
-  b->refs--;
+  req->refs--;
   
-  assert(b->refs <= NUM_SERVERS);
+  assert(req->refs <= NUM_SERVERS);
 
-  if (!b->refs) {
-    free(b->msg);
-    free(b);
+  if (!req->refs) {
+    free(req->msg);
+    free(req);
     free(ctx);
   }
 }
@@ -54,16 +54,16 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
   Slice *ctx = ws_server_ctx(s);
 
   struct async_cb_ctx *cbinfo = malloc(sizeof(struct async_cb_ctx));
-  Broadcast *b = malloc(sizeof(Broadcast));
+  BroadcastRequest *req = malloc(sizeof(BroadcastRequest));
 
-  b->msg = malloc(n);
+  req->msg = malloc(n);
 
-  memcpy(b->msg, msg, n);
-  b->msg_len = n;
-  b->refs = NUM_SERVERS;
+  memcpy(req->msg, msg, n);
+  req->msg_len = n;
+  req->refs = NUM_SERVERS;
 
   cbinfo->cb = broadcast;
-  cbinfo->ctx = b;
+  cbinfo->ctx = req;
 
   for (size_t i = 0; i < NUM_SERVERS; i++) {
     ws_server_sched_async(ctx->app->servers[i], cbinfo);
