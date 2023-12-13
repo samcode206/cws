@@ -2788,7 +2788,7 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   pool->base = (ws_conn_t *)((uintptr_t)pool_mem + pool_and_avb_stk_sz);
 
   assert((uintptr_t)pool + pool_sz == (uintptr_t)pool->avb_stack);
-  assert((uintptr_t)pool->avb_stack + (sizeof(ws_conn_t *) * nmemb) <
+  assert((uintptr_t)pool->avb_stack + (sizeof(ws_conn_t *) * nmemb) <=
          (uintptr_t)pool->base);
 
   size_t i = nmemb;
