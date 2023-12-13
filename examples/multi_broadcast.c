@@ -49,9 +49,10 @@ void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
   assert(req->refs <= NUM_SERVERS);
 
   if (!req->refs) {
-    free(req->msg);
-    free(req);
-    free(ctx);
+    // clean up heap allocated data 
+    free(req->msg); // we had to copy the message
+    free(req); // we needed to create the broadcast request
+    free(ctx); // the callback info ctx itself 
   }
 }
 
