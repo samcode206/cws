@@ -38,11 +38,11 @@ void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
     ws_conn_send(slc->conns[i], b->msg, b->msg_len, 0);
   }
 
-  if (b->refs){
-    b->refs--;
-  }
+  b->refs--;
+  
+  assert(b->refs <= NUM_SERVERS);
 
-  if (!b->refs){
+  if (!b->refs) {
     free(b->msg);
     free(b);
     free(ctx);
