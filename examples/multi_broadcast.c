@@ -137,6 +137,7 @@ int main(void) {
     }
   }
 
+  // TODO: fix below
   pthread_join(server_threads[0], NULL);
 
   return 0;
