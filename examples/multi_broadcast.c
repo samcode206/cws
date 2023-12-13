@@ -8,6 +8,7 @@
 #define NUM_SERVERS 4
 
 typedef struct {
+  pthread_mutex_t mu;
   ws_server_t *servers[NUM_SERVERS];
 } App;
 
@@ -20,8 +21,8 @@ typedef struct {
 
 typedef struct {
   size_t msg_len;
-  void *msg;
   size_t refs;
+  unsigned char msg[];
 } BroadcastRequest;
 
 void onOpen(ws_conn_t *conn) {
@@ -35,25 +36,21 @@ void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
   BroadcastRequest *req = ctx->ctx;
 
   for (size_t i = 0; i < slc->numConnections; i++) {
-    if (!ws_conn_can_put_msg(slc->conns[i], req->msg_len)){
+    if (!ws_conn_can_put_msg(slc->conns[i], req->msg_len)) {
       ws_conn_flush_pending(slc->conns[i]);
     }
 
     ws_conn_put_bin(slc->conns[i], req->msg, req->msg_len, 0);
   }
 
-  // when each thread is done with it's work decrement ref count
-  // note* needs locking (what if two servers do this at the same time and lose the correct ref value)
+  pthread_mutex_lock(&slc->app->mu);
   req->refs--;
-  
-  assert(req->refs <= NUM_SERVERS);
 
   if (!req->refs) {
-    // clean up heap allocated data 
-    free(req->msg); // we had to copy the message
-    free(req); // we needed to create the broadcast request
-    free(ctx); // the callback info ctx itself 
+    free(req);
+    free(ctx);
   }
+  pthread_mutex_unlock(&slc->app->mu);
 }
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
@@ -61,19 +58,17 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
   Slice *ctx = ws_server_ctx(s);
 
   struct async_cb_ctx *cbinfo = malloc(sizeof(struct async_cb_ctx));
-  BroadcastRequest *req = malloc(sizeof(BroadcastRequest));
+  BroadcastRequest *req = malloc(sizeof(BroadcastRequest) + n);
 
-  req->msg = malloc(n);
-
-  memcpy(req->msg, msg, n);
   req->msg_len = n;
   req->refs = NUM_SERVERS;
+  memcpy(req->msg, msg, n);
 
   cbinfo->cb = broadcast;
   cbinfo->ctx = req;
 
   for (size_t i = 0; i < NUM_SERVERS; i++) {
-    // schedule the broadcast on each thread 
+    // schedule the broadcast on each thread
     // broadcast will happen on each server's own time when they're ready
     ws_server_sched_async(ctx->app->servers[i], cbinfo);
   }
@@ -104,9 +99,9 @@ void *server_init(void *s) {
 }
 
 int main(void) {
-
   App *state = calloc(1, sizeof *state);
   assert(state != NULL);
+  pthread_mutex_init(&state->mu, NULL);
 
   for (size_t i = 0; i < NUM_SERVERS; i++) {
     Slice *slc = calloc(1, sizeof(Slice));
