@@ -30,4 +30,5 @@ jobs:
           --network="host"     \
           --name fuzzingclient \
           crossbario/autobahn-testsuite \
-          wstest -m fuzzingclient --spec /config/fuzzingclient.json 
+          wstest -m fuzzingclient --spec /config/fuzzingclient.json && cd ../../ && \
+          python3 ./test/autobahn/report.py "test/autobahn/reports/servers/index.json" "cws"
