@@ -16,7 +16,7 @@ jobs:
 
       - name: Build Server
         run: |
-          sudo make autobahn
+          sudo WITH_COMPRESSION=1 NO_DEBUG=1 make autobahn
       - name: Start Server
         run: |
           ./server & 
