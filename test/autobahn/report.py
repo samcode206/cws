@@ -23,6 +23,7 @@ failed = 0
 
 for case, result in report[serverName].items():
     if result["behavior"] != "OK" and result["behavior"] != "NON-STRICT" and result["behavior"] != "INFORMATIONAL":
+        print(f"failed: {case} {result}")
         failed = 1
 
 
