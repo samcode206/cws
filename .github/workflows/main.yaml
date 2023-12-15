@@ -1,0 +1,27 @@
+name: Server Build and Autobahn Test Suite
+
+on: [push, pull_request]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libssl-dev
+
+      - name: Build Server
+        run: |
+          sudo make autobahn
+      - name: Start Server
+        run: | 
+          ./server & 
+           echo "Starting..." &&
+           sleep 5
+
+      - name: Run Autobahn Test Suite
+        run: sudo sh autobahn.sh
