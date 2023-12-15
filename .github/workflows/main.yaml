@@ -1,11 +1,10 @@
-name: Server Build and Autobahn Test Suite
+name: cws Tests
 
 on: [push]
 
 jobs:
-  build-and-test:
+  setup:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v3
 
@@ -14,21 +13,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zlib1g-dev libssl-dev
 
-      - name: Build Server
-        run: |
-          sudo WITH_COMPRESSION=1 NO_DEBUG=1 make autobahn
-      - name: Start Server
-        run: |
-          ./server & 
-           echo "Starting..." &&
-           sleep 5
+  autobahn:
+    runs-on: ubuntu-latest
+    needs: setup
+    - name: Build Autobahn Server
+      run: |
+        sudo WITH_COMPRESSION=1 NO_DEBUG=1 make autobahn
+    - name: Start Server
+      run: |
+        ./server & 
+         echo "Starting..." &&
+         sleep 5
 
-      - name: Run Autobahn Test Suite
-        run: |
-          cd ./test/autobahn && sudo docker run --rm \
-          -v "${PWD}/config:/config"  -v "${PWD}/reports:/reports" \
-          --network="host"     \
-          --name fuzzingclient \
-          crossbario/autobahn-testsuite \
-          wstest -m fuzzingclient --spec /config/fuzzingclient.json && cd ../../ && \
-          python3 ./test/autobahn/report.py "test/autobahn/reports/servers/index.json" "cws"
+    - name: Run Autobahn Test Suite
+      run: |
+        cd ./test/autobahn && sudo docker run --rm \
+        -v "${PWD}/config:/config"  -v "${PWD}/reports:/reports" \
+        --network="host"     \
+        --name fuzzingclient \
+        crossbario/autobahn-testsuite \
+        wstest -m fuzzingclient --spec /config/fuzzingclient.json && cd ../../ && \
+        python3 ./test/autobahn/report.py "test/autobahn/reports/servers/index.json" "cws"
