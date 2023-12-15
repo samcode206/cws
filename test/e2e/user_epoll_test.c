@@ -48,12 +48,12 @@ void createPollableIntervalTimer(ws_server_t *s) {
 
   struct itimerspec timer = {.it_interval =
                                  {
-                                     .tv_nsec = 0,
-                                     .tv_sec = 1,
+                                     .tv_nsec = 100000,
+                                     .tv_sec = 0,
                                  },
                              .it_value = {
-                                 .tv_nsec = 0,
-                                 .tv_sec = 1,
+                                 .tv_nsec = 100000,
+                                 .tv_sec = 0,
                              }};
 
   assert(timerfd_settime(*tfd, 0, &timer, NULL) != -1);
