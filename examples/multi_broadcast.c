@@ -70,7 +70,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
   for (size_t i = 0; i < NUM_SERVERS; i++) {
     // schedule the broadcast on each thread
     // broadcast will happen on each server's own time when they're ready
-    ws_server_sched_async(ctx->app->servers[i], cbinfo);
+    ws_server_sched_callback(ctx->app->servers[i], cbinfo);
   }
 }
 
