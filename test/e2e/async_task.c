@@ -1,4 +1,4 @@
-#include "../src/ws.h"
+#include "../../src/ws.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -56,7 +56,7 @@ void server_async_task3(ws_server_t *rs, async_cb_ctx_t *ctx) {
   assert(srv == rs);
 
   ctx->cb = server_async_task4;
-  ws_server_sched_async(rs, ctx);
+  ws_server_sched_callback(rs, ctx);
 }
 
 void server_async_task2(ws_server_t *rs, async_cb_ctx_t *ctx) {
@@ -65,7 +65,7 @@ void server_async_task2(ws_server_t *rs, async_cb_ctx_t *ctx) {
   assert(srv == rs);
 
   ctx->cb = server_async_task3;
-  ws_server_sched_async(rs, ctx);
+  ws_server_sched_callback(rs, ctx);
 }
 
 void server_async_task(ws_server_t *rs, async_cb_ctx_t *ctx) {
@@ -75,7 +75,7 @@ void server_async_task(ws_server_t *rs, async_cb_ctx_t *ctx) {
 
 
   ctx->cb = server_async_task2;
-  ws_server_sched_async(rs, ctx);
+  ws_server_sched_callback(rs, ctx);
 }
 
 void *test_init(void *_) {
@@ -87,7 +87,7 @@ void *test_init(void *_) {
   task_info->ctx = &evfd;
   task_info->cb = server_async_task;
 
-  ws_server_sched_async(srv, task_info);
+  ws_server_sched_callback(srv, task_info);
 
   uint64_t val;
   // once read is done we know we are done because write to eventfd happens in

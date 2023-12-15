@@ -9,78 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-// fragment accumulator
-typedef struct {
-  size_t len;
-  size_t cap;
-  uint8_t data[];
-} frag_t;
+
 
 void on_open(ws_conn_t *c) {
   // ws_conn_set_ctx(c, calloc(1, 8));
 }
 
-// void on_ping(ws_conn_t *c, void *msg, size_t n) {
-//   printf("on_ping:");
-//   fwrite(msg, sizeof(char), n, stdout);
-//   fwrite("\n", 1, 1, stdout);
-//   int stat = ws_conn_pong(c, msg, n);
-//   if (stat == 1) {
-//     printf("pong sent\n");
-//   } else {
-//     printf("partial pong sent or an error occurred waiting for <on_ws_drain |
-//     "
-//            "on_ws_disconnect>\n");
-//   }
-// }
-
-// void on_msg_fragment(ws_conn_t *c, void *fragment, size_t n, bool fin) {
-
-//   frag_t *ctx = ws_conn_ctx(c);
-//   if (!ctx) {
-//     ws_conn_set_ctx(c, malloc(sizeof(frag_t) + 512));
-//     assert((ctx = ws_conn_ctx(c)) != NULL);
-//     memset(ctx, 0, 16);
-//   }
-
-//   if (ctx->len + n > ctx->cap) {
-//     size_t new_cap =
-//         ctx->cap + ctx->cap - ctx->len > n ? ctx->cap + ctx->cap : n + ctx->cap;
-//     ws_conn_set_ctx(c, realloc(ctx, 16 + new_cap));
-//     assert((ctx = ws_conn_ctx(c)) != NULL);
-//     ctx->cap = new_cap;
-//   }
-
-//   memcpy(ctx->data + ctx->len, fragment, n);
-//   ctx->len += n;
-
-//   if (!fin) {
-//     // printf("received fragment: %.*s\n", (int)n, (char *)fragment);
-//   } else {
-//     if (!ws_conn_msg_bin(c)) {
-//       if (!utf8_is_valid(ctx->data, ctx->len)) {
-//         ws_conn_close(c, NULL, 0, WS_CLOSE_INVALID);
-//         return;
-//       }
-//       ws_conn_send_txt(c, ctx->data, ctx->len, true);
-//     } else {
-//       ws_conn_send(c, ctx->data, ctx->len, false);
-//     }
-
-//     // printf("received final fragment: %.*s\n", (int)n, (char *)fragment);
-//     // printf("full message: %.*s\n", (int)ctx->len, ctx->data);
-
-//     free(ws_conn_ctx(c));
-//     ws_conn_set_ctx(c, NULL);
-//   }
-// }
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
-  // size_t *count = (size_t*)ws_conn_ctx(c);
-  // *count = *count + 1;
-  // printf("on_msg: ");
-  // fwrite(msg, sizeof(char), n, stdout);
-  // fwrite("\n", 1, 1, stdout);
   if (bin) {
     ws_conn_send(c, msg, n, 0);
   } else {
@@ -89,32 +25,10 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
     } else {
       ws_conn_send_txt(c, msg, n, 0);
     }
-    // printf("text\n");
   }
 
-  // if (stat == 1) {
-  //   // printf("msg sent\n");
-  // } else {
-  //   printf("partial send or an error occurred waiting for <on_ws_drain | "
-  //          "on_ws_disconnect>\n");
-  // }
 }
 
-// size_t on_upgrade_request(ws_conn_t *c, char *request, const char
-// *accept_key,
-//                           size_t max_resp_len, char *resp_dst) {
-//   // printf("%s\n", request);
-
-//   int ret = sprintf(resp_dst,
-//           "HTTP/1.1 101 Switching Protocols" CRLF "Upgrade: websocket" CRLF
-//           "Connection: Upgrade" CRLF "Server: cws" CRLF
-//           "X-Your-Header: Hi" CRLF
-//           "Sec-WebSocket-Accept: %.*s\r\n\r\n",
-//           28,
-//           accept_key);
-
-//   return ret;
-// }
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d \n", code);
@@ -131,7 +45,6 @@ void on_disconnect(ws_conn_t *ws_conn, int err) {
     ws_conn_set_ctx(ws_conn, NULL);
   };
 
-  // printf("on_disconnect: %s\n", ws_conn_strerror(ws_conn));
 }
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
@@ -189,17 +102,14 @@ void *start_server() {
   struct ws_server_params sp = {
       .addr = "::1",
       .port = port,
-      // .on_ws_upgrade_req = on_upgrade_request,
-      // .on_ws_accept = on_accept,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
       .on_ws_disconnect = on_disconnect,
       .max_buffered_bytes = 1024 * 1024 * 32,
       .on_ws_accept_err = on_accept_err,
       .on_ws_conn_timeout = on_timeout,
+      .max_conns = 1024,
       .verbose = 1,
-      // .max_conns = 1000,
-      // .on_ws_msg_fragment = on_msg_fragment,
   };
 
   ws_server_t *s = ws_server_create(&sp);
@@ -213,23 +123,4 @@ void *start_server() {
 int main(void) {
   printf("%d\n", getpid());
   start_server();
-  // pthread_t threads[NUM_THREADS];
-  //   int rc;
-  //   long t;
-  //   for (t = 0; t < NUM_THREADS; t++) {
-  //       printf("In main: creating thread %ld\n", t);
-  //       rc = pthread_create(&threads[t], NULL, start_server, (void *)t);
-  //       if (rc) {
-  //           printf("ERROR; return code from pthread_create() is %d\n", rc);
-  //           exit(-1);
-  //       }
-  //   }
-
-  //   // Wait for all threads to complete
-  //   for (t = 0; t < NUM_THREADS; t++) {
-  //       pthread_join(threads[t], NULL);
-  //   }
-
-  //   printf("Main: program exiting.\n");
-  //   pthread_exit(NULL);
 }

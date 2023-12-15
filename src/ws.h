@@ -503,11 +503,11 @@ typedef struct async_cb_ctx async_cb_ctx_t;
 
 /**
  *
- * This callback is used in conjunction with `ws_server_sched_async` to execute custom
+ * This callback is used in conjunction with `ws_server_sched_callback` to execute custom
  * functions asynchronously within the context of the server's thread. 
  *
  * @param s    Pointer to the WebSocket server (`ws_server_t`) where the callback is executed.
- * @param ctx  Pointer to an `async_cb_ctx_t` structure as provided when scheduling (see `ws_server_sched_async` above)
+ * @param ctx  Pointer to an `async_cb_ctx_t` structure as provided when scheduling (see `ws_server_sched_callback` above)
  */
 typedef void (*ws_server_async_cb_t)(ws_server_t *s, async_cb_ctx_t *ctx);
 
@@ -534,7 +534,7 @@ typedef struct async_cb_ctx {
  * @param cb_info  Pointer to the `async_cb_ctx` structure containing the callback and its context.
  * @return         Non-zero on failure, indicating an error in scheduling the callback.
  */
-int ws_server_sched_async(ws_server_t *runner, struct async_cb_ctx *cb_info);
+int ws_server_sched_callback(ws_server_t *runner, struct async_cb_ctx *cb_info);
 
 /**
  * Returns the number of asynchronous callbacks currently queued in the server's event loop.

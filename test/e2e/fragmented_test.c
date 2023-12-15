@@ -59,6 +59,7 @@ void test1(int fd) {
   char buf[512];
 
   ssize_t read = sock_recvall(fd, buf, 122);
+  assert(read > 0);
   buf[read] = '\0';
 
   if (read == 122 && !strcmp(msg, buf + 2)) {
@@ -96,7 +97,9 @@ void test2(int fd) {
   char buf[512];
 
   ssize_t read = sock_recvall(fd, buf, 122);
+  assert(read > 0);
   buf[read] = '\0';
+
 
   if (read == 122 && !strcmp(msg, buf + 2)) {
     printf("[SUCCESS] Received the fragmented message\n");
@@ -142,6 +145,7 @@ void test3(int fd) {
   for (size_t i = 0; i < 3; i++) {
 
     ssize_t read = sock_recvall(fd, buf, 122);
+    assert(read > 0);
     buf[read] = '\0';
 
     if (read == 122 && !strcmp(msg, buf + 2)) {
@@ -187,6 +191,7 @@ void test4(int fd) {
   for (size_t i = 0; i < 3; i++) {
 
     ssize_t read = sock_recvall(fd, buf, 122);
+    assert(read > 0);
     buf[read] = '\0';
 
     if (read == 122 && !strcmp(msg, buf + 2)) {

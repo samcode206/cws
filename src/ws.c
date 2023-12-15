@@ -3448,7 +3448,7 @@ static void ws_server_async_runner_destroy(ws_server_t *s) {
   s->async_runner = NULL;
 }
 
-int ws_server_sched_async(ws_server_t *s, struct async_cb_ctx *cb_info) {
+int ws_server_sched_callback(ws_server_t *s, struct async_cb_ctx *cb_info) {
   if (cb_info != NULL) {
     struct ws_server_async_runner *ar = s->async_runner;
 
