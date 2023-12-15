@@ -108,6 +108,7 @@ void *start_server() {
       .max_buffered_bytes = 1024 * 1024 * 32,
       .on_ws_accept_err = on_accept_err,
       .on_ws_conn_timeout = on_timeout,
+      .max_conns = 1024,
       .verbose = 1,
   };
 
