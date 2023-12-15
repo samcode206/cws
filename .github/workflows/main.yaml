@@ -18,9 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Build Autobahn Server
-        run: pwd
         run: |
-          sudo WITH_COMPRESSION=1 NO_DEBUG=1 make autobahn
+          pwd && sudo WITH_COMPRESSION=1 NO_DEBUG=1 make autobahn
       - name: Start Server
         run: |
           ./server & 
