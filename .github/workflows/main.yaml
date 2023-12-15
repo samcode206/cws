@@ -19,6 +19,7 @@ jobs:
   autobahn:
     needs: setup
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v3
       - name: Build Autobahn Server
@@ -41,14 +42,16 @@ jobs:
           python3 ./test/autobahn/report.py "test/autobahn/reports/servers/index.json" "cws"
 
   test-suite:
+    timeout-minutes: 2
     needs: setup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - name: Run Test Suite
-        run: sh ./tests.sh
+        run: sh ./test.sh
 
   e2e:
+    timeout-minutes: 2
     needs: setup
     runs-on: ubuntu-latest
     steps:
