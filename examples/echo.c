@@ -24,7 +24,6 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
 void onDisconnect(ws_conn_t *conn, int err) {}
 
 int main(void) {
-  printf("echo example starting on 9919\n");
   signal(SIGPIPE, SIG_IGN);
 
   struct ws_server_params p = {
@@ -35,6 +34,7 @@ int main(void) {
       .on_ws_disconnect = onDisconnect,
       .max_buffered_bytes = 1024 * 512,
       .max_conns = MAX_CONNS,
+      .verbose = 1,
   };
 
   ws_server_t *s = ws_server_create(&p);

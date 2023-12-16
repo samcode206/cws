@@ -892,10 +892,6 @@ static int ws_server_socket_bind(ws_server_t *s,
     return -1;
   }
 
-  if (params->verbose) {
-    printf("binding to %s %s:%d\n", ipv6 ? "IPV6" : "IPV4", addr, port);
-  }
-
   if (ipv6) {
     int off = 0;
     ret = setsockopt(s->fd, SOL_IPV6, IPV6_V6ONLY, &off, sizeof(int));
@@ -988,11 +984,6 @@ static void ws_server_register_buffers(ws_server_t *s,
   size_t buffer_size =
       (max_backpressure + 192 + page_size - 1) & ~(page_size - 1);
 
-  if (params->verbose) {
-    printf("buffer size = %zu\n", buffer_size);
-    printf("max_backpressure = %zu\n", max_backpressure);
-  }
-
   struct rlimit rlim = {0};
   getrlimit(RLIMIT_NOFILE, &rlim);
 
@@ -1022,10 +1013,6 @@ static void ws_server_register_buffers(ws_server_t *s,
               "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
               s->max_conns, rlim.rlim_cur);
     }
-  }
-
-  if (params->verbose) {
-    printf("max_conns = %zu\n", s->max_conns);
   }
 
   s->buffer_pool =
@@ -1121,11 +1108,30 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
   ws_server_register_buffers(s, params);
 
 #ifdef WITH_COMPRESSION
+  const char *compression_enabled = "true";
   s->istrm = inflation_stream_init();
   s->dstrm = deflation_stream_init();
+#else
+  const char *compression_enabled = "false";
 #endif /* WITH_COMPRESSION */
 
+#ifdef NDEBUG
+  const char *debug_enabled = "false";
+#else
+  const char *debug_enabled = "true";
+#endif
+
   ws_server_async_runner_create(s, 2);
+
+  if (params->verbose) {
+    printf("- listening:   %s:%d\n", params->addr, params->port);
+    printf("- buffer_size: %zu\n", s->buffer_pool->buf_sz);
+    printf("- max_msg_len: %zu\n",
+           params->max_buffered_bytes ? params->max_buffered_bytes : 16000);
+    printf("- max_conns:   %zu\n", s->max_conns);
+    printf("- compression: %s\n", compression_enabled);
+    printf("- debug:       %s\n", debug_enabled);
+  }
 
   // server resources all ready
   return s;
@@ -1594,7 +1600,7 @@ static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
     space = space > 1 ? space - 1 : 0;
   }
 
-  // #ifdef WITH_COMPRESSION 
+  // #ifdef WITH_COMPRESSION
   //  #define _WS_CONN_READ_RECV_MAX 16384
   // #else
   //   #define _WS_CONN_READ_RECV_MAX 16388
