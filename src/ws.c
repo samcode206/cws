@@ -1590,10 +1590,20 @@ static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
   space = space > 4 ? space - 4 : 0;
 #endif /* WITH_COMPRESSION */
 
-  if (conn->needed_bytes < 16384 && space > 16388) {
-    // limit to 16kb if we don't specifically need to read more
-    space = 16384;
+  if (!is_upgraded(conn)) {
+    space = space > 1 ? space - 1 : 0;
   }
+
+  // #ifdef WITH_COMPRESSION 
+  //  #define _WS_CONN_READ_RECV_MAX 16384
+  // #else
+  //   #define _WS_CONN_READ_RECV_MAX 16388
+  // #endif
+
+  // if ((conn->needed_bytes < 16384) & (space > _WS_CONN_READ_RECV_MAX)) {
+  //   // limit to 16kb if we don't specifically need to read more
+  //   space = 16384;
+  // }
 
   ssize_t n = buf_recv(buf, conn->fd, space, 0);
   if (n == -1 || n == 0) {
