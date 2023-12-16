@@ -62,6 +62,9 @@ clean:
 echo: install
 	gcc ./examples/echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
 
+multi_echo: install
+	gcc ./examples/multi_echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
+
 online: install
 	gcc ./examples/online.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
