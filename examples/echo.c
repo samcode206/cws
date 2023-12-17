@@ -12,12 +12,14 @@ size_t total = 0;
 
 void onOpen(ws_conn_t *conn) {}
 
-void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
+
+
+void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   // printf("msg %zu\n", n);
   if (ws_conn_estimate_readable_len(conn)) {
-    ws_conn_put_bin(conn, msg, n, 0);
+    ws_conn_put_msg(conn, msg, n, OP_BIN, 0);
   } else {
-    ws_conn_send(conn, msg, n, 0);
+    ws_conn_send_msg(conn, msg, n, OP_BIN, 0);
   }
 }
 
@@ -32,7 +34,7 @@ int main(void) {
       .on_ws_open = onOpen,
       .on_ws_msg = onMsg,
       .on_ws_disconnect = onDisconnect,
-      .max_buffered_bytes = 1024 * 512,
+      .max_buffered_bytes = 1024 * 1024,
       .max_conns = MAX_CONNS,
       .verbose = 1,
   };

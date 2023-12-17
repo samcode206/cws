@@ -11,9 +11,9 @@ ws_server_t *srv;
 
 void server_on_open(ws_conn_t *conn) {}
 
-void server_on_msg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
+void server_on_msg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   // printf("msg %zu\n", n);
-  ws_conn_send(conn, msg, n, 0);
+  ws_conn_send_msg(conn, msg, n, OP_BIN, 0);
 }
 
 void server_on_disconnect(ws_conn_t *conn, int err) {
@@ -30,7 +30,6 @@ void *server_init(void *_) {
       .max_buffered_bytes = 512,
       .max_conns = 2,
   };
-
 
   srv = ws_server_create(&p);
 
@@ -73,7 +72,6 @@ void server_async_task(ws_server_t *rs, async_cb_ctx_t *ctx) {
   printf("Task 1 running for %d\n", *chanid);
   assert(srv == rs);
 
-
   ctx->cb = server_async_task2;
   ws_server_sched_callback(rs, ctx);
 }
@@ -114,7 +112,7 @@ int main() {
 
   sleep(1);
 
-#define NUM_TEST_THREADS 128 
+#define NUM_TEST_THREADS 128
   pthread_t client_threads[NUM_TEST_THREADS];
 
   for (size_t i = 0; i < NUM_TEST_THREADS; i++) {

@@ -10,25 +10,18 @@
 #include <string.h>
 #include <unistd.h>
 
-
 void on_open(ws_conn_t *c) {
   // ws_conn_set_ctx(c, calloc(1, 8));
 }
 
-
-void on_msg(ws_conn_t *c, void *msg, size_t n, bool bin) {
-  if (bin) {
-    ws_conn_send(c, msg, n, 0);
-  } else {
-    if (ws_conn_compression_allowed(c)) {
-      ws_conn_send_txt(c, msg, n, true);
-    } else {
-      ws_conn_send_txt(c, msg, n, 0);
-    }
+void on_msg(ws_conn_t *c, void *msg, size_t n, uint8_t opcode) {
+  if (opcode == OP_PONG){
+    return;
   }
 
+  ws_conn_send_msg(c, msg, n, opcode == OP_PING ? OP_PONG : opcode,
+                   ws_conn_compression_allowed(c) ? 1 : 0);
 }
-
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   printf("on_close, code: %d \n", code);
@@ -44,7 +37,6 @@ void on_disconnect(ws_conn_t *ws_conn, int err) {
     free(ws_conn_ctx(ws_conn));
     ws_conn_set_ctx(ws_conn, NULL);
   };
-
 }
 
 void on_drain(ws_conn_t *ws_conn) { printf("on_drain\n"); }
@@ -89,7 +81,7 @@ void on_timeout(ws_conn_t *c, unsigned timeout_kind) {
     printf("read timeout on %d\n", ws_conn_fd(c));
   } else if (timeout_kind == WS_ERR_WRITE_TIMEOUT) {
     printf("write timeout on  %d\n", ws_conn_fd(c));
-  } else if (timeout_kind == WS_ERR_RW_TIMEOUT){
+  } else if (timeout_kind == WS_ERR_RW_TIMEOUT) {
     printf("read/write timeout on %d\n", ws_conn_fd(c));
   }
 
@@ -106,6 +98,7 @@ void *start_server() {
       .on_ws_msg = on_msg,
       .on_ws_disconnect = on_disconnect,
       .max_buffered_bytes = 1024 * 1024 * 32,
+      // .on_ws_accept = on_accept,
       .on_ws_accept_err = on_accept_err,
       .on_ws_conn_timeout = on_timeout,
       .max_conns = 1024,

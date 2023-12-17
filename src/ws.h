@@ -42,6 +42,13 @@
 // #define WITH_COMPRESSION
 
 
+#define OP_TXT 0x1
+#define OP_BIN 0x2
+
+#define OP_PING 0x9
+#define OP_PONG 0xA
+
+
 /**
  * WebSocket server connection structure.
  */
@@ -56,7 +63,7 @@ typedef struct server ws_server_t;
 
 enum ws_send_status {
   /*
-    Send/writev call failed, or the connection is closing/closed.
+    Send/writev call failed, or the connection is closing/closed, or an unkown opcode was provided
   */
   WS_SEND_FAILED = -1, 
 
@@ -107,95 +114,34 @@ enum ws_send_status {
 };
 
 
-/**
- * Attempts to send a text message immediately over the WebSocket connection. If the socket 
- * is not in a writable state, the message is queued for later transmission. The caller should 
- * check the return status to monitor the state.
- * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg      Pointer to the text message data.
- * @param n        Size of the text message in bytes.
- * @param compress Boolean indicating whether to compress the message.
- * @return         enum ws_send_status indicating the result of the send attempt.
- */
-enum ws_send_status ws_conn_send_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
 
 /**
- * Queues a text message for asynchronous sending over the WebSocket connection.
- * Beneficial for batching multiple small messages. Can be sent later either via 'ws_conn_flush_pending'
+ * Queues a message for sending over the WebSocket connection.
+ * This can handle various message types including ping, pong, text, and binary,
+ * based on the provided opcode. The queued message will be sent later, either via 'ws_conn_flush_pending'
  * or automatically by the event loop.
- * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg      Pointer to the text message data.
- * @param n        Size of the text message in bytes.
- * @param compress Boolean indicating whether to compress the message.
- * @return         enum ws_send_status indicating the queuing result.
+ * @param c            Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg          Pointer to the message data.
+ * @param n            Size of the message in bytes.
+ * @param opcode       Opcode specifying the type of message (OP_PING | OP_PONG | OP_TXT | OP_BIN).
+ * @param hint_compress Boolean hint indicating whether to attempt compression of the message (if supported).
+ * @return             enum ws_send_status
  */
-enum ws_send_status ws_conn_put_txt(ws_conn_t *c, void *msg, size_t n, bool compress);
-
+enum ws_send_status ws_conn_put_msg(ws_conn_t *c, void *msg, size_t n, uint8_t opcode, bool hint_compress);
 
 /**
- * Attempts to send a binary message immediately over the WebSocket connection. If the socket 
- * is not in a writable state, the message is queued for later transmission. The caller should 
- * check the return status to monitor the state.
- * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg      Pointer to the binary message data.
- * @param n        Size of the binary message in bytes.
- * @param compress Boolean indicating whether to compress the message.
- * @return         enum ws_send_status indicating the result of the send attempt.
+ * Attempts to send a message immediately over the WebSocket connection.
+ * Similar to 'ws_conn_put_msg', this function handles various types of messages determined by the opcode.
+ * It tries to send the message directly, but if the socket is not in a writable state due to backpressure,
+ * it falls back to queuing the message for later transmission.
+ * @param c            Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg          Pointer to the message data.
+ * @param n            Size of the message in bytes.
+ * @param opcode       Opcode specifying the type of message (e.g., ping, pong, text, binary).
+ * @param hint_compress Boolean hint indicating whether to attempt compression of the message.
+ * @return             enum ws_send_status 
  */
-enum ws_send_status ws_conn_send(ws_conn_t *c, void *msg, size_t n, bool compress);
-
-
-/**
- * Queues a binary message for asynchronous sending over the WebSocket connection.
- * Useful for batching multiple small messages. Can be sent later either via 'ws_conn_flush_pending'
- * or automatically by the event loop.
- * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg      Pointer to the binary message data.
- * @param n        Size of the binary message in bytes.
- * @param compress Boolean indicating whether to compress the message.
- * @return         enum ws_send_status indicating the queuing result.
- */
-enum ws_send_status ws_conn_put_bin(ws_conn_t *c, void *msg, size_t n, bool compress);
-
-
-/**
- * Attempts to send a pong message immediately over the WebSocket connection, responding to a ping.
- * If the socket is not writable, the message is queued. The caller should check the return status.
- * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg Pointer to the pong message data.
- * @param n   Size of the pong message in bytes.
- * @return    enum ws_send_status indicating the result of the send attempt.
- */
-enum ws_send_status ws_conn_pong(ws_conn_t *c, void *msg, size_t n);
-
-/**
- * Queues a pong message for asynchronous sending over the WebSocket connection.
- * Allows for batching and delayed sending controlled by the event loop.
- * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg Pointer to the pong message data.
- * @param n   Size of the pong message in bytes.
- * @return    enum ws_send_status indicating the queuing result.
- */
-enum ws_send_status ws_conn_put_pong(ws_conn_t *c, void *msg, size_t n);
-
-/**
- * Attempts to send a ping message immediately over the WebSocket connection.
- * If the socket is not writable, the message is queued. The caller should check the return status.
- * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg Pointer to the ping message data.
- * @param n   Size of the ping message in bytes.
- * @return    enum ws_send_status indicating the result of the send attempt.
- */
-enum ws_send_status ws_conn_ping(ws_conn_t *c, void *msg, size_t n);
-
-/**
- * Queues a ping message for asynchronous sending over the WebSocket connection.
- * @param c   Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg Pointer to the ping message data.
- * @param n   Size of the ping message in bytes.
- * @return    enum ws_send_status indicating the queuing result.
- */
-enum ws_send_status ws_conn_put_ping(ws_conn_t *c, void *msg, size_t n);
+enum ws_send_status ws_conn_send_msg(ws_conn_t *c, void *msg, size_t n, uint8_t opcode, bool hint_compress);
 
 /**
  * Closes the WebSocket connection with a "fire and forget" approach. 
@@ -497,6 +443,29 @@ int ws_epoll_ctl_del(ws_server_t *s, int fd);
 int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, int events);
 
 
+/**
+ * @brief Sets the maximum number of bytes to read per read operation for the WebSocket server.
+ *
+ * This function allows you to set the maximum number of bytes to read per read operation for the WebSocket server.
+ * The `max_per_read` parameter specifies the maximum number of bytes to read per read operation.
+ * If the max_per_read value given is zero, the default value of will be used (buffer size)
+ 
+ * @param s The WebSocket server object.
+ * @param max_per_read The maximum number of bytes to read per read operation.
+ */
+void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read);
+
+
+
+/**
+*/
+/**
+ * Returns the number of active events in the current event loop iteration for the WebSocket server.
+ *
+ * @param s The WebSocket server.
+ * @return The number of events.
+ */
+int ws_server_active_events(ws_server_t *s);
 
 
 typedef struct async_cb_ctx async_cb_ctx_t;
@@ -636,7 +605,6 @@ const char *ws_conn_strerror(ws_conn_t *c);
 
 
 
-
 /**
  * Callback invoked after a WebSocket connection is successfully upgraded.
  *
@@ -648,60 +616,7 @@ const char *ws_conn_strerror(ws_conn_t *c);
  */
 typedef void (*ws_open_cb_t)(ws_conn_t *ws_conn);
 
-/**
- * Callback invoked when a complete WebSocket message is available.
- *
- * NOTE: The 'msg' data is provided for use only within this callback.
- * If the caller needs to retain any part of the message beyond this callback,
- * it must be copied to a separate buffer.
- *
- * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg  Pointer to the message data.
- * @param n    Size of the message in bytes.
- * @param bin  Boolean indicating if the message is binary (`true`) or text (`false`).
- */
-typedef void (*ws_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, bool bin);
 
-/**
- * Optional callback invoked when a PING frame is received from the client.
- *
- * NOTE: The 'msg' data is provided for use only within this callback.
- * If the caller needs to retain any part of the ping message beyond this callback,
- * it must be copied to a separate buffer.
- *
- * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg  Pointer to the ping message data.
- * @param n    Size of the ping message in bytes.
- */
-typedef void (*ws_ping_cb_t)(ws_conn_t *c, void *msg, size_t n);
-
-/**
- * Optional callback invoked when a PONG frame is received from the client.
- *
- * NOTE: The 'msg' data is provided for use only within this callback.
- * If the caller needs to retain any part of the pong message beyond this callback,
- * it must be copied to a separate buffer.
- * This usually occurs in response to a PING frame sent by the server.
- *
- * @param c    Pointer to the WebSocket connection (`ws_conn_t`).
- * @param msg  Pointer to the pong message data.
- * @param n    Size of the pong message in bytes.
- */
-typedef void (*ws_pong_cb_t)(ws_conn_t *c, void *msg, size_t n);
-
-/**
- * Optional Callback invoked when a close frame is received from the client.
- *
- * NOTE: The 'reason' data is provided for use only within this callback.
- * If the caller needs to retain any part of the closure reason beyond this callback,
- * it must be copied to a separate buffer.
- *
- * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`).
- * @param reason  Pointer to the reason string for the closure. may be NULL
- * @param rlen    Length of the reason string. if zero reason will be NULL
- * @param code    Websocket close code.
- */
-typedef void (*ws_close_cb_t)(ws_conn_t *ws_conn, void *reason, size_t rlen, uint16_t code);
 /**
  * Callback invoked after the WebSocket connection has been closed.
  *
@@ -738,35 +653,6 @@ typedef void (*ws_drain_cb_t)(ws_conn_t *ws_conn);
  */
 typedef void (*ws_err_cb_t)(ws_server_t *s, int err);
 
-/**
- * Optional Callback invoked upon receiving a fragment of a WebSocket message.
- *
- * This callback pertains to the fragmentation feature of the WebSocket protocol,
- * not to be confused with a partially read message at the socket level. It is
- * generally inadvisable to register this callback unless there is a compelling
- * reason, as it is rarely, if ever, needed for typical application use.
- *
- * Registering this callback places the responsibility on the caller to manage the reassembly
- * of message fragments. The `fin` parameter, when true, signals that the last
- * fragment has been received, thereby indicating message completion.
- *
- * IMPORTANT: Once this callback is registered, `ws_msg_cb_t` will not be called
- * after the last fragment is received. Fragment data is not preserved in the WebSocket parsing
- * buffer after this callback is invoked. Thorough understanding of WebSocket
- * message fragmentation and its management is essential before opting to use this callback.
- *
- * NOTE: Registering this callback does not affect the handling of non-fragmented messages.
- * Non-fragmented messages will continue to be received through `ws_msg_cb_t` as usual (see above).
- *
- * @param c        Pointer to the WebSocket connection (`ws_conn_t`).
- * @param fragment Pointer to the data of the received fragment.
- * @param n        Size of the fragment in bytes.
- * @param fin      Boolean indicating if this fragment is the last in the message.
- *
- * @typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n, bool fin);
- */
-typedef void (*ws_msg_fragment_cb_t)(ws_conn_t *c, void *fragment, size_t n,
-                                     bool fin);
 
 
 /**
@@ -854,6 +740,10 @@ typedef size_t (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, char *request, const char
 typedef void (*ws_on_timeout_t)(ws_conn_t *ws_conn, unsigned kind);
 
 
+
+
+typedef void (*ws_on_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, uint8_t opcode);
+
 // Server parameter structure with optional callbacks for various WebSocket events.
 struct ws_server_params {
   const char *addr;
@@ -863,13 +753,9 @@ struct ws_server_params {
                              // Defaults to the system's limit for maximum open file descriptors.
   size_t max_buffered_bytes; // Maximum amount of websocket payload data to buffer before the connection
                              // is dropped. Defaults to 16000 bytes.
+  ws_on_msg_cb_t on_ws_msg;      // Callback for when a complete WebSocket frame is received.
   ws_open_cb_t on_ws_open;             // Callback for when a WebSocket connection is opened.
-  ws_msg_cb_t on_ws_msg;               // Callback for when a complete WebSocket message is received.
-  ws_msg_fragment_cb_t on_ws_msg_fragment; // Callback for when a WebSocket message fragment is received.
-  ws_ping_cb_t on_ws_ping;             // Callback for when a PING frame is received.
-  ws_pong_cb_t on_ws_pong;             // Callback for when a PONG frame is received.
   ws_drain_cb_t on_ws_drain;           // Callback for when the send buffer has been drained.
-  ws_close_cb_t on_ws_close;           // Callback for when a close frame is received.
   ws_disconnect_cb_t on_ws_disconnect; // Callback for after the connection has been closed.
   ws_on_timeout_t on_ws_conn_timeout;  // Callback for when a connection times out 
   ws_err_cb_t on_ws_err;               // Callback for when an internal error occurs.

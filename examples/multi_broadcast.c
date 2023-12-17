@@ -39,8 +39,7 @@ void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
     if (!ws_conn_can_put_msg(slc->conns[i], req->msg_len)) {
       ws_conn_flush_pending(slc->conns[i]);
     }
-
-    ws_conn_put_bin(slc->conns[i], req->msg, req->msg_len, 0);
+    ws_conn_put_msg(slc->conns[i], req->msg, req->msg_len, OP_BIN, 0);
   }
 
   pthread_mutex_lock(&slc->app->mu);
@@ -53,7 +52,7 @@ void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
   pthread_mutex_unlock(&slc->app->mu);
 }
 
-void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
+void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_server_t *s = ws_conn_server(conn);
   Slice *ctx = ws_server_ctx(s);
 

@@ -1,5 +1,5 @@
-#include "ws.h"
 #include "sock_util.h"
+#include "ws.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -10,9 +10,9 @@
 
 void server_on_open(ws_conn_t *conn) {}
 
-void server_on_msg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
+void server_on_msg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   // printf("msg %zu\n", n);
-  ws_conn_send(conn, msg, n, 0);
+  ws_conn_send_msg(conn, msg, n, OP_BIN, 0);
 }
 
 void server_on_disconnect(ws_conn_t *conn, int err) {
@@ -36,8 +36,6 @@ void *server_init(void *_) {
 
   return NULL;
 }
-
-
 
 int main(void) {
   pthread_t server_w;

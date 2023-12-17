@@ -7,7 +7,6 @@
 
 #define MAX_CONNS 1024
 
-
 int myTimerFdPollCBMaxCalls = 5;
 
 void myTimerFdPollCB(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev) {
@@ -15,7 +14,7 @@ void myTimerFdPollCB(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev) {
 
   int *tfd = ctx->ctx;
 
-    printf("myTimerFdPollCB calls left: %d\n", myTimerFdPollCBMaxCalls);
+  printf("myTimerFdPollCB calls left: %d\n", myTimerFdPollCBMaxCalls);
 
   if (!myTimerFdPollCBMaxCalls) {
     printf("stopping interval\n");
@@ -35,7 +34,7 @@ void myTimerFdPollCB(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev) {
 }
 
 void createPollableIntervalTimer(ws_server_t *s) {
-  int *tfd = malloc(sizeof (int));
+  int *tfd = malloc(sizeof(int));
   assert(tfd != NULL);
   *tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
@@ -44,7 +43,6 @@ void createPollableIntervalTimer(ws_server_t *s) {
 
   ctx->cb = myTimerFdPollCB;
   ctx->ctx = tfd;
-
 
   struct itimerspec timer = {.it_interval =
                                  {
@@ -58,28 +56,17 @@ void createPollableIntervalTimer(ws_server_t *s) {
 
   assert(timerfd_settime(*tfd, 0, &timer, NULL) != -1);
 
-
   ws_epoll_ctl_add(s, *tfd, ctx, EPOLLIN);
 }
 
+void onOpen(ws_conn_t *conn) {}
 
+void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {}
 
-void onOpen(ws_conn_t *conn) {
-
-}
-
-void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
-
-}
-
-void onDisconnect(ws_conn_t *conn, int err) {
-
-}
-
+void onDisconnect(ws_conn_t *conn, int err) {}
 
 int main(void) {
   printf("interval example starting on 9919\n");
-
 
   struct ws_server_params p = {
       .addr = "::1",
@@ -95,8 +82,9 @@ int main(void) {
 
   ws_epoll_create1(s); // register user's epoll
 
-  createPollableIntervalTimer(s); // create a pollable fd (this case it's timer fd)
+  createPollableIntervalTimer(
+      s); // create a pollable fd (this case it's timer fd)
 
-  ws_server_start(s, 1024); 
+  ws_server_start(s, 1024);
   return 0;
 }

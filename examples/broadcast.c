@@ -17,8 +17,7 @@ static void appBroadcast(App *state, char *msg, size_t len) {
         ws_conn_flush_pending(state->conns[i]);
       }
 
-      ws_conn_put_bin(state->conns[i], msg, len, 0);
-
+      ws_conn_put_msg(state->conns[i], msg, len, OP_BIN, 0);
       // ws_conn_send_txt(state->conns[i], msg, len, 0);
     }
 
@@ -53,7 +52,7 @@ void onOpen(ws_conn_t *conn) {
   appNewConnection(ws_server_ctx(ws_conn_server(conn)), conn);
 }
 
-void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
+void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   appBroadcast(ws_server_ctx(ws_conn_server(conn)), msg, n);
 }
 
