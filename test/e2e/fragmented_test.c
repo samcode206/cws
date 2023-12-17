@@ -1,5 +1,5 @@
-#include "ws.h"
 #include "sock_util.h"
+#include "ws.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -10,9 +10,9 @@
 
 void server_on_open(ws_conn_t *conn) {}
 
-void server_on_msg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
+void server_on_msg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   // printf("msg %zu\n", n);
-  ws_conn_send(conn, msg, n, 0);
+  ws_conn_send_msg(conn, msg, n, OP_BIN, 0);
 }
 
 void server_on_disconnect(ws_conn_t *conn, int err) {
@@ -29,7 +29,6 @@ void *server_init(void *_) {
       .max_buffered_bytes = 2048,
       .max_conns = 2,
   };
-
 
   ws_server_t *s = ws_server_create(&p);
 
@@ -99,7 +98,6 @@ void test2(int fd) {
   ssize_t read = sock_recvall(fd, buf, 122);
   assert(read > 0);
   buf[read] = '\0';
-
 
   if (read == 122 && !strcmp(msg, buf + 2)) {
     printf("[SUCCESS] Received the fragmented message\n");
@@ -359,7 +357,7 @@ int main(void) {
   };
 
   sleep(1);
-  
+
   int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
 

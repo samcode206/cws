@@ -67,17 +67,24 @@ void doFragmentedSend(ws_conn_t *conn) {
 
       // we are no longer in a fragmented state
       // those two calls below MUST not return WS_SEND_DROPPED_NOT_ALLOWED
-      assert(ws_conn_send(conn, "hi", 2, 0) != WS_SEND_DROPPED_NOT_ALLOWED);
-      assert(ws_conn_send_txt(conn, "hi", 2, 0) != WS_SEND_DROPPED_NOT_ALLOWED);
+
+      assert(ws_conn_send_msg(conn, "hi", 2, OP_BIN, 0) !=
+             WS_SEND_DROPPED_NOT_ALLOWED);
+      assert(ws_conn_send_msg(conn, "hi", 2, OP_TXT, 0) !=
+             WS_SEND_DROPPED_NOT_ALLOWED);
       printf("[SUCCESS]: sent all fragments\n");
       break;
     } else {
       // sending data shouldn't be allowed per Websocket protocol because we are
       // still not done with the fragmented msg
-      assert(ws_conn_send(conn, "hi", 2, 0) == WS_SEND_DROPPED_NOT_ALLOWED);
-      assert(ws_conn_send_txt(conn, "hi", 2, 0) == WS_SEND_DROPPED_NOT_ALLOWED);
-      assert(ws_conn_put_bin(conn, "hi", 2, 0) == WS_SEND_DROPPED_NOT_ALLOWED);
-      assert(ws_conn_put_txt(conn, "hi", 2, 0) == WS_SEND_DROPPED_NOT_ALLOWED);
+      assert(ws_conn_send_msg(conn, "hi", 2, OP_BIN, 0) ==
+             WS_SEND_DROPPED_NOT_ALLOWED);
+      assert(ws_conn_send_msg(conn, "hi", 2, OP_TXT, 0) ==
+             WS_SEND_DROPPED_NOT_ALLOWED);
+      assert(ws_conn_put_msg(conn, "hi", 2, OP_BIN, 0) ==
+             WS_SEND_DROPPED_NOT_ALLOWED);
+      assert(ws_conn_put_msg(conn, "hi", 2, OP_TXT, 0) ==
+             WS_SEND_DROPPED_NOT_ALLOWED);
 
       // not the final fragment
       // we should still be in the sending_fragments state
@@ -110,16 +117,12 @@ void onOpen(ws_conn_t *conn) {
   }
 }
 
-void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {}
+void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {}
 
 void onDisconnect(ws_conn_t *conn, int err) {
   assert(ws_conn_ctx(conn));
   free(ws_conn_ctx(conn));
   ws_conn_set_ctx(conn, NULL);
-}
-
-void onPong(ws_conn_t *conn, void *msg, size_t n) {
-  // printf("pong recv\n");
 }
 
 void *server_init(void *_) {
@@ -132,9 +135,7 @@ void *server_init(void *_) {
       .max_buffered_bytes = MAX_BUFFERED_BYTES,
       .max_conns = MAX_CONNS,
       .on_ws_drain = onDrain,
-      .on_ws_pong = onPong,
   };
-
 
   ws_server_t *s = ws_server_create(&p);
   ws_server_start(s, 8);
