@@ -2597,6 +2597,7 @@ void ws_conn_pause_read(ws_conn_t *c) {
     ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd);
 
     set_read_paused(c);
+    clear_processing(c);
   }
 }
 
