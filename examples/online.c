@@ -19,7 +19,7 @@ static void appStateAnnounceChange(AppState *state) {
   while (state->numConnections) {
     size_t i = state->numConnections;
     while (i--) {
-      ws_conn_send_txt(state->conns[i], msg, count, 0);
+          ws_conn_send_msg(state->conns[i], msg, count, OP_TXT, 0);
     }
     break;
   }
@@ -56,7 +56,7 @@ void onOpen(ws_conn_t *conn) {
   appStateNewConnection(ws_server_ctx(ws_conn_server(conn)), conn);
 }
 
-void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {
+void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   fprintf(stdout, "got message: %.*s\n", (int)n, (char *)msg);
 }
 
