@@ -115,12 +115,33 @@ enum ws_send_status {
 
 
 
-
+/**
+ * Queues a message for sending over the WebSocket connection.
+ * This can handle various message types including ping, pong, text, and binary,
+ * based on the provided opcode. The queued message will be sent later, either via 'ws_conn_flush_pending'
+ * or automatically by the event loop.
+ * @param c            Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg          Pointer to the message data.
+ * @param n            Size of the message in bytes.
+ * @param opcode       Opcode specifying the type of message (OP_PING | OP_PONG | OP_TXT | OP_BIN).
+ * @param hint_compress Boolean hint indicating whether to attempt compression of the message (if supported).
+ * @return             enum ws_send_status
+ */
 enum ws_send_status ws_conn_put_msg(ws_conn_t *c, void *msg, size_t n, uint8_t opcode, bool hint_compress);
 
-
+/**
+ * Attempts to send a message immediately over the WebSocket connection.
+ * Similar to 'ws_conn_put_msg', this function handles various types of messages determined by the opcode.
+ * It tries to send the message directly, but if the socket is not in a writable state due to backpressure,
+ * it falls back to queuing the message for later transmission.
+ * @param c            Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param msg          Pointer to the message data.
+ * @param n            Size of the message in bytes.
+ * @param opcode       Opcode specifying the type of message (e.g., ping, pong, text, binary).
+ * @param hint_compress Boolean hint indicating whether to attempt compression of the message.
+ * @return             enum ws_send_status 
+ */
 enum ws_send_status ws_conn_send_msg(ws_conn_t *c, void *msg, size_t n, uint8_t opcode, bool hint_compress);
-
 
 /**
  * Closes the WebSocket connection with a "fire and forget" approach. 
