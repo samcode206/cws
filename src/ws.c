@@ -425,15 +425,19 @@ ws_server_async_runner_run_pending_callbacks(ws_server_t *s,
                                              struct ws_server_async_runner *ar);
 
 typedef struct server {
-  size_t max_msg_len; // max allowed msg length
+  size_t max_msg_len;  // max allowed msg length
+  size_t max_per_read; // max bytes to read per read call
+  ws_on_msg_cb_t on_ws_msg;
   struct mirrored_buf_pool *buffer_pool;
   void *ctx;
+  int active_events; // number of active events per epoll_wait call
+  struct epoll_event ev;
+  ws_open_cb_t on_ws_open;
+
   size_t open_conns; // open websocket connections
   size_t max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
   struct ws_conn_pool *conn_pool;
-  ws_on_msg_cb_t on_ws_msg;
-  ws_open_cb_t on_ws_open;
   ws_drain_cb_t on_ws_drain;
   ws_disconnect_cb_t on_ws_disconnect;
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
@@ -450,7 +454,7 @@ typedef struct server {
   bool accept_paused;    // are we paused on accepting new connections
   int tfd;               // timer fd
   size_t internal_polls; // number of internal fds being watched by epoll
-  struct epoll_event ev;
+
   struct epoll_event events[1024];
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
@@ -1036,6 +1040,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
     printf("- debug:       %s\n", debug_enabled);
   }
 
+  s->max_per_read = s->buffer_pool->buf_sz;
+
   // server resources all ready
   return s;
 }
@@ -1353,10 +1359,13 @@ int ws_server_start(ws_server_t *s, int backlog) {
   client_socklen = sizeof client_sockaddr;
 
   for (;;) {
+    s->active_events = 0;
     int n_evs = ws_server_do_epoll_wait(s, epfd);
     if (unlikely((n_evs == 0) | (n_evs == -1))) {
       return n_evs;
     }
+
+    s->active_events = n_evs;
 
     bool check_user_epoll = false;
     int *user_epoll_ptr = &s->user_epoll;
@@ -1526,10 +1535,10 @@ static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
   //   #define _WS_CONN_READ_RECV_MAX 16388
   // #endif
 
-  // if ((conn->needed_bytes < 16384) & (space > _WS_CONN_READ_RECV_MAX)) {
-  //   // limit to 16kb if we don't specifically need to read more
-  //   space = 16384;
-  // }
+  size_t max_per_read = conn->base->max_per_read;
+  if ((max_per_read < space) & (conn->needed_bytes < max_per_read)) {
+    space = max_per_read;
+  }
 
   ssize_t n = buf_recv(buf, conn->fd, space, 0);
   if (n == -1 || n == 0) {
@@ -3515,6 +3524,16 @@ int ws_server_shutdown(ws_server_t *s) {
 inline bool ws_server_shutting_down(ws_server_t *s) {
   return s->internal_polls <= 0;
 }
+
+inline void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read) {
+  if (max_per_read) {
+    s->max_per_read = max_per_read;
+  } else {
+    s->max_per_read = s->buffer_pool->buf_sz;
+  }
+}
+
+inline int ws_server_active_events(ws_server_t *s) { return s->active_events; }
 
 static int ws_server_do_shutdown(ws_server_t *s) {
 

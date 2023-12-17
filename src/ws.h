@@ -443,6 +443,29 @@ int ws_epoll_ctl_del(ws_server_t *s, int fd);
 int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, int events);
 
 
+/**
+ * @brief Sets the maximum number of bytes to read per read operation for the WebSocket server.
+ *
+ * This function allows you to set the maximum number of bytes to read per read operation for the WebSocket server.
+ * The `max_per_read` parameter specifies the maximum number of bytes to read per read operation.
+ * If the max_per_read value given is zero, the default value of will be used (buffer size)
+ 
+ * @param s The WebSocket server object.
+ * @param max_per_read The maximum number of bytes to read per read operation.
+ */
+void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read);
+
+
+
+/**
+*/
+/**
+ * Returns the number of active events in the current event loop iteration for the WebSocket server.
+ *
+ * @param s The WebSocket server.
+ * @return The number of events.
+ */
+int ws_server_active_events(ws_server_t *s);
 
 
 typedef struct async_cb_ctx async_cb_ctx_t;
