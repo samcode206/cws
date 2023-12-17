@@ -57,9 +57,6 @@
 #define OP_PING 0x9
 #define OP_PONG 0xA
 
-#define PAYLOAD_LEN_16 126
-#define PAYLOAD_LEN_64 127
-
 #define SECONDS_PER_TICK 1
 #define TIMER_CHECK_TICKS 5
 #define READ_TIMEOUT 60
@@ -84,62 +81,9 @@
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-struct ws_conn_pool {
-  ws_conn_t *base;
-  size_t avb;
-  size_t cap;
-  ws_conn_t **avb_stack;
-};
+// connection state utils so we don't fill the code with bit manipulation
 
-typedef struct {
-  size_t rpos;
-  size_t wpos;
-  size_t buf_sz;
-  uint8_t *buf;
-} mirrored_buf_t;
-
-// mirrored buffer is a ring buffer with two contiguous memory mappings pointing
-// to the same memory, used to enable contiguous memory access even in wrap
-// around cases the underlying memory comes from memfd_create which give us an
-// fd to allow mmaping
-struct mirrored_buf_pool {
-  int fd;               // memfd_create file descriptor
-  size_t buf_sz;        // size of each buffer
-  void *base;           // raw memory
-  size_t avb;           // number of buffers available
-  size_t cap;           // total buffers
-  size_t depth_reached; // current max depth reached per tick
-
-  size_t max_depth_since_gc; // max depth reached since last time gc ran
-
-  size_t avg_depth_reached_since_gc; // average depth reached recorded since
-                                     // last gc
-
-  size_t ticks; // total ticks for updating metrics
-
-  size_t touched_bufs; // total used since last gc
-
-  size_t avg_depths[BUF_POOL_LONG_AVG_TICKS]; // average depth for the last
-                                              // BUF_POOL_LONG_AVG_TICKS
-
-  mirrored_buf_t *
-      *avb_stack; // LIFO used for handing out and putting back buffers
-  mirrored_buf_t *mirrored_bufs; // the buffer structures each pointing to their
-                                 // respective segment of base
-};
-
-static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
-                                                          size_t buf_sz);
-
-static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp);
-
-static void mirrored_buf_put(struct mirrored_buf_pool *bp, mirrored_buf_t *buf);
-
-struct dyn_buf {
-  size_t len;
-  size_t cap;
-  char data[];
-};
+typedef struct mirrored_buf_t mirrored_buf_t;
 
 struct ws_conn_t {
   int fd;                     // socket fd
@@ -159,149 +103,6 @@ struct ws_conn_t {
   struct dyn_buf *pmd_buf;
 #endif /* WITH_COMPRESSION */
 };
-
-struct conn_list {
-  size_t len;
-  size_t cap;
-  ws_conn_t **conns;
-};
-
-struct ws_server_async_runner_buf {
-  size_t len;
-  size_t cap;
-  struct async_cb_ctx **cbs;
-};
-
-struct ws_server_async_runner {
-  pthread_mutex_t mu;
-  int chanfd;
-  struct ws_server_async_runner_buf *pending;
-  struct ws_server_async_runner_buf *ready;
-};
-
-static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap);
-
-static void
-ws_server_async_runner_run_pending_callbacks(ws_server_t *s,
-                                             struct ws_server_async_runner *ar);
-
-typedef struct server {
-  size_t max_msg_len; // max allowed msg length
-  ws_msg_cb_t on_ws_msg;
-  ws_msg_fragment_cb_t on_ws_msg_fragment;
-  ws_ping_cb_t on_ws_ping;
-  struct mirrored_buf_pool *buffer_pool;
-  void *ctx;
-  size_t open_conns; // open websocket connections
-  size_t max_conns;  // max connections allowed
-  ws_accept_cb_t on_ws_accept;
-
-  ws_open_cb_t on_ws_open;
-  ws_drain_cb_t on_ws_drain;
-  ws_disconnect_cb_t on_ws_disconnect;
-  ws_on_upgrade_req_cb_t on_ws_upgrade_req;
-  ws_close_cb_t on_ws_close;
-  ws_pong_cb_t on_ws_pong;
-  ws_on_timeout_t on_ws_conn_timeout;
-  struct ws_conn_pool *conn_pool;
-  struct ws_server_async_runner *async_runner;
-
-  ws_err_cb_t on_ws_err;
-  ws_err_accept_cb_t on_ws_accept_err;
-#ifdef WITH_COMPRESSION
-  z_stream *istrm;
-  z_stream *dstrm;
-#endif    /* WITH_COMPRESSION */
-  int fd; // server file descriptor
-  int epoll_fd;
-  bool accept_paused;    // are we paused on accepting new connections
-  int tfd;               // timer fd
-  size_t internal_polls; // number of internal fds being watched by epoll
-  struct epoll_event ev;
-  struct epoll_event events[1024];
-  struct conn_list pending_timers;
-  struct conn_list closeable_conns;
-  struct conn_list writeable_conns;
-  int user_epoll;
-} ws_server_t;
-
-static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
-static struct ws_conn_t *ws_conn_get(struct ws_conn_pool *p);
-
-static void ws_conn_put(struct ws_conn_pool *p, struct ws_conn_t *c);
-
-#ifdef WITH_COMPRESSION
-static z_stream *inflation_stream_init();
-
-static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
-                                        size_t in_len, char *out,
-                                        size_t out_len, bool no_ctx_takeover);
-
-static z_stream *deflation_stream_init();
-
-static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
-                                        size_t in_len, char *out,
-                                        size_t out_len, bool no_ctx_takeover);
-
-static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
-  if (!c->pmd_buf) {
-    c->pmd_buf = malloc(sizeof(struct dyn_buf) +
-                        (c->base->buffer_pool->buf_sz * 2) + 16);
-    c->pmd_buf->len = 0;
-    c->pmd_buf->cap = (c->base->buffer_pool->buf_sz * 2) + 16;
-    assert(c->pmd_buf != NULL);
-    return c->pmd_buf;
-  } else {
-    return c->pmd_buf;
-  }
-}
-
-static void conn_dyn_buf_dispose(ws_conn_t *c) {
-  if (c->pmd_buf) {
-    free(c->pmd_buf);
-    c->pmd_buf = NULL;
-  }
-}
-
-// maybe later we can support dedicated compression
-// z_stream *conn_inflate_stream(ws_conn_t *c) {
-//   if (c->buffers[3]) {
-//     return c->buffers[3];
-//   }
-
-//   z_stream *strm = inflation_stream_init();
-//   c->buffers[3] = strm;
-//   return strm;
-// }
-
-// void conn_inflate_stream_destroy(ws_conn_t *c) {
-//   if (c->buffers[3]) {
-//     inflateEnd(c->buffers[3]);
-//     c->buffers[3] = NULL;
-//   }
-// }
-
-// z_stream *conn_deflate_stream(ws_conn_t *c) {
-//   if (c->buffers[4]) {
-//     return c->buffers[4];
-//   }
-
-//   z_stream *strm = deflation_stream_init();
-//   c->buffers[4] = strm;
-
-//   return strm;
-// }
-
-// void conn_deflate_stream_destroy(ws_conn_t *c) {
-//   if (c->buffers[4]) {
-//     deflateEnd(c->buffers[4]);
-//     c->buffers[4] = NULL;
-//   }
-// }
-
-#endif /* WITH_COMPRESSION */
-
-// connection state utils so we don't fill the code with bit manipulation
 
 static inline bool is_closing(unsigned int const flags) {
   return (flags & CONN_CLOSE_QUEUED) != 0;
@@ -447,61 +248,31 @@ static inline void clear_read_paused(ws_conn_t *c) {
   c->flags &= ~CONN_RX_PAUSED;
 }
 
-static void conn_prep_send_buf(ws_conn_t *conn) {
-  if (!conn->send_buf) {
-    // mirrored_buf_t *recv_buf = conn->recv_buf;
-    // // can we swap buffers so we don't go all the way to the buffer pool
-    // // commented out because we may overwrite the msg when user sends
-    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's
-    // us know that
-    // // that they no longer want the msg and we can make this safe
-    // if (recv_buf && !buf_len(recv_buf)) {
-    //   conn->send_buf = recv_buf;
-    //   conn->recv_buf = NULL;
-    // } else {
-    conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-    assert(conn->send_buf != NULL);
-    // }
-  }
-}
-
 // Frame Parsing Utils
-static inline uint8_t frame_get_fin(const unsigned char *buf) {
+static inline uint8_t frame_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
 }
 
-static inline uint8_t frame_get_opcode(const unsigned char *buf) {
+static inline uint8_t frame_opcode(const unsigned char *buf) {
   return buf[0] & 0x0F;
 }
 
-static inline size_t frame_payload_get_len126(const unsigned char *buf) {
-  return (buf[2] << 8) | buf[3];
-}
-
-static inline size_t frame_payload_get_len127(const unsigned char *buf) {
-  return ((uint64_t)buf[2] << 56) | ((uint64_t)buf[3] << 48) |
-         ((uint64_t)buf[4] << 40) | ((uint64_t)buf[5] << 32) |
-         ((uint64_t)buf[6] << 24) | ((uint64_t)buf[7] << 16) |
-         ((uint64_t)buf[8] << 8) | (uint64_t)buf[9];
-}
-
-static inline size_t frame_payload_get_raw_len(const unsigned char *buf) {
-  return buf[1] & 0X7F;
-}
-
-static int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
-                                    size_t *res) {
-  size_t raw_len = frame_payload_get_raw_len(buf);
+static unsigned frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
+                                         size_t *res) {
+  size_t raw_len = buf[1] & 0X7F;
   *res = raw_len;
-  if (raw_len == PAYLOAD_LEN_16) {
+  if (raw_len == 126) {
     if (rbuf_len > 3) {
-      *res = frame_payload_get_len126(buf);
+      *res = (buf[2] << 8) | buf[3];
     } else {
       return 4;
     }
-  } else if (raw_len == PAYLOAD_LEN_64) {
+  } else if (raw_len == 127) {
     if (rbuf_len > 9) {
-      *res = frame_payload_get_len127(buf);
+      *res = ((uint64_t)buf[2] << 56) | ((uint64_t)buf[3] << 48) |
+             ((uint64_t)buf[4] << 40) | ((uint64_t)buf[5] << 32) |
+             ((uint64_t)buf[6] << 24) | ((uint64_t)buf[7] << 16) |
+             ((uint64_t)buf[8] << 8) | (uint64_t)buf[9];
     } else {
       return 10;
     }
@@ -513,8 +284,6 @@ static int frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
 static inline bool is_compressed_msg(uint8_t const *buf) {
   return (buf[0] & 0x40) != 0;
 }
-
-static unsigned utf8_is_valid(uint8_t *s, size_t n);
 
 static int base64_encode(char *coded_dst, const char *plain_src,
                          int len_plain_src);
@@ -577,6 +346,224 @@ static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
 //     i += 4;
 //   }
 // }
+
+static unsigned utf8_is_valid(uint8_t *s, size_t n);
+
+struct ws_conn_pool {
+  ws_conn_t *base;
+  size_t avb;
+  size_t cap;
+  ws_conn_t **avb_stack;
+};
+
+typedef struct mirrored_buf_t {
+  size_t rpos;
+  size_t wpos;
+  size_t buf_sz;
+  uint8_t *buf;
+} mirrored_buf_t;
+
+// mirrored buffer is a ring buffer with two contiguous memory mappings pointing
+// to the same memory, used to enable contiguous memory access even in wrap
+// around cases the underlying memory comes from memfd_create which give us an
+// fd to allow mmaping
+struct mirrored_buf_pool {
+  int fd;               // memfd_create file descriptor
+  size_t buf_sz;        // size of each buffer
+  void *base;           // raw memory
+  size_t avb;           // number of buffers available
+  size_t cap;           // total buffers
+  size_t depth_reached; // current max depth reached per tick
+
+  size_t max_depth_since_gc; // max depth reached since last time gc ran
+
+  size_t avg_depth_reached_since_gc; // average depth reached recorded since
+                                     // last gc
+
+  size_t ticks; // total ticks for updating metrics
+
+  size_t touched_bufs; // total used since last gc
+
+  size_t avg_depths[BUF_POOL_LONG_AVG_TICKS]; // average depth for the last
+                                              // BUF_POOL_LONG_AVG_TICKS
+
+  mirrored_buf_t *
+      *avb_stack; // LIFO used for handing out and putting back buffers
+  mirrored_buf_t *mirrored_bufs; // the buffer structures each pointing to their
+                                 // respective segment of base
+};
+
+static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
+                                                          size_t buf_sz);
+
+static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp);
+
+static void mirrored_buf_put(struct mirrored_buf_pool *bp, mirrored_buf_t *buf);
+
+struct dyn_buf {
+  size_t len;
+  size_t cap;
+  char data[];
+};
+
+struct conn_list {
+  size_t len;
+  size_t cap;
+  ws_conn_t **conns;
+};
+
+struct ws_server_async_runner_buf {
+  size_t len;
+  size_t cap;
+  struct async_cb_ctx **cbs;
+};
+
+struct ws_server_async_runner {
+  pthread_mutex_t mu;
+  int chanfd;
+  struct ws_server_async_runner_buf *pending;
+  struct ws_server_async_runner_buf *ready;
+};
+
+static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap);
+
+static void
+ws_server_async_runner_run_pending_callbacks(ws_server_t *s,
+                                             struct ws_server_async_runner *ar);
+
+typedef struct server {
+  size_t max_msg_len; // max allowed msg length
+  ws_msg_cb_t on_ws_msg;
+  ws_msg_fragment_cb_t on_ws_msg_fragment;
+  ws_ping_cb_t on_ws_ping;
+  struct mirrored_buf_pool *buffer_pool;
+  void *ctx;
+  size_t open_conns; // open websocket connections
+  size_t max_conns;  // max connections allowed
+  ws_accept_cb_t on_ws_accept;
+
+  ws_open_cb_t on_ws_open;
+  ws_drain_cb_t on_ws_drain;
+  ws_disconnect_cb_t on_ws_disconnect;
+  ws_on_upgrade_req_cb_t on_ws_upgrade_req;
+  ws_close_cb_t on_ws_close;
+  ws_pong_cb_t on_ws_pong;
+  ws_on_timeout_t on_ws_conn_timeout;
+  struct ws_conn_pool *conn_pool;
+  struct ws_server_async_runner *async_runner;
+
+  ws_err_cb_t on_ws_err;
+  ws_err_accept_cb_t on_ws_accept_err;
+#ifdef WITH_COMPRESSION
+  z_stream *istrm;
+  z_stream *dstrm;
+#endif    /* WITH_COMPRESSION */
+  int fd; // server file descriptor
+  int epoll_fd;
+  bool accept_paused;    // are we paused on accepting new connections
+  int tfd;               // timer fd
+  size_t internal_polls; // number of internal fds being watched by epoll
+  struct epoll_event ev;
+  struct epoll_event events[1024];
+  struct conn_list pending_timers;
+  struct conn_list closeable_conns;
+  struct conn_list writeable_conns;
+  int user_epoll;
+} ws_server_t;
+
+static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
+static struct ws_conn_t *ws_conn_get(struct ws_conn_pool *p);
+
+static void ws_conn_put(struct ws_conn_pool *p, struct ws_conn_t *c);
+
+#ifdef WITH_COMPRESSION
+static z_stream *inflation_stream_init();
+
+static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover);
+
+static z_stream *deflation_stream_init();
+
+static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
+                                        size_t in_len, char *out,
+                                        size_t out_len, bool no_ctx_takeover);
+
+static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
+  if (!c->pmd_buf) {
+    c->pmd_buf = malloc(sizeof(struct dyn_buf) +
+                        (c->base->buffer_pool->buf_sz * 2) + 16);
+    c->pmd_buf->len = 0;
+    c->pmd_buf->cap = (c->base->buffer_pool->buf_sz * 2) + 16;
+    assert(c->pmd_buf != NULL);
+    return c->pmd_buf;
+  } else {
+    return c->pmd_buf;
+  }
+}
+
+static void conn_dyn_buf_dispose(ws_conn_t *c) {
+  if (c->pmd_buf) {
+    free(c->pmd_buf);
+    c->pmd_buf = NULL;
+  }
+}
+
+// maybe later we can support dedicated compression
+// z_stream *conn_inflate_stream(ws_conn_t *c) {
+//   if (c->buffers[3]) {
+//     return c->buffers[3];
+//   }
+
+//   z_stream *strm = inflation_stream_init();
+//   c->buffers[3] = strm;
+//   return strm;
+// }
+
+// void conn_inflate_stream_destroy(ws_conn_t *c) {
+//   if (c->buffers[3]) {
+//     inflateEnd(c->buffers[3]);
+//     c->buffers[3] = NULL;
+//   }
+// }
+
+// z_stream *conn_deflate_stream(ws_conn_t *c) {
+//   if (c->buffers[4]) {
+//     return c->buffers[4];
+//   }
+
+//   z_stream *strm = deflation_stream_init();
+//   c->buffers[4] = strm;
+
+//   return strm;
+// }
+
+// void conn_deflate_stream_destroy(ws_conn_t *c) {
+//   if (c->buffers[4]) {
+//     deflateEnd(c->buffers[4]);
+//     c->buffers[4] = NULL;
+//   }
+// }
+
+#endif /* WITH_COMPRESSION */
+
+static void conn_prep_send_buf(ws_conn_t *conn) {
+  if (!conn->send_buf) {
+    // mirrored_buf_t *recv_buf = conn->recv_buf;
+    // // can we swap buffers so we don't go all the way to the buffer pool
+    // // commented out because we may overwrite the msg when user sends
+    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's
+    // us know that
+    // // that they no longer want the msg and we can make this safe
+    // if (recv_buf && !buf_len(recv_buf)) {
+    //   conn->send_buf = recv_buf;
+    //   conn->recv_buf = NULL;
+    // } else {
+    conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
+    assert(conn->send_buf != NULL);
+    // }
+  }
+}
 
 static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd);
 
@@ -1875,8 +1862,8 @@ static inline void ws_conn_handle(ws_conn_t *conn) {
       uint8_t *frame = conn->recv_buf->buf + conn->recv_buf->rpos +
                        conn->fragments_len + total_trimmed;
 
-      uint8_t fin = frame_get_fin(frame);
-      uint8_t opcode = frame_get_opcode(frame);
+      uint8_t fin = frame_fin(frame);
+      uint8_t opcode = frame_opcode(frame);
       bool is_compressed = is_compressed_msg(frame);
 
       // printf("fragments=%zu\n", conn->state.fragments_len);
@@ -2285,7 +2272,7 @@ static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
   uint8_t hbuf[hlen]; // place the header on the stack
   memset(hbuf, 0, 2);
   hbuf[0] = opAndFinOpts;
-  hbuf[1] = PAYLOAD_LEN_64;
+  hbuf[1] = 127;
   hbuf[2] = (len >> 56) & 0xFF;
   hbuf[3] = (len >> 48) & 0xFF;
   hbuf[4] = (len >> 40) & 0xFF;
@@ -2407,7 +2394,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       memset(hbuf, 0, 2);
       hbuf[0] = opAndFinOpts;
       conn->send_buf->wpos += hlen;
-      hbuf[1] = PAYLOAD_LEN_16;
+      hbuf[1] = 126;
       hbuf[2] = (len >> 8) & 0xFF;
       hbuf[3] = len & 0xFF;
       buf_put(conn->send_buf, data, len);
