@@ -1,5 +1,4 @@
 server
-node_modules
 reports
 online
 *.a
@@ -7,3 +6,4 @@ online
 *.so
 EchoServer
 client
+/scripts

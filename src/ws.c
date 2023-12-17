@@ -667,6 +667,14 @@ static void server_check_pending_timers(ws_server_t *s) {
         }
 
         timeout_kind = 993;
+      } else {
+        // ping the client if they are near read timeout
+        if (c->read_timeout != 0 &&
+            c->read_timeout < now + (TIMER_CHECK_TICKS + TIMER_CHECK_TICKS)) {
+          if (is_writeable(c) && is_upgraded(c)) {
+            ws_conn_send_msg(c, NULL, 0, OP_PING, 0);
+          }
+        }
       }
     }
 
@@ -1530,7 +1538,20 @@ int ws_server_start(ws_server_t *s, int backlog) {
     }
 
     if (check_user_epoll) {
-      int count = epoll_wait(*user_epoll_ptr, s->events, 1024, 0);
+      int count;
+      for (;;) {
+        count = epoll_wait(*user_epoll_ptr, s->events, 1024, 0);
+        if (unlikely(count == 0 || count == -1)) {
+          if (count == -1 && errno == EINTR) {
+            continue;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+
       if (count > 0) {
         for (int i = 0; i < count; ++i) {
           ws_poll_cb_ctx_t *ctx = s->events[i].data.ptr;
@@ -1874,7 +1895,7 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 
 #endif /* WITH_COMPRESSION */
 
-static inline void ws_conn_proccess_frames(ws_conn_t *conn) {
+static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
   unsigned int next_read_timeout = time(NULL) + READ_TIMEOUT;
@@ -2590,6 +2611,13 @@ void ws_conn_resume_reads(ws_conn_t *c) {
 
     ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd);
     clear_read_paused(c);
+
+    // if there is data in the buffer after resuming
+    // and the connection upgraded connection isn't the current being processed
+    // start processing frames
+    if (c->recv_buf && !is_processing(c) && is_upgraded(c)) {
+      ws_conn_proccess_frames(c);
+    }
   }
 }
 
