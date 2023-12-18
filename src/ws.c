@@ -891,6 +891,10 @@ static void ws_server_register_callbacks(ws_server_t *s,
   }
 }
 
+static inline size_t align_to(size_t n, size_t to) {
+  return (n + (to - 1)) & ~(to - 1);
+}
+
 static void ws_server_register_buffers(ws_server_t *s,
                                        struct ws_server_params *params) {
   size_t max_backpressure =
@@ -905,15 +909,27 @@ static void ws_server_register_buffers(ws_server_t *s,
   struct rlimit rlim = {0};
   getrlimit(RLIMIT_NOFILE, &rlim);
 
+  unsigned long max_map_count;
+
+  FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
+  if (f == NULL) {
+    perror("Error Opening /proc/sys/vm/max_map_count");
+  } else {
+    if (fscanf(f, "%zu", &max_map_count) != 1) {
+      perror("Error Reading /proc/sys/vm/max_map_count");
+    }
+
+    fclose(f);
+  }
+
+  max_map_count = max_map_count ? max_map_count : 65530;
+
   if (!params->max_conns) {
     // account for already open files
     s->max_conns = rlim.rlim_cur - 16;
-  } else if (params->max_conns < 16) {
-    s->max_conns = 16;
-  } else if (params->max_conns < rlim.rlim_cur) {
+  } else if (params->max_conns <= rlim.rlim_cur) {
     s->max_conns = params->max_conns;
-
-    if (params->verbose) {
+    if (params->verbose && rlim.rlim_cur > 8) {
       if (s->max_conns > rlim.rlim_cur - 8) {
         fprintf(
             stderr,
@@ -923,14 +939,29 @@ static void ws_server_register_buffers(ws_server_t *s,
       }
     }
 
-  } else if (params->max_conns >= rlim.rlim_cur) {
-    s->max_conns = params->max_conns;
-
+  } else if (params->max_conns > rlim.rlim_cur) {
+    s->max_conns = rlim.rlim_cur;
     if (params->verbose) {
       fprintf(stderr,
               "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
-              s->max_conns, rlim.rlim_cur);
+              params->max_conns, rlim.rlim_cur);
     }
+  }
+
+  if (s->max_conns * 4 > max_map_count) {
+    fprintf(stderr,
+            "[WARN] max_map_count %zu is too low and may cause non recoverable "
+            "mmap "
+            "failures. "
+            "Consider increasing it to %zu or higher # sudo sysctl -w "
+            "vm.max_map_count=%zu\n",
+            max_map_count, align_to((s->max_conns * 4) + 64, 2),
+            align_to((s->max_conns * 4) + 64, 2));
+
+    // leave off 64 mappings
+    size_t new_max_conns = (max_map_count / 4) > 64 ? (max_map_count / 4) - 64
+                                                    : (max_map_count / 4);
+    s->max_conns = new_max_conns;
   }
 
   s->buffer_pool =
@@ -2674,10 +2705,6 @@ static unsigned utf8_is_valid(uint8_t *s, size_t n) {
     }
   }
   return 1;
-}
-
-static inline size_t align_to(size_t n, size_t to) {
-  return (n + (to - 1)) & ~(to - 1);
 }
 
 static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
