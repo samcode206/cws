@@ -361,11 +361,16 @@ typedef struct mirrored_buf_t {
 // around cases the underlying memory comes from memfd_create which give us an
 // fd to allow mmaping
 struct mirrored_buf_pool {
-  int fd;               // memfd_create file descriptor
-  size_t buf_sz;        // size of each buffer
-  void *base;           // raw memory
-  size_t avb;           // number of buffers available
-  size_t cap;           // total buffers
+  int fd;        // memfd_create file descriptor
+  size_t buf_sz; // size of each buffer
+  uint8_t *pos;  // mmap position
+  size_t offset; // file offset
+  void *base;    // raw memory
+  size_t avb;    // number of buffers available
+  size_t cap;    // total buffers
+  mirrored_buf_t *
+      *avb_stack; // LIFO used for handing out and putting back buffers
+
   size_t depth_reached; // current max depth reached per tick
 
   size_t max_depth_since_gc; // max depth reached since last time gc ran
@@ -380,14 +385,12 @@ struct mirrored_buf_pool {
   size_t avg_depths[BUF_POOL_LONG_AVG_TICKS]; // average depth for the last
                                               // BUF_POOL_LONG_AVG_TICKS
 
-  mirrored_buf_t *
-      *avb_stack; // LIFO used for handing out and putting back buffers
   mirrored_buf_t *mirrored_bufs; // the buffer structures each pointing to their
                                  // respective segment of base
 };
 
-static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
-                                                          size_t buf_sz);
+static struct mirrored_buf_pool *
+mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap);
 
 static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp);
 
@@ -931,7 +934,7 @@ static void ws_server_register_buffers(ws_server_t *s,
   }
 
   s->buffer_pool =
-      mirrored_buf_pool_create(s->max_conns + s->max_conns, buffer_size);
+      mirrored_buf_pool_create(s->max_conns + s->max_conns, buffer_size, 1);
 
   s->conn_pool = ws_conn_pool_create(s->max_conns);
 
@@ -1545,7 +1548,6 @@ static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
     if (n == -1 && (errno == EAGAIN || errno == EINTR)) {
       return 0;
     }
-
     conn->fragments_len = n == -1 ? errno : 0;
     ws_conn_destroy(conn, WS_ERR_READ);
     return -1;
@@ -2864,8 +2866,8 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 
 #endif /* WITH_COMPRESSION */
 
-static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
-                                                          size_t buf_sz) {
+static struct mirrored_buf_pool *
+mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   long page_size = sysconf(_SC_PAGESIZE);
   if (page_size == -1) {
     fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
@@ -2932,25 +2934,33 @@ static struct mirrored_buf_pool *mirrored_buf_pool_create(uint32_t nmemb,
 
   uint32_t i;
 
+  pool->offset = 0;
+  pool->pos = pool->base;
+
   uint8_t *pos = pool->base;
   size_t offset = 0;
 
   for (i = 0; i < nmemb; ++i) {
-    if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
-             pool->fd, offset) == MAP_FAILED) {
-      perror("mmap");
-      close(pool->fd);
-      exit(EXIT_FAILURE);
-      return NULL;
-    };
+    if (!defer_bufs_mmap) {
+      if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+               pool->fd, offset) == MAP_FAILED) {
+        perror("mmap");
+        close(pool->fd);
+        exit(EXIT_FAILURE);
+        return NULL;
+      };
 
-    if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
-             MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
-      perror("mmap");
-      close(pool->fd);
-      exit(EXIT_FAILURE);
-      return NULL;
-    };
+      if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
+               MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
+        perror("mmap");
+        close(pool->fd);
+        exit(EXIT_FAILURE);
+        return NULL;
+      };
+
+      pool->offset += buf_sz;
+      pool->pos = pool->pos + buf_sz + buf_sz;
+    }
 
     pool->mirrored_bufs[i].buf = pos;
     pool->mirrored_bufs[i].buf_sz = buf_sz;
@@ -2990,8 +3000,11 @@ static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
   size_t total_size = pool_sz + buf_pool_sz;
 
   for (size_t i = 0; i < s->buffer_pool->cap; i++) {
-    munmap(s->buffer_pool->mirrored_bufs[i].buf, buf_sz);
-    munmap(s->buffer_pool->mirrored_bufs[i].buf + buf_sz, buf_sz);
+    if (s->buffer_pool->pos > s->buffer_pool->mirrored_bufs[i].buf) {
+      munmap(s->buffer_pool->mirrored_bufs[i].buf, buf_sz);
+      munmap(s->buffer_pool->mirrored_bufs[i].buf + buf_sz, buf_sz);
+    }
+
     s->buffer_pool->mirrored_bufs[i].buf = NULL;
   }
 
@@ -3006,6 +3019,39 @@ static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
   if (likely(bp->avb)) {
     mirrored_buf_t *b = bp->avb_stack[--bp->avb];
     register size_t current_depth = bp->cap - bp->avb;
+
+    // check if we need to create the memory mappings for the mirrored buffer
+    if (bp->pos <= b->buf) {
+      uint8_t *pos = bp->pos;
+      size_t offset = bp->offset;
+      size_t buf_sz = bp->buf_sz;
+
+      void *mem = mmap(pos, buf_sz, PROT_READ | PROT_WRITE,
+                       MAP_SHARED | MAP_FIXED, bp->fd, offset);
+      // like we warned this usually fails due to mmap count limit and we have
+      // to exit
+      if (unlikely(mem == MAP_FAILED)) {
+        perror("mmap");
+        close(bp->fd);
+        exit(EXIT_FAILURE);
+        return NULL;
+      };
+
+      mem = mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
+                 MAP_SHARED | MAP_FIXED, bp->fd, offset);
+
+      if (unlikely(mem == MAP_FAILED)) {
+        perror("mmap");
+        close(bp->fd);
+        exit(EXIT_FAILURE);
+        return NULL;
+      };
+
+      (void)mem;
+
+      bp->offset += buf_sz;
+      bp->pos = bp->pos + buf_sz + buf_sz;
+    }
 
     bp->depth_reached =
         current_depth > bp->depth_reached ? current_depth : bp->depth_reached;
