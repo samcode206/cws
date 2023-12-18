@@ -2592,7 +2592,9 @@ void ws_conn_resume_reads(ws_conn_t *c) {
     // and the connection upgraded connection isn't the current being processed
     // start processing frames
     if (c->recv_buf && !is_processing(c) && is_upgraded(c)) {
+      set_processing(c);
       ws_conn_proccess_frames(c);
+      clear_processing(c);
     }
   }
 }
