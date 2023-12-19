@@ -76,7 +76,7 @@
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-// connection state utils so we don't fill the code with bit manipulation
+
 
 typedef struct mirrored_buf_t mirrored_buf_t;
 
@@ -242,11 +242,11 @@ static inline bool is_closed(ws_conn_t *c) { return c->fd == -1; }
 static inline void mark_closed(ws_conn_t *c) { c->fd = -1; }
 
 // Frame Parsing Utils
-static inline uint8_t frame_fin(const unsigned char *buf) {
+static inline uint_fast8_t frame_fin(const unsigned char *buf) {
   return (buf[0] >> 7) & 0x01;
 }
 
-static inline uint8_t frame_opcode(const unsigned char *buf) {
+static inline uint_fast8_t frame_opcode(const unsigned char *buf) {
   return buf[0] & 0x0F;
 }
 
@@ -1902,8 +1902,8 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
       uint8_t *frame = conn->recv_buf->buf + conn->recv_buf->rpos +
                        conn->fragments_len + total_trimmed;
 
-      uint8_t fin = frame_fin(frame);
-      uint8_t opcode = frame_opcode(frame);
+      uint_fast8_t fin = frame_fin(frame);
+      uint_fast8_t opcode = frame_opcode(frame);
       bool is_compressed = is_compressed_msg(frame);
 
       // printf("fragments=%zu\n", conn->state.fragments_len);
