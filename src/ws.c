@@ -254,13 +254,16 @@ static unsigned frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
                                          size_t *res) {
   size_t raw_len = buf[1] & 0X7F;
   *res = raw_len;
-  if (raw_len == 126) {
+
+  switch (raw_len) {
+  case 126:
     if (rbuf_len > 3) {
       *res = (buf[2] << 8) | buf[3];
     } else {
       return 4;
     }
-  } else if (raw_len == 127) {
+    break;
+  case 127:
     if (rbuf_len > 9) {
       *res = ((uint64_t)buf[2] << 56) | ((uint64_t)buf[3] << 48) |
              ((uint64_t)buf[4] << 40) | ((uint64_t)buf[5] << 32) |
@@ -269,6 +272,7 @@ static unsigned frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
     } else {
       return 10;
     }
+    break;
   }
 
   return 0;
