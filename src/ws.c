@@ -933,8 +933,8 @@ static void ws_server_register_buffers(ws_server_t *s,
       if (s->max_conns > rlim.rlim_cur - 8) {
         fprintf(
             stderr,
-            "[WARN] params->max_conns-%zu may be too high. RLIMIT_NOFILE=%zu "
-            "only %zu open files would remain\n",
+            "[WARN] params->max_conns %zu may be too high. RLIMIT_NOFILE=%zu "
+            "%zu open files would remain when running at max_conns\n",
             s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
       }
     }
