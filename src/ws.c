@@ -1304,8 +1304,6 @@ static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
   return 0;
 }
 
-static int ws_server_do_shutdown(ws_server_t *s);
-
 static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
 
   if (likely(s->internal_polls > 0)) {
@@ -1331,7 +1329,7 @@ static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
     }
     return n_evs;
   } else {
-    return ws_server_do_shutdown(s);
+    return 0;
   }
 }
 
@@ -3705,7 +3703,11 @@ static ws_server_t *ws_server_do_create(struct ws_server_params *params,
   return s;
 }
 
-static int ws_server_do_shutdown(ws_server_t *s) {
+int ws_server_destroy(ws_server_t *s) {
+  if (s->internal_polls != 0){
+    return -1;
+  }
+
   struct ws_server_mem_region *m = s->mem_rgn;
 
   void *base = (char *)((uintptr_t)m->base - (m->_cap - m->cap));
@@ -3724,5 +3726,5 @@ static int ws_server_do_shutdown(ws_server_t *s) {
     perror("munmap");
   }
 
-  return ret;
+  return 0;
 }
