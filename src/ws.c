@@ -32,6 +32,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,8 +76,6 @@
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
-
-
 
 typedef struct mirrored_buf_t mirrored_buf_t;
 
@@ -393,8 +392,10 @@ struct mirrored_buf_pool {
                                  // respective segment of base
 };
 
-static struct mirrored_buf_pool *
-mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap);
+static struct mirrored_buf_pool *mirrored_buf_pool_create(void *pool_mem,
+                                                          uint32_t nmemb,
+                                                          size_t buf_sz,
+                                                          bool defer_bufs_mmap);
 
 static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp);
 
@@ -425,11 +426,19 @@ struct ws_server_async_runner {
   struct ws_server_async_runner_buf *ready;
 };
 
-static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap);
+static void ws_server_async_runner_create(void *ar_mem, ws_server_t *s,
+                                          size_t init_cap);
 
 static void
 ws_server_async_runner_run_pending_callbacks(ws_server_t *s,
                                              struct ws_server_async_runner *ar);
+
+struct ws_server_mem {
+  size_t cap;
+  size_t used;
+  void *base;
+  size_t _cap;
+};
 
 typedef struct server {
   size_t max_msg_len;  // max allowed msg length
@@ -462,13 +471,14 @@ typedef struct server {
   int tfd;               // timer fd
   size_t internal_polls; // number of internal fds being watched by epoll
 
-  struct epoll_event events[1024];
+  struct epoll_event *events;
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
   int user_epoll;
+  struct ws_server_mem *mem;
 } ws_server_t;
 
-static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
+static struct ws_conn_pool *ws_conn_pool_create(void *pool_mem, size_t nmemb);
 static struct ws_conn_t *ws_conn_get(struct ws_conn_pool *p);
 
 static void ws_conn_put(struct ws_conn_pool *p, struct ws_conn_t *c);
@@ -557,7 +567,6 @@ static void conn_prep_send_buf(ws_conn_t *conn) {
     //   conn->recv_buf = NULL;
     // } else {
     conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-    assert(conn->send_buf != NULL);
     // }
   }
 }
@@ -899,16 +908,37 @@ static inline size_t align_to(size_t n, size_t to) {
   return (n + (to - 1)) & ~(to - 1);
 }
 
-static void ws_server_register_buffers(ws_server_t *s,
-                                       struct ws_server_params *params) {
+static ws_server_t *ws_server_do_create(struct ws_server_params *params,
+                                        size_t buf_sz);
+
+ws_server_t *ws_server_create(struct ws_server_params *params) {
+
+  if (params->port <= 0) {
+    errno = EINVAL;
+    return NULL;
+  }
+
+  if (!params->on_ws_open || !params->on_ws_disconnect || !params->on_ws_msg) {
+    errno = EINVAL;
+    return NULL;
+  }
+
+  size_t wanted_max_conns = params->max_conns;
+  size_t wanted_max_buffered_bytes = params->max_buffered_bytes;
+
   size_t max_backpressure =
-      params->max_buffered_bytes ? params->max_buffered_bytes : 16000;
-  size_t page_size = getpagesize();
+      wanted_max_buffered_bytes ? wanted_max_buffered_bytes : 16000;
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size == -1) {
+    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+    exit(1);
+  }
+
+  params->max_buffered_bytes = max_backpressure;
 
   // account for an interleaved control msg during fragmentation
   // since we never dynamically allocate more buffers
-  size_t buffer_size =
-      (max_backpressure + 192 + page_size - 1) & ~(page_size - 1);
+  size_t buffer_size = align_to(max_backpressure + 192, page_size);
 
   struct rlimit rlim = {0};
   getrlimit(RLIMIT_NOFILE, &rlim);
@@ -930,21 +960,21 @@ static void ws_server_register_buffers(ws_server_t *s,
 
   if (!params->max_conns) {
     // account for already open files
-    s->max_conns = rlim.rlim_cur - 16;
+    params->max_conns = rlim.rlim_cur - 16;
   } else if (params->max_conns <= rlim.rlim_cur) {
-    s->max_conns = params->max_conns;
+    params->max_conns = params->max_conns;
     if (params->verbose && rlim.rlim_cur > 8) {
-      if (s->max_conns > rlim.rlim_cur - 8) {
+      if (params->max_conns > rlim.rlim_cur - 8) {
         fprintf(
             stderr,
             "[WARN] params->max_conns %zu may be too high. RLIMIT_NOFILE=%zu "
             "%zu open files would remain when running at max_conns\n",
-            s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
+            wanted_max_conns, rlim.rlim_cur, rlim.rlim_cur - wanted_max_conns);
       }
     }
 
   } else if (params->max_conns > rlim.rlim_cur) {
-    s->max_conns = rlim.rlim_cur;
+    params->max_conns = rlim.rlim_cur;
     if (params->verbose) {
       fprintf(stderr,
               "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
@@ -952,80 +982,23 @@ static void ws_server_register_buffers(ws_server_t *s,
     }
   }
 
-  if (s->max_conns * 4 > max_map_count) {
+  if (params->max_conns * 4 > max_map_count) {
     fprintf(stderr,
             "[WARN] max_map_count %zu is too low and may cause non recoverable "
             "mmap "
             "failures. "
             "Consider increasing it to %zu or higher # sudo sysctl -w "
             "vm.max_map_count=%zu\n",
-            max_map_count, align_to((s->max_conns * 4) + 64, 2),
-            align_to((s->max_conns * 4) + 64, 2));
+            max_map_count, align_to((params->max_conns * 4) + 64, 2),
+            align_to((params->max_conns * 4) + 64, 2));
 
     // leave off 64 mappings
     size_t new_max_conns = (max_map_count / 4) > 64 ? (max_map_count / 4) - 64
                                                     : (max_map_count / 4);
-    s->max_conns = new_max_conns;
+    params->max_conns = new_max_conns;
   }
 
-  s->buffer_pool =
-      mirrored_buf_pool_create(s->max_conns + s->max_conns, buffer_size, 1);
-
-  s->conn_pool = ws_conn_pool_create(s->max_conns);
-
-  assert(s->conn_pool != NULL);
-  assert(s->buffer_pool != NULL);
-
-  s->max_msg_len = max_backpressure;
-
-  assert(s->buffer_pool != NULL);
-
-  // allocate the list (dynamic array of pointers to ws_conn_t) to track
-  // writeable connections
-  s->writeable_conns.conns =
-      calloc(s->max_conns, sizeof s->writeable_conns.conns);
-  s->writeable_conns.len = 0;
-  s->writeable_conns.cap = s->max_conns;
-
-  s->pending_timers.conns =
-      calloc(s->max_conns, sizeof s->pending_timers.conns);
-  s->pending_timers.len = 0;
-  s->pending_timers.cap = s->max_conns;
-
-  // make sure we got the mem needed
-  assert(s->writeable_conns.conns != NULL && s->pending_timers.conns != NULL);
-}
-
-ws_server_t *ws_server_create(struct ws_server_params *params) {
-
-  if (params->port <= 0) {
-    errno = EINVAL;
-    return NULL;
-  }
-
-  if (!params->on_ws_open || !params->on_ws_disconnect || !params->on_ws_msg) {
-    errno = EINVAL;
-    return NULL;
-  }
-
-  ws_server_t *s;
-
-  // allocate memory for server and events for epoll
-  s = (ws_server_t *)calloc(1, (sizeof *s));
-  if (s == NULL) {
-    return NULL;
-  }
-
-  if (params->ctx) {
-    s->ctx = params->ctx;
-  }
-
-  // init epoll
-  s->epoll_fd = epoll_create1(0);
-  if (s->epoll_fd < 0) {
-    free(s);
-    return NULL;
-  }
+  ws_server_t *s = ws_server_do_create(params, buffer_size);
 
   int res = ws_server_socket_bind(s, params);
   if (res != 0) {
@@ -1033,24 +1006,10 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
       close(s->fd);
 
     close(s->epoll_fd);
-    free(s);
     return NULL;
   }
 
   ws_server_register_callbacks(s, params);
-
-  // register timer fd
-  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-  s->tfd = tfd;
-  if (s->tfd == -1) {
-    close(s->fd);
-    close(s->epoll_fd);
-    free(s);
-    return NULL;
-  }
-
-  // this crashes on failure (fix?)
-  ws_server_register_buffers(s, params);
 
 #ifdef WITH_COMPRESSION
   const char *compression_enabled = "true";
@@ -1065,8 +1024,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
 #else
   const char *debug_enabled = "true";
 #endif
-
-  ws_server_async_runner_create(s, 2);
 
   if (params->verbose) {
     printf("- listening:   %s:%d\n", params->addr, params->port);
@@ -2711,66 +2668,6 @@ static unsigned utf8_is_valid(uint8_t *s, size_t n) {
   return 1;
 }
 
-static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
-  long page_size = sysconf(_SC_PAGESIZE);
-
-  size_t pool_sz = align_to(sizeof(struct ws_conn_pool), 64);
-
-  size_t pool_and_avb_stk_sz =
-      align_to(pool_sz + (nmemb * sizeof(ws_conn_t *)), 128);
-
-  size_t ws_conns_sz = align_to((sizeof(ws_conn_t) * nmemb), 128);
-
-  size_t total_size = align_to(pool_and_avb_stk_sz + ws_conns_sz, page_size);
-
-  void *pool_mem = mmap(NULL, total_size, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (pool_mem == MAP_FAILED) {
-    perror("mmap");
-    exit(EXIT_FAILURE);
-    return NULL;
-  }
-
-  struct ws_conn_pool *pool = pool_mem;
-  pool->avb = nmemb;
-  pool->cap = nmemb;
-
-  pool->avb_stack = (ws_conn_t **)((uintptr_t)pool_mem + pool_sz);
-
-  pool->base = (ws_conn_t *)((uintptr_t)pool_mem + pool_and_avb_stk_sz);
-
-  assert((uintptr_t)pool + pool_sz == (uintptr_t)pool->avb_stack);
-  assert((uintptr_t)pool->avb_stack + (sizeof(ws_conn_t *) * nmemb) <=
-         (uintptr_t)pool->base);
-
-  size_t i = nmemb;
-  size_t j = 0;
-
-  while (i--) {
-    pool->avb_stack[i] = &pool->base[j++];
-  }
-
-  return pool;
-}
-
-static void server_ws_conn_pool_destroy(ws_server_t *s) {
-  size_t nmemb = s->conn_pool->cap;
-  long page_size = sysconf(_SC_PAGESIZE);
-
-  size_t pool_sz = align_to(sizeof(struct ws_conn_pool), 64);
-
-  size_t pool_and_avb_stk_sz =
-      align_to(pool_sz + (nmemb * sizeof(ws_conn_t *)), 128);
-
-  size_t ws_conns_sz = align_to((sizeof(ws_conn_t) * nmemb), 128);
-
-  size_t total_size = align_to(pool_and_avb_stk_sz + ws_conns_sz, page_size);
-
-  munmap(s->conn_pool, total_size);
-
-  s->conn_pool = NULL;
-}
-
 static struct ws_conn_t *ws_conn_get(struct ws_conn_pool *p) {
   if (p->avb) {
     return p->avb_stack[--p->avb];
@@ -2896,155 +2793,6 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 }
 
 #endif /* WITH_COMPRESSION */
-
-static struct mirrored_buf_pool *
-mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
-  long page_size = sysconf(_SC_PAGESIZE);
-  if (page_size == -1) {
-    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
-    exit(1);
-  }
-
-  if (buf_sz % page_size) {
-    return NULL;
-  }
-
-  size_t mirrored_bufs_total_size = nmemb * sizeof(mirrored_buf_t);
-  size_t avb_stack_total_size = nmemb * sizeof(mirrored_buf_t *);
-
-  size_t pool_sz =
-      align_to((sizeof(struct mirrored_buf_pool) + mirrored_bufs_total_size +
-                avb_stack_total_size + 128),
-               page_size);
-
-  size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
-
-  void *pool_mem = mmap(NULL, pool_sz + buf_pool_sz, PROT_NONE,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-  if (pool_mem == MAP_FAILED) {
-    perror("mmap");
-    exit(EXIT_FAILURE);
-    return NULL;
-  }
-
-  if (mprotect(pool_mem, pool_sz, PROT_READ | PROT_WRITE) == -1) {
-    perror("mprotect");
-    exit(EXIT_FAILURE);
-    return NULL;
-  };
-
-  struct mirrored_buf_pool *pool = pool_mem;
-
-  pool->avb = nmemb;
-  pool->cap = nmemb;
-  pool->depth_reached = 0;
-
-  pool->mirrored_bufs =
-      (mirrored_buf_t *)((uintptr_t)pool_mem +
-                         align_to(sizeof(struct mirrored_buf_pool), 32));
-  pool->avb_stack =
-      (mirrored_buf_t **)((uintptr_t)pool_mem +
-                          align_to(sizeof(struct mirrored_buf_pool), 32) +
-                          mirrored_bufs_total_size);
-
-  pool->fd = memfd_create("buf", 0);
-  if (pool->fd == -1) {
-    perror("memfd_create");
-    return NULL;
-  }
-
-  pool->buf_sz = buf_sz;
-  pool->base = ((uint8_t *)pool_mem) + pool_sz;
-
-  if (ftruncate(pool->fd, buf_sz * nmemb) == -1) {
-    perror("ftruncate");
-    exit(EXIT_FAILURE);
-    return NULL;
-  };
-
-  uint32_t i;
-
-  pool->offset = 0;
-  pool->pos = pool->base;
-
-  uint8_t *pos = pool->base;
-  size_t offset = 0;
-
-  for (i = 0; i < nmemb; ++i) {
-    if (!defer_bufs_mmap) {
-      if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
-               pool->fd, offset) == MAP_FAILED) {
-        perror("mmap");
-        close(pool->fd);
-        exit(EXIT_FAILURE);
-        return NULL;
-      };
-
-      if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
-               MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
-        perror("mmap");
-        close(pool->fd);
-        exit(EXIT_FAILURE);
-        return NULL;
-      };
-
-      pool->offset += buf_sz;
-      pool->pos = pool->pos + buf_sz + buf_sz;
-    }
-
-    pool->mirrored_bufs[i].buf = pos;
-    pool->mirrored_bufs[i].buf_sz = buf_sz;
-
-    offset += buf_sz;
-    pos = pos + buf_sz + buf_sz;
-  }
-
-  i = 0;
-  uint32_t j = nmemb;
-  while (j--) {
-    pool->avb_stack[j] = &pool->mirrored_bufs[i++];
-  }
-
-  return pool;
-}
-
-static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
-  long page_size = sysconf(_SC_PAGESIZE);
-  if (page_size == -1) {
-    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
-    exit(1);
-  }
-
-  size_t nmemb = s->buffer_pool->cap;
-  size_t buf_sz = s->buffer_pool->buf_sz;
-
-  size_t mirrored_bufs_total_size = nmemb * sizeof(mirrored_buf_t);
-  size_t avb_stack_total_size = nmemb * sizeof(mirrored_buf_t *);
-
-  size_t pool_sz =
-      align_to((sizeof(struct mirrored_buf_pool) + mirrored_bufs_total_size +
-                avb_stack_total_size + 128),
-               page_size);
-
-  size_t buf_pool_sz = buf_sz * nmemb * 2; // size of buffers
-  size_t total_size = pool_sz + buf_pool_sz;
-
-  for (size_t i = 0; i < s->buffer_pool->cap; i++) {
-    if (s->buffer_pool->pos > s->buffer_pool->mirrored_bufs[i].buf) {
-      munmap(s->buffer_pool->mirrored_bufs[i].buf, buf_sz);
-      munmap(s->buffer_pool->mirrored_bufs[i].buf + buf_sz, buf_sz);
-    }
-
-    s->buffer_pool->mirrored_bufs[i].buf = NULL;
-  }
-
-  close(s->buffer_pool->fd);
-
-  munmap(s->buffer_pool, total_size);
-
-  s->buffer_pool = NULL;
-}
 
 static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
   if (likely(bp->avb)) {
@@ -3400,50 +3148,6 @@ ws_server_async_runner_buf_create(size_t init_cap) {
   return arb;
 }
 
-static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
-  if (!init_cap) {
-    init_cap = 1;
-  }
-  struct ws_server_async_runner *ar =
-      calloc(1, sizeof(struct ws_server_async_runner));
-
-  if (ar == NULL) {
-    perror("calloc");
-    exit(EXIT_FAILURE);
-  }
-
-  ar->pending = ws_server_async_runner_buf_create(init_cap);
-  ar->ready = ws_server_async_runner_buf_create(init_cap);
-
-  ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-  if (ar->chanfd == -1) {
-    perror("eventfd");
-    exit(EXIT_FAILURE);
-  }
-
-  int ret = pthread_mutex_init(&ar->mu, NULL);
-  if (ret == -1) {
-    perror("pthread_mutex_init");
-    exit(EXIT_FAILURE);
-  }
-
-  s->ev.events = EPOLLIN;
-  s->ev.data.ptr = ar;
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd);
-  s->internal_polls++;
-  s->async_runner = ar;
-}
-
-static void ws_server_async_runner_destroy(ws_server_t *s) {
-  free(s->async_runner->pending->cbs);
-  free(s->async_runner->ready->cbs);
-  free(s->async_runner->pending);
-  free(s->async_runner->ready);
-  pthread_mutex_destroy(&s->async_runner->mu);
-  free(s->async_runner);
-  s->async_runner = NULL;
-}
-
 int ws_server_sched_callback(ws_server_t *s, struct async_cb_ctx *cb_info) {
   if (cb_info != NULL) {
     struct ws_server_async_runner *ar = s->async_runner;
@@ -3614,7 +3318,395 @@ inline void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read) {
 
 inline int ws_server_active_events(ws_server_t *s) { return s->active_events; }
 
+static void ws_server_async_runner_create(void *ar_mem, ws_server_t *s,
+                                          size_t init_cap) {
+  if (!init_cap) {
+    init_cap = 1;
+  }
+
+  struct ws_server_async_runner *ar = ar_mem;
+
+  ar->pending = ws_server_async_runner_buf_create(init_cap);
+  ar->ready = ws_server_async_runner_buf_create(init_cap);
+
+  ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  if (ar->chanfd == -1) {
+    perror("eventfd");
+    exit(EXIT_FAILURE);
+  }
+
+  int ret = pthread_mutex_init(&ar->mu, NULL);
+  if (ret == -1) {
+    perror("pthread_mutex_init");
+    exit(EXIT_FAILURE);
+  }
+
+  s->ev.events = EPOLLIN;
+  s->ev.data.ptr = ar;
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd);
+  s->internal_polls++;
+  s->async_runner = ar;
+}
+
+static void ws_server_async_runner_destroy(ws_server_t *s) {
+  free(s->async_runner->pending->cbs);
+  free(s->async_runner->ready->cbs);
+  free(s->async_runner->pending);
+  free(s->async_runner->ready);
+  pthread_mutex_destroy(&s->async_runner->mu);
+  s->async_runner = NULL;
+}
+
+struct ws_conn_pool_size_info {
+  size_t pool_sz;
+  size_t pool_and_avb_stk_sz;
+  size_t ws_conns_sz;
+  size_t total_size;
+};
+
+static struct ws_conn_pool_size_info ws_conn_pool_size_info(size_t nmemb) {
+  long page_size = sysconf(_SC_PAGESIZE);
+
+  size_t pool_sz = align_to(sizeof(struct ws_conn_pool), 32);
+
+  size_t pool_and_avb_stk_sz =
+      align_to(pool_sz + (nmemb * sizeof(ws_conn_t *)), 64);
+
+  size_t ws_conns_sz = sizeof(ws_conn_t) * nmemb;
+
+  size_t total_size = align_to(pool_and_avb_stk_sz + ws_conns_sz, page_size);
+
+  struct ws_conn_pool_size_info info = {
+      .pool_sz = pool_sz,
+      .pool_and_avb_stk_sz = pool_and_avb_stk_sz,
+      .ws_conns_sz = ws_conns_sz,
+      .total_size = total_size,
+  };
+
+  return info;
+}
+
+static struct ws_conn_pool *ws_conn_pool_create(void *pool_mem, size_t nmemb) {
+  struct ws_conn_pool_size_info si = ws_conn_pool_size_info(nmemb);
+
+  struct ws_conn_pool *pool = pool_mem;
+  pool->avb = nmemb;
+  pool->cap = nmemb;
+
+  pool->avb_stack = (ws_conn_t **)((uintptr_t)pool_mem + si.pool_sz);
+
+  pool->base = (ws_conn_t *)((uintptr_t)pool_mem + si.pool_and_avb_stk_sz);
+
+  assert((uintptr_t)pool + si.pool_sz == (uintptr_t)pool->avb_stack);
+  assert((uintptr_t)pool->avb_stack + (sizeof(ws_conn_t *) * nmemb) <=
+         (uintptr_t)pool->base);
+
+  size_t i = nmemb;
+  size_t j = 0;
+
+  while (i--) {
+    pool->avb_stack[i] = &pool->base[j++];
+  }
+
+  return pool;
+}
+
+static void server_ws_conn_pool_destroy(ws_server_t *s) { s->conn_pool = NULL; }
+
+struct mirrored_buf_pool_size_info {
+  size_t mirrored_bufs_total_size;
+  size_t avb_stack_total_size;
+  size_t pool_struct_sz;
+  size_t pool_buffers_sz;
+  size_t pool_sz_no_bufs;
+  size_t total_size;
+};
+
+static struct mirrored_buf_pool_size_info
+mirrored_buf_pool_size_info(size_t nmemb, size_t buf_sz) {
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size == -1) {
+    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+    exit(1);
+  }
+
+  size_t mirrored_bufs_total_size =
+      align_to(nmemb * sizeof(mirrored_buf_t), 32);
+
+  size_t avb_stack_total_size = align_to(nmemb * sizeof(mirrored_buf_t *), 32);
+
+  size_t pool_struct_sz = align_to(sizeof(struct mirrored_buf_pool), 32);
+
+  size_t pool_sz_no_bufs =
+      align_to(pool_struct_sz + mirrored_bufs_total_size + avb_stack_total_size,
+               page_size);
+
+  size_t buf_pool_sz = (buf_sz * nmemb) * 2; // size of buffers
+
+  size_t total_size = align_to(pool_sz_no_bufs + buf_pool_sz, page_size);
+
+  struct mirrored_buf_pool_size_info info = {
+      .mirrored_bufs_total_size = mirrored_bufs_total_size,
+      .avb_stack_total_size = avb_stack_total_size,
+      .pool_struct_sz = pool_struct_sz,
+      .pool_buffers_sz = buf_pool_sz,
+      .total_size = total_size,
+      .pool_sz_no_bufs = pool_sz_no_bufs,
+  };
+
+  return info;
+}
+
+static struct mirrored_buf_pool *
+mirrored_buf_pool_create(void *pool_mem, uint32_t nmemb, size_t buf_sz,
+                         bool defer_bufs_mmap) {
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size == -1) {
+    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+    exit(EXIT_FAILURE);
+  }
+
+  struct mirrored_buf_pool_size_info si =
+      mirrored_buf_pool_size_info(nmemb, buf_sz);
+
+  struct mirrored_buf_pool *pool = pool_mem;
+
+  pool->avb = nmemb;
+  pool->cap = nmemb;
+  pool->depth_reached = 0;
+
+  pool->mirrored_bufs =
+      (mirrored_buf_t *)((uintptr_t)pool_mem + si.pool_struct_sz);
+
+  pool->avb_stack =
+      (mirrored_buf_t **)((uintptr_t)pool_mem + si.pool_struct_sz +
+                          si.mirrored_bufs_total_size);
+
+  pool->fd = memfd_create("buf", 0);
+  if (pool->fd == -1) {
+    perror("memfd_create");
+    return NULL;
+  }
+
+  pool->buf_sz = buf_sz;
+  pool->base = ((uint8_t *)pool_mem) + si.pool_sz_no_bufs;
+
+  if ((uintptr_t)pool->base % page_size) {
+    fprintf(stderr, "pool base must be a multiple of page size\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if (ftruncate(pool->fd, buf_sz * nmemb) == -1) {
+    perror("ftruncate");
+    exit(EXIT_FAILURE);
+    return NULL;
+  }
+
+  assert((uintptr_t)pool->mirrored_bufs ==
+         (uintptr_t)pool_mem + si.pool_struct_sz);
+  assert((uintptr_t)pool->avb_stack ==
+         (uintptr_t)pool_mem + si.pool_struct_sz + si.mirrored_bufs_total_size);
+
+  uint32_t i;
+
+  pool->offset = 0;
+  pool->pos = pool->base;
+
+  uint8_t *pos = pool->base;
+  size_t offset = 0;
+
+  for (i = 0; i < nmemb; ++i) {
+    if (!defer_bufs_mmap) {
+      if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+               pool->fd, offset) == MAP_FAILED) {
+        perror("mmap");
+        close(pool->fd);
+        exit(EXIT_FAILURE);
+        return NULL;
+      };
+
+      if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
+               MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
+        perror("mmap");
+        close(pool->fd);
+        exit(EXIT_FAILURE);
+        return NULL;
+      };
+
+      pool->offset += buf_sz;
+      pool->pos = pool->pos + buf_sz + buf_sz;
+    }
+
+    pool->mirrored_bufs[i].buf = pos;
+    pool->mirrored_bufs[i].buf_sz = buf_sz;
+
+    offset += buf_sz;
+    pos = pos + buf_sz + buf_sz;
+  }
+
+  i = 0;
+  uint32_t j = nmemb;
+  while (j--) {
+    pool->avb_stack[j] = &pool->mirrored_bufs[i++];
+  }
+
+  return pool;
+}
+
+static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
+  size_t buf_sz = s->buffer_pool->buf_sz;
+
+  for (size_t i = 0; i < s->buffer_pool->cap; i++) {
+    if (s->buffer_pool->pos > s->buffer_pool->mirrored_bufs[i].buf) {
+      munmap(s->buffer_pool->mirrored_bufs[i].buf, buf_sz);
+      munmap(s->buffer_pool->mirrored_bufs[i].buf + buf_sz, buf_sz);
+    }
+
+    s->buffer_pool->mirrored_bufs[i].buf = NULL;
+  }
+
+  close(s->buffer_pool->fd);
+
+  s->buffer_pool = NULL;
+}
+
+static void *ws_server_mem_get(struct ws_server_mem *m, size_t sz) {
+  if (m->used + sz > m->cap) {
+    fprintf(stderr, "ws_server_mem_get: out of memory\n");
+    exit(EXIT_FAILURE);
+    return NULL;
+  }
+
+  void *mem = (char *)((uintptr_t)m->base + m->used);
+  m->used += sz;
+  return mem;
+}
+
+static void *ws_server_mem_get_aligned(struct ws_server_mem *m, size_t sz,
+                                       size_t align) {
+  if (align_to(m->used, align) + sz > m->cap) {
+    fprintf(stderr, "ws_server_mem_get_aligned: out of memory\n");
+    exit(EXIT_FAILURE);
+    return NULL;
+  }
+
+  void *mem = (char *)((uintptr_t)m->base + align_to(m->used, align));
+  mem = (void *)align_to((uintptr_t)mem, align);
+  m->used += (align_to(m->used, align) - m->used) + sz;
+
+  return mem;
+}
+
+static ws_server_t *ws_server_do_create(struct ws_server_params *params,
+                                        size_t buf_sz) {
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size == -1) {
+    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+    exit(1);
+  }
+
+  // register timer fd
+  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+  if (tfd == -1) {
+    return NULL;
+  }
+
+  // init epoll
+  int epoll_fd = epoll_create1(0);
+  if (epoll_fd < 0) {
+    return NULL;
+  }
+
+  size_t padding = page_size;
+  size_t total_padding = page_size + page_size;
+
+  size_t ws_server_mem_sz = align_to(sizeof(struct ws_server_mem), 64);
+  size_t server_sz = align_to(sizeof(ws_server_t), 8);
+  struct ws_conn_pool_size_info conn_pool_si =
+      ws_conn_pool_size_info(params->max_conns);
+
+  struct mirrored_buf_pool_size_info buf_pool_si =
+      mirrored_buf_pool_size_info(params->max_conns * 2, buf_sz);
+
+  size_t epoll_events_sz = align_to(sizeof(struct epoll_event) * 1024, 8);
+
+  size_t writeable_conns_sz =
+      align_to(sizeof(ws_conn_t *) * params->max_conns, 8);
+
+  size_t pending_timers_sz =
+      align_to(sizeof(ws_conn_t *) * params->max_conns, 8);
+
+  size_t async_runner_sz = align_to(sizeof(struct ws_server_async_runner), 128);
+
+  size_t total_size =
+      align_to(ws_server_mem_sz + server_sz + async_runner_sz +
+                   epoll_events_sz + writeable_conns_sz + pending_timers_sz,
+               page_size) +
+
+      align_to(conn_pool_si.total_size, page_size) +
+
+      buf_pool_si.total_size + total_padding;
+
+  void *mem =
+      mmap(NULL, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (mem == MAP_FAILED) {
+    perror("mmap");
+    exit(EXIT_FAILURE);
+  }
+
+  struct ws_server_mem *m = (struct ws_server_mem *)((uintptr_t)mem + padding);
+
+  size_t rw_range = total_size - buf_pool_si.pool_buffers_sz;
+
+  if (mprotect(m, rw_range, PROT_READ | PROT_WRITE) == -1) {
+    perror("mprotect");
+    exit(EXIT_FAILURE);
+  }
+
+  m->_cap = total_size;
+  m->cap = total_size - total_padding;
+  m->used = ws_server_mem_sz;
+  m->base = (char *)((uintptr_t)mem + page_size);
+
+  void *async_runner_mem = ws_server_mem_get(m, async_runner_sz);
+
+  ws_server_t *s = ws_server_mem_get(m, server_sz);
+  s->epoll_fd = epoll_fd;
+  s->tfd = tfd;
+  s->max_conns = params->max_conns;
+  if (params->ctx) {
+    s->ctx = params->ctx;
+  }
+
+  s->max_msg_len = buf_sz;
+
+  ws_server_async_runner_create(async_runner_mem, s, 2);
+
+  s->events = ws_server_mem_get(m, epoll_events_sz);
+
+  s->writeable_conns.conns = ws_server_mem_get(m, writeable_conns_sz);
+  s->pending_timers.conns = ws_server_mem_get(m, pending_timers_sz);
+
+  s->writeable_conns.cap = params->max_conns;
+  s->pending_timers.cap = params->max_conns;
+
+  s->conn_pool = ws_conn_pool_create(
+      ws_server_mem_get_aligned(m, conn_pool_si.total_size, page_size),
+      params->max_conns);
+
+  s->buffer_pool =
+      mirrored_buf_pool_create(ws_server_mem_get(m, buf_pool_si.total_size),
+                               params->max_conns * 2, buf_sz, 1);
+
+  s->mem = m;
+
+  return s;
+}
+
 static int ws_server_do_shutdown(ws_server_t *s) {
+  struct ws_server_mem *m = s->mem;
+
+  void *base = (char *)((uintptr_t)m->base - (m->_cap - m->cap));
 
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
@@ -3623,9 +3715,12 @@ static int ws_server_do_shutdown(ws_server_t *s) {
   close(s->epoll_fd);
   s->epoll_fd = -1;
 
-  free(s->writeable_conns.conns);
-  free(s->pending_timers.conns);
-  free(s);
+  madvise(base, m->_cap, MADV_DONTNEED);
 
-  return 0;
+  int ret = munmap(base, m->_cap);
+  if (ret == -1) {
+    perror("munmap");
+  }
+
+  return ret;
 }
