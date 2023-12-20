@@ -3707,9 +3707,9 @@ static ws_server_t *ws_server_do_create(struct ws_server_params *params,
 }
 
 int ws_server_destroy(ws_server_t *s) {
-  if (s->internal_polls != 0) {
-    return -1;
-  }
+  // if (s->internal_polls != 0) {
+  //   return -1;
+  // }
 
   struct ws_server_mem_region *m = s->mem_rgn;
 

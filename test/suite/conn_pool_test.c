@@ -7,8 +7,10 @@
 int test_ws_conn_pool_create(const char *name) {
   size_t nmemb = 1;
 
+  void *pool_mem = malloc(1024 * 1024);
+
   for (; nmemb < 1024; nmemb++) {
-    struct ws_conn_pool *p = ws_conn_pool_create(nmemb);
+    struct ws_conn_pool *p = ws_conn_pool_create(pool_mem, nmemb);
     if (p == NULL) {
       fprintf(stderr, "[FAIL] %s : expected to have allocate a connection pool",
               name);
@@ -79,9 +81,9 @@ int test_ws_conn_pool_create(const char *name) {
 }
 
 int test_ws_conn_pool_too_many_gets(const char *name) {
-
+  void *pool_mem = malloc(1024 * 1024);
   size_t nmemb = 8;
-  struct ws_conn_pool *p = ws_conn_pool_create(nmemb);
+  struct ws_conn_pool *p = ws_conn_pool_create(pool_mem,nmemb);
 
   size_t i = 0;
   while (i < nmemb) {
