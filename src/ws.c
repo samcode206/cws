@@ -76,8 +76,6 @@
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-
-
 typedef struct mirrored_buf_t mirrored_buf_t;
 
 struct ws_conn_t {
@@ -1347,8 +1345,6 @@ static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
   return 0;
 }
 
-static int ws_server_do_shutdown(ws_server_t *s);
-
 static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
 
   if (likely(s->internal_polls > 0)) {
@@ -1374,7 +1370,7 @@ static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
     }
     return n_evs;
   } else {
-    return ws_server_do_shutdown(s);
+    return 0;
   }
 }
 
@@ -3564,12 +3560,15 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // go over all connections and shut them down
   for (size_t i = 0; i < s->conn_pool->cap; ++i) {
-    if (s->conn_pool->base[i].fd != -1 && s->conn_pool->base[i].fd != 0 &&
-        !is_closed(&s->conn_pool->base[i]) &&
-        is_upgraded(&s->conn_pool->base[i])) {
-      ws_conn_close(&s->conn_pool->base[i], NULL, 0, WS_CLOSE_GOAWAY);
+    ws_conn_t *c = &s->conn_pool->base[i];
+    if (c->fd == 0 || is_closed(c)) {
+      continue;
+    }
+
+    if (is_upgraded(c)) {
+      ws_conn_close(c, NULL, 0, WS_CLOSE_GOAWAY);
     } else {
-      ws_conn_destroy(&s->conn_pool->base[i], WS_CLOSE_GOAWAY);
+      ws_conn_destroy(c, WS_CLOSE_GOAWAY);
     }
   }
 
@@ -3614,8 +3613,7 @@ inline void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read) {
 
 inline int ws_server_active_events(ws_server_t *s) { return s->active_events; }
 
-static int ws_server_do_shutdown(ws_server_t *s) {
-
+int ws_server_destroy(ws_server_t *s) {
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
   ws_server_async_runner_destroy(s);

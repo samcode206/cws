@@ -5,7 +5,7 @@
 
 void onOpen(ws_conn_t *conn) {}
 
-void onMsg(ws_conn_t *conn, void *msg, size_t n, bool bin) {}
+void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {}
 
 void onDisconnect(ws_conn_t *conn, int err) {}
 
