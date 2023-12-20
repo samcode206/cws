@@ -3266,12 +3266,15 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // go over all connections and shut them down
   for (size_t i = 0; i < s->conn_pool->cap; ++i) {
-    if (s->conn_pool->base[i].fd != -1 && s->conn_pool->base[i].fd != 0 &&
-        !is_closed(&s->conn_pool->base[i]) &&
-        is_upgraded(&s->conn_pool->base[i])) {
-      ws_conn_close(&s->conn_pool->base[i], NULL, 0, WS_CLOSE_GOAWAY);
+    ws_conn_t *c = &s->conn_pool->base[i];
+    if (c->fd == 0 || is_closed(c)) {
+      continue;
+    }
+
+    if (is_upgraded(c)) {
+      ws_conn_close(c, NULL, 0, WS_CLOSE_GOAWAY);
     } else {
-      ws_conn_destroy(&s->conn_pool->base[i], WS_CLOSE_GOAWAY);
+      ws_conn_destroy(c, WS_CLOSE_GOAWAY);
     }
   }
 
@@ -3704,14 +3707,13 @@ static ws_server_t *ws_server_do_create(struct ws_server_params *params,
 }
 
 int ws_server_destroy(ws_server_t *s) {
-  if (s->internal_polls != 0){
+  if (s->internal_polls != 0) {
     return -1;
   }
 
   struct ws_server_mem_region *m = s->mem_rgn;
 
-  void *base = (char *)((uintptr_t)m->base - (m->_cap - m->cap));
-
+  void *base = (char *)((uintptr_t)m->base - ((m->_cap - m->cap) / 2));
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
   ws_server_async_runner_destroy(s);
@@ -3719,7 +3721,6 @@ int ws_server_destroy(ws_server_t *s) {
   close(s->epoll_fd);
   s->epoll_fd = -1;
 
-  madvise(base, m->_cap, MADV_DONTNEED);
 
   int ret = munmap(base, m->_cap);
   if (ret == -1) {
