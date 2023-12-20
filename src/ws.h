@@ -213,6 +213,7 @@ size_t ws_conn_estimate_readable_len(ws_conn_t *c);
 bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len);
 
 
+size_t ws_conn_pending_bytes(ws_conn_t *c);
 
 
 /**

@@ -2488,6 +2488,16 @@ bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len) {
   }
 }
 
+
+inline size_t ws_conn_pending_bytes(ws_conn_t *c){
+  if (c->send_buf) {
+    return buf_len(c->send_buf);
+  } else {
+    return 0;
+  }
+}
+
+
 inline bool ws_conn_sending_fragments(ws_conn_t *c) {
   return is_sending_fragments(c);
 }
