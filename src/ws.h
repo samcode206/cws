@@ -31,7 +31,6 @@
 
 #include <errno.h>
 #include <netinet/in.h>
-#include <openssl/sha.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>

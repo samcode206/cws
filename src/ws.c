@@ -27,14 +27,8 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <netdb.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
@@ -44,6 +38,7 @@
 #include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
+#include <openssl/sha.h>
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
