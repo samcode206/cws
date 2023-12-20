@@ -5,5 +5,6 @@ online
 *.o
 *.so
 EchoServer
+MultiEchoServer
 client
 /scripts

@@ -9,7 +9,7 @@
 #include <sys/timerfd.h>
 
 #define MAX_CONNS 8192
-#define NUM_SERVERS 8
+#define NUM_SERVERS 16
 
 size_t total = 0;
 
@@ -48,7 +48,7 @@ int main(void) {
         .on_ws_open = onOpen,
         .on_ws_msg = onMsg,
         .on_ws_disconnect = onDisconnect,
-        .max_buffered_bytes = 1024 * 1024 * 8,
+        .max_buffered_bytes = 1024 * 1024,
         .max_conns = MAX_CONNS / NUM_SERVERS,
         .verbose = 1,
     };
