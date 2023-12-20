@@ -16,7 +16,7 @@ void onOpen(ws_conn_t *conn) {}
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   // printf("msg %zu\n", n);
-  if (ws_conn_estimate_readable_len(conn)) {
+  if (ws_conn_msg_ready(conn)) {
     ws_conn_put_msg(conn, msg, n, OP_BIN, 0);
   } else {
     ws_conn_send_msg(conn, msg, n, OP_BIN, 0);

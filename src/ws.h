@@ -204,6 +204,9 @@ size_t ws_conn_max_sendable_len(ws_conn_t *c);
 */
 size_t ws_conn_estimate_readable_len(ws_conn_t *c);
 
+
+bool ws_conn_msg_ready(ws_conn_t *c);
+
 /**
  * Checks if there is enough space in the connection's send buffer for a message of given length.
  * @param c       Pointer to the WebSocket connection (`ws_conn_t`).

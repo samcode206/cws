@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
+#include <openssl/sha.h>
 #include <pthread.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -38,7 +39,6 @@
 #include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
-#include <openssl/sha.h>
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
@@ -1912,7 +1912,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
           buf_len(conn->recv_buf) - conn->fragments_len - total_trimmed;
 
       // check if we need to do more reads to get the msg length
-      int missing_header_len =
+      unsigned int missing_header_len =
           frame_decode_payload_len(frame, frame_buf_len, &payload_len);
       if (missing_header_len) {
         // wait for atleast remaining of the header
@@ -2470,8 +2470,9 @@ size_t ws_conn_max_sendable_len(ws_conn_t *c) {
 }
 
 size_t ws_conn_estimate_readable_len(ws_conn_t *c) {
-  if (c->recv_buf) {
-    return buf_len(c->recv_buf);
+  mirrored_buf_t *rb = c->recv_buf;
+  if (rb) {
+    return buf_len(rb);
   } else {
     return 0;
   }
@@ -2488,8 +2489,7 @@ bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len) {
   }
 }
 
-
-inline size_t ws_conn_pending_bytes(ws_conn_t *c){
+inline size_t ws_conn_pending_bytes(ws_conn_t *c) {
   if (c->send_buf) {
     return buf_len(c->send_buf);
   } else {
@@ -2497,6 +2497,18 @@ inline size_t ws_conn_pending_bytes(ws_conn_t *c){
   }
 }
 
+bool ws_conn_msg_ready(ws_conn_t *c) {
+  mirrored_buf_t *rb = c->recv_buf;
+  if (is_upgraded(c) & !is_closed(c) & (rb != NULL)) {
+    size_t val = 0;
+    unsigned int ret =
+        frame_decode_payload_len(buf_peek(rb), buf_len(rb), &val);
+    (void)val;
+    return ret == 0;
+  } else {
+    return 0;
+  }
+}
 
 inline bool ws_conn_sending_fragments(ws_conn_t *c) {
   return is_sending_fragments(c);
