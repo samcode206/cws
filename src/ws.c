@@ -433,7 +433,7 @@ static void
 ws_server_async_runner_run_pending_callbacks(ws_server_t *s,
                                              struct ws_server_async_runner *ar);
 
-struct ws_server_mem {
+struct ws_server_mem_region {
   size_t cap;
   size_t used;
   void *base;
@@ -475,7 +475,7 @@ typedef struct server {
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
   int user_epoll;
-  struct ws_server_mem *mem;
+  struct ws_server_mem_region *mem_rgn;
 } ws_server_t;
 
 static struct ws_conn_pool *ws_conn_pool_create(void *pool_mem, size_t nmemb);
@@ -3570,7 +3570,7 @@ static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
   s->buffer_pool = NULL;
 }
 
-static void *ws_server_mem_get(struct ws_server_mem *m, size_t sz) {
+static void *ws_server_mem_get(struct ws_server_mem_region *m, size_t sz) {
   if (m->used + sz > m->cap) {
     fprintf(stderr, "ws_server_mem_get: out of memory\n");
     exit(EXIT_FAILURE);
@@ -3582,7 +3582,7 @@ static void *ws_server_mem_get(struct ws_server_mem *m, size_t sz) {
   return mem;
 }
 
-static void *ws_server_mem_get_aligned(struct ws_server_mem *m, size_t sz,
+static void *ws_server_mem_get_aligned(struct ws_server_mem_region *m, size_t sz,
                                        size_t align) {
   if (align_to(m->used, align) + sz > m->cap) {
     fprintf(stderr, "ws_server_mem_get_aligned: out of memory\n");
@@ -3620,7 +3620,7 @@ static ws_server_t *ws_server_do_create(struct ws_server_params *params,
   size_t padding = page_size;
   size_t total_padding = page_size + page_size;
 
-  size_t ws_server_mem_sz = align_to(sizeof(struct ws_server_mem), 64);
+  size_t ws_server_mem_sz = align_to(sizeof(struct ws_server_mem_region), 64);
   size_t server_sz = align_to(sizeof(ws_server_t), 8);
   struct ws_conn_pool_size_info conn_pool_si =
       ws_conn_pool_size_info(params->max_conns);
@@ -3654,7 +3654,7 @@ static ws_server_t *ws_server_do_create(struct ws_server_params *params,
     exit(EXIT_FAILURE);
   }
 
-  struct ws_server_mem *m = (struct ws_server_mem *)((uintptr_t)mem + padding);
+  struct ws_server_mem_region *m = (struct ws_server_mem_region *)((uintptr_t)mem + padding);
 
   size_t rw_range = total_size - buf_pool_si.pool_buffers_sz;
 
@@ -3698,13 +3698,13 @@ static ws_server_t *ws_server_do_create(struct ws_server_params *params,
       mirrored_buf_pool_create(ws_server_mem_get(m, buf_pool_si.total_size),
                                params->max_conns * 2, buf_sz, 1);
 
-  s->mem = m;
+  s->mem_rgn = m;
 
   return s;
 }
 
 static int ws_server_do_shutdown(ws_server_t *s) {
-  struct ws_server_mem *m = s->mem;
+  struct ws_server_mem_region *m = s->mem_rgn;
 
   void *base = (char *)((uintptr_t)m->base - (m->_cap - m->cap));
 
