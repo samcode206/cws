@@ -561,7 +561,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn);
 
 static void handle_upgrade(ws_conn_t *conn);
 
-static inline int conn_read(ws_conn_t *conn, mirrored_buf_t *buf);
+static inline int conn_read(ws_conn_t *conn);
 
 static int conn_drain_write_buf(ws_conn_t *conn);
 
@@ -1541,14 +1541,15 @@ int ws_server_start(ws_server_t *s, int backlog) {
   return 0;
 }
 
-static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
+static int conn_read(ws_conn_t *conn) {
+  mirrored_buf_t *rb = conn->recv_buf;
   // check wether we need to read more first
   if (is_upgraded(conn) &
       (buf_len(conn->recv_buf) - conn->fragments_len >= conn->needed_bytes)) {
     return 0;
   }
 
-  size_t space = buf_space(buf);
+  size_t space = buf_space(rb);
 
 #ifdef WITH_COMPRESSION
   space = space > 4 ? space - 4 : 0;
@@ -1569,7 +1570,7 @@ static int conn_read(ws_conn_t *conn, mirrored_buf_t *buf) {
     space = max_per_read;
   }
 
-  ssize_t n = buf_recv(buf, conn->fd, space, 0);
+  ssize_t n = buf_recv(rb, conn->fd, space, 0);
   if (n == -1 || n == 0) {
     if (n == -1 && (errno == EAGAIN || errno == EINTR)) {
       return 0;
@@ -1643,7 +1644,7 @@ static void handle_upgrade(ws_conn_t *conn) {
   size_t resp_len = 0;
 
   // read from the socket
-  if (conn_read(conn, conn->recv_buf) == -1) {
+  if (conn_read(conn) == -1) {
     return;
   };
 
@@ -1880,7 +1881,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
   size_t total_trimmed = 0;
   size_t max_allowed_len = s->max_msg_len;
 
-  if (conn_read(conn, conn->recv_buf) == -1) {
+  if (conn_read(conn) == -1) {
     return;
   }
 

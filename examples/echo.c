@@ -34,7 +34,7 @@ int main(void) {
       .on_ws_open = onOpen,
       .on_ws_msg = onMsg,
       .on_ws_disconnect = onDisconnect,
-      .max_buffered_bytes = 1024 * 1024,
+      .max_buffered_bytes = 1024 * 128,
       .max_conns = MAX_CONNS,
       .verbose = 1,
   };
