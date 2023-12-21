@@ -1541,6 +1541,32 @@ int ws_server_start(ws_server_t *s, int backlog) {
   return 0;
 }
 
+static ssize_t conn_readn(ws_conn_t *conn, size_t n) {
+  mirrored_buf_t *rb = conn->recv_buf;
+  size_t space = buf_space(rb);
+
+#ifdef WITH_COMPRESSION
+  space = space > 4 ? space - 4 : 0;
+#endif /* WITH_COMPRESSION */
+
+  if (!is_upgraded(conn)) {
+    space = space > 1 ? space - 1 : 0;
+  }
+
+  if (space < n) {
+    ws_conn_destroy(conn, WS_ERR_READ);
+    return -1;
+  }
+
+  ssize_t ret = buf_recv(rb, conn->fd, n, 0);
+  if (ret == 0 || (ret == -1 && errno != EAGAIN && errno != EINTR)) {
+    ws_conn_destroy(conn, WS_ERR_READ);
+    return -1;
+  }
+
+  return ret;
+}
+
 static int conn_read(ws_conn_t *conn) {
   mirrored_buf_t *rb = conn->recv_buf;
   // check wether we need to read more first
@@ -1559,11 +1585,10 @@ static int conn_read(ws_conn_t *conn) {
     space = space > 1 ? space - 1 : 0;
   }
 
-  // #ifdef WITH_COMPRESSION
-  //  #define _WS_CONN_READ_RECV_MAX 16384
-  // #else
-  //   #define _WS_CONN_READ_RECV_MAX 16388
-  // #endif
+  if (!space) {
+    ws_conn_destroy(conn, WS_ERR_READ);
+    return -1;
+  }
 
   size_t max_per_read = conn->base->max_per_read;
   if ((max_per_read < space) & (conn->needed_bytes < max_per_read)) {
@@ -1916,9 +1941,17 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
       unsigned int missing_header_len =
           frame_decode_payload_len(frame, frame_buf_len, &payload_len);
       if (missing_header_len) {
-        // wait for atleast remaining of the header
-        conn->needed_bytes = missing_header_len;
-        goto clean_up_buffer;
+        size_t remaining = missing_header_len - frame_buf_len;
+        size_t rn = conn_readn(conn, remaining);
+        if (rn == -1) {
+          return;
+        }
+
+        if (rn != remaining) {
+          // wait for atleast remaining of the header
+          conn->needed_bytes = missing_header_len;
+          goto clean_up_buffer;
+        }
       }
 
       size_t mask_offset = frame_get_header_len(payload_len);
@@ -1934,8 +1967,18 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
       // check that we have atleast the whole frame, otherwise
       // set needed_bytes and exit waiting for more reads from the socket
       if (frame_buf_len < full_frame_len) {
-        conn->needed_bytes = full_frame_len;
-        goto clean_up_buffer;
+        size_t remaining = full_frame_len - frame_buf_len;
+        size_t rn = conn_readn(conn, remaining);
+        if (rn == -1) {
+          return;
+        }
+
+        if (rn != remaining) {
+          conn->needed_bytes = full_frame_len;
+          goto clean_up_buffer;
+        }
+
+        assert(rn == remaining);
       }
 
       // buf_debug(buf, "buffer");
