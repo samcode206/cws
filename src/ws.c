@@ -443,7 +443,8 @@ typedef struct server {
   struct mirrored_buf_pool *buffer_pool;
   void *ctx;
   int active_events; // number of active events per epoll_wait call
-  struct epoll_event ev;
+  int fd;            // server file descriptor
+  int epoll_fd;
   ws_open_cb_t on_ws_open;
 
   size_t open_conns; // open websocket connections
@@ -460,17 +461,15 @@ typedef struct server {
 #ifdef WITH_COMPRESSION
   z_stream *istrm;
   z_stream *dstrm;
-#endif    /* WITH_COMPRESSION */
-  int fd; // server file descriptor
-  int epoll_fd;
+#endif /* WITH_COMPRESSION */
+
   bool accept_paused;    // are we paused on accepting new connections
   int tfd;               // timer fd
   size_t internal_polls; // number of internal fds being watched by epoll
-
+  int user_epoll;
   struct epoll_event events[1024];
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
-  int user_epoll;
 } ws_server_t;
 
 static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb);
@@ -567,7 +566,8 @@ static void conn_prep_send_buf(ws_conn_t *conn) {
   }
 }
 
-static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd);
+static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
+                                struct epoll_event *ev);
 
 static void ws_conn_proccess_frames(ws_conn_t *conn);
 
@@ -1090,8 +1090,9 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
   return s;
 }
 
-static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd) {
-  if (epoll_ctl(s->epoll_fd, op, fd, &s->ev) == -1) {
+static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
+                                struct epoll_event *ev) {
+  if (epoll_ctl(s->epoll_fd, op, fd, ev) == -1) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
@@ -1129,7 +1130,6 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd,
     return;
   }
 
-  s->ev.events = EPOLLIN | EPOLLRDHUP;
   conn->fd = client_fd;
   conn->flags = 0;
   conn->write_timeout = 0;
@@ -1147,8 +1147,12 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd,
   conn->pmd_buf = NULL;
 #endif /* WITH_COMPRESSION*/
 
-  s->ev.data.ptr = conn;
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd);
+  struct epoll_event ev = {
+      .events = EPOLLIN | EPOLLRDHUP,
+      .data = {.ptr = conn},
+  };
+
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd, &ev);
   ++s->open_conns;
 
   server_pending_timers_append(conn);
@@ -1210,7 +1214,11 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
           // too many open files in either the proccess or entire system
           // remove the server from epoll, it must be re added when atleast one
           // fd closes
-          ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd);
+          struct epoll_event ev = {
+              0,
+          };
+
+          ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd, &ev);
           s->accept_paused = 1;
           s->internal_polls--;
           if (s->on_ws_accept_err) {
@@ -1247,9 +1255,10 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
     if (s->max_conns == s->open_conns) {
       // remove the server from epoll, it must be re added when atleast one
       // fd closes
-      s->ev.data.ptr = NULL;
-      s->ev.events = 0;
-      ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd);
+      struct epoll_event ev = {
+          0,
+      };
+      ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd, &ev);
       s->accept_paused = 1;
       s->internal_polls--;
       if (s->on_ws_accept_err) {
@@ -1333,9 +1342,12 @@ static void ws_server_register_timer(ws_server_t *s, int *tfd) {
 
   (void)timer;
 
-  s->ev.data.ptr = tfd;
-  s->ev.events = EPOLLIN;
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, *tfd);
+  struct epoll_event ev = {
+      .events = EPOLLIN,
+      .data = {.ptr = tfd},
+  };
+
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, *tfd, &ev);
   s->internal_polls++;
 }
 
@@ -1345,9 +1357,12 @@ static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
     return ret;
   }
 
-  s->ev.data.ptr = s;
-  s->ev.events = EPOLLIN;
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd);
+  struct epoll_event ev = {
+      .events = EPOLLIN,
+      .data = {.ptr = s},
+  };
+
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd, &ev);
   s->internal_polls++;
 
   return 0;
@@ -1399,6 +1414,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
+
+  struct epoll_event ev = {
+      0,
+  };
 
   for (;;) {
     s->active_events = 0;
@@ -1474,18 +1493,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
                 // s->on_ws_drain was called if that's the case we want to keep
                 // waiting on EPOLLOUT before resuming reads
                 if (is_writeable(c)) {
-                  s->ev.data.ptr = c;
-                  s->ev.events = EPOLLIN | EPOLLRDHUP;
+                  ev.events = EPOLLIN | EPOLLRDHUP;
+                  ev.data.ptr = c;
+                  ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
 
-                  if (epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &s->ev) == -1) {
-                    if (s->on_ws_err) {
-                      int err = errno;
-                      s->on_ws_err(s, err);
-                    } else {
-                      perror("epoll_ctl");
-                      exit(EXIT_FAILURE);
-                    }
-                  };
                   clear_read_paused(c);
                 }
               }
@@ -1513,9 +1524,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
     bool accept_resumable = s->accept_paused && s->open_conns < s->max_conns;
 
     if (accept_resumable) {
-      s->ev.events = EPOLLIN;
-      s->ev.data.ptr = s;
-      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd);
+      memset(&ev, 0, sizeof ev);
+      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd, &ev);
       s->internal_polls++;
       s->accept_paused = 0;
     }
@@ -2190,8 +2200,10 @@ clean_up_buffer:
 
 static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
   clear_writeable(conn);
-  conn->base->ev.data.ptr = conn;
-  conn->base->ev.events = EPOLLOUT | EPOLLRDHUP;
+  struct epoll_event ev = {
+      .events = EPOLLOUT | EPOLLRDHUP,
+      .data = {.ptr = conn},
+  };
 
   if (is_sending_fragments(conn)) {
     // keep EPOLLIN armed if we are in the sending_fragments state
@@ -2202,12 +2214,12 @@ static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
     // miss any ping/pongs or other messages that may cause a read timeout
     // TODO : add a pause function for when the client wants to stop reading
     // from a connection temporarily
-    conn->base->ev.events |= EPOLLIN;
+    ev.events |= EPOLLIN;
   } else {
     set_read_paused(conn);
   }
 
-  ws_server_epoll_ctl(conn->base, EPOLL_CTL_MOD, conn->fd);
+  ws_server_epoll_ctl(conn->base, EPOLL_CTL_MOD, conn->fd, &ev);
 }
 
 static int conn_drain_write_buf(ws_conn_t *conn) {
@@ -2653,8 +2665,11 @@ void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
   conn_dyn_buf_dispose(c);
 #endif /* WITH_COMPRESSION */
 
-  c->base->ev.data.ptr = c;
-  ws_server_epoll_ctl(c->base, EPOLL_CTL_DEL, c->fd);
+  struct epoll_event ev = {
+      0,
+  };
+
+  ws_server_epoll_ctl(c->base, EPOLL_CTL_DEL, c->fd, &ev);
   clear_writeable(c);
   set_read_paused(c);
   close(c->fd);
@@ -2676,13 +2691,18 @@ void ws_conn_pause_read(ws_conn_t *c) {
   // if we aren't currently paused
   if (!is_read_paused(c)) {
     ws_server_t *s = c->base;
-    s->ev.data.ptr = c;
-    s->ev.events = EPOLLRDHUP;
+
+    struct epoll_event ev = {
+        .events = EPOLLRDHUP,
+        .data = {.ptr = c},
+    };
+
     // if we aren't writeable keep EPOLLOUT
     if (!is_writeable(c)) {
-      s->ev.events |= EPOLLOUT;
+      ev.events |= EPOLLOUT;
     }
-    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd);
+
+    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
 
     set_read_paused(c);
     clear_processing(c);
@@ -2692,13 +2712,17 @@ void ws_conn_pause_read(ws_conn_t *c) {
 void ws_conn_resume_reads(ws_conn_t *c) {
   if (is_read_paused(c)) {
     ws_server_t *s = c->base;
-    s->ev.data.ptr = c;
-    s->ev.events = EPOLLIN | EPOLLRDHUP;
+
+    struct epoll_event ev = {
+        .events = EPOLLIN | EPOLLRDHUP,
+        .data = {.ptr = c},
+    };
+
     if (!is_writeable(c)) {
-      s->ev.events |= EPOLLOUT;
+      ev.events |= EPOLLOUT;
     }
 
-    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd);
+    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
     clear_read_paused(c);
 
     // if there is data in the buffer after resuming
@@ -3334,9 +3358,12 @@ int ws_epoll_create1(ws_server_t *s) {
     if (s->user_epoll == -1) {
       return -1;
     } else {
-      s->ev.events = EPOLLIN;
-      s->ev.data.ptr = &s->user_epoll;
-      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->user_epoll);
+      struct epoll_event ev = {
+          .events = EPOLLIN,
+          .data = {.ptr = &s->user_epoll},
+      };
+
+      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->user_epoll, &ev);
       s->internal_polls++;
       return 0;
     }
@@ -3351,10 +3378,12 @@ int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
     return -1;
   }
 
-  s->ev.events = events;
-  s->ev.data.ptr = cb_ctx;
+  struct epoll_event ev = {
+      .events = events,
+      .data = {.ptr = cb_ctx},
+  };
 
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_ADD, fd, &s->ev);
+  return epoll_ctl(s->user_epoll, EPOLL_CTL_ADD, fd, &ev);
 }
 
 int ws_epoll_ctl_del(ws_server_t *s, int fd) {
@@ -3362,10 +3391,11 @@ int ws_epoll_ctl_del(ws_server_t *s, int fd) {
     return -1;
   }
 
-  s->ev.events = 0;
-  s->ev.data.ptr = NULL;
-
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_DEL, fd, &s->ev);
+  struct epoll_event ev = {
+      .events = 0,
+      .data = {.ptr = NULL},
+  };
+  return epoll_ctl(s->user_epoll, EPOLL_CTL_DEL, fd, &ev);
 }
 
 int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
@@ -3374,10 +3404,12 @@ int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
     return -1;
   }
 
-  s->ev.events = events;
-  s->ev.data.ptr = cb_ctx;
+  struct epoll_event ev = {
+      .events = events,
+      .data = {.ptr = cb_ctx},
+  };
 
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &s->ev);
+  return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &ev);
 }
 
 static const char b64_table[] =
@@ -3502,10 +3534,12 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
     perror("pthread_mutex_init");
     exit(EXIT_FAILURE);
   }
+  struct epoll_event ev = {
+      .events = EPOLLIN,
+      .data = {.ptr = ar},
+  };
 
-  s->ev.events = EPOLLIN;
-  s->ev.data.ptr = ar;
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd);
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd, &ev);
   s->internal_polls++;
   s->async_runner = ar;
 }
@@ -3631,10 +3665,13 @@ int ws_server_shutdown(ws_server_t *s) {
   }
 
   // remove and close listner fd
-  s->ev.data.ptr = NULL;
-  s->ev.events = 0;
+  struct epoll_event ev = {
+      .events = 0,
+      .data = {.ptr = NULL},
+  };
+
   close(s->fd);
-  epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &s->ev);
+  epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
   s->internal_polls--;
   s->fd = -1;
 
@@ -3654,7 +3691,7 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // close user epoll
   if (s->user_epoll > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &s->ev);
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &ev);
     close(s->user_epoll);
     s->user_epoll = -1;
     s->internal_polls--;
@@ -3662,7 +3699,7 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // close timer fd
   if (s->tfd) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &s->ev);
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &ev);
     close(s->tfd);
     s->tfd = -1;
     s->internal_polls--;
@@ -3670,7 +3707,7 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // close event fd
   if (s->async_runner->chanfd) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &s->ev);
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
     close(s->async_runner->chanfd);
     s->async_runner->chanfd = -1;
     s->internal_polls--;
