@@ -27,7 +27,7 @@ void *server_init(void *_) {
       .on_ws_msg = server_on_msg,
       .on_ws_disconnect = server_on_disconnect,
       .max_buffered_bytes = 2048,
-      .max_conns = 2,
+      .max_conns = 8,
   };
 
   ws_server_t *s = ws_server_create(&p);
@@ -110,6 +110,7 @@ void do_fragmented_msg_test2() {
   printf("do_fragmented_msg_test2.........\n");
   int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
+  test2(fd);
 }
 
 void test3(int fd) {
