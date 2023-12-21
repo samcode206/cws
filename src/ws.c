@@ -1942,9 +1942,13 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
           frame_decode_payload_len(frame, frame_buf_len, &payload_len);
       if (missing_header_len) {
         size_t remaining = missing_header_len - frame_buf_len;
-        size_t rn = conn_readn(conn, remaining);
-        if (rn == -1) {
-          return;
+        size_t rn = 0;
+
+        if (!is_fragmented(conn)) {
+          rn = conn_readn(conn, remaining);
+          if (rn == -1) {
+            return;
+          }
         }
 
         if (rn != remaining) {
@@ -1968,9 +1972,13 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
       // set needed_bytes and exit waiting for more reads from the socket
       if (frame_buf_len < full_frame_len) {
         size_t remaining = full_frame_len - frame_buf_len;
-        size_t rn = conn_readn(conn, remaining);
-        if (rn == -1) {
-          return;
+        size_t rn = 0;
+
+        if (!is_fragmented(conn)) {
+          rn = conn_readn(conn, remaining);
+          if (rn == -1) {
+            return;
+          }
         }
 
         if (rn != remaining) {

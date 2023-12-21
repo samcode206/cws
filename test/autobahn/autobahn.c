@@ -33,6 +33,7 @@ void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
 }
 
 void on_disconnect(ws_conn_t *ws_conn, int err) {
+  printf("on_disconnect: %s\n", ws_conn_strerror(ws_conn));
   if (ws_conn_ctx(ws_conn)) {
     free(ws_conn_ctx(ws_conn));
     ws_conn_set_ctx(ws_conn, NULL);
