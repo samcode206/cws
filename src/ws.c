@@ -1970,6 +1970,10 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
             // wait for atleast remaining of the header
             conn->needed_bytes = missing_header_len;
             goto clean_up_buffer;
+          } else {
+            missing_header_len =
+                frame_decode_payload_len(frame, frame_buf_len, &payload_len);
+            assert(missing_header_len == 0);
           }
         }
 
@@ -1999,9 +2003,9 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
           if (rn != remaining) {
             conn->needed_bytes = full_frame_len;
             goto clean_up_buffer;
+          } else {
+            frame_buf_len += rn;
           }
-
-          assert(rn == remaining);
         }
 
         // buf_debug(buf, "buffer");
