@@ -41,6 +41,7 @@
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
+#include <sys/types.h>
 #include <sys/uio.h>
 #include <time.h>
 
@@ -1627,8 +1628,6 @@ static int conn_read(ws_conn_t *conn) {
   return 0;
 }
 
-
-
 struct ws_conn_handshake {
   char *path;
   char *accept_key;
@@ -1636,42 +1635,111 @@ struct ws_conn_handshake {
   struct http_header headers[];
 };
 
+static ssize_t ws_conn_handshake_get_ln(char *line) {
+  char *ln_end = strstr(line, CRLF);
+  if (!ln_end)
+    return -1;
 
-static inline void ws_conn_handshake_parse_first_ln(char *raw_req, size_t req_len, struct ws_conn_handshake *hs){
-  char * ln_end = strstr(raw_req, "\r\n");
-  size_t len = ln_end - raw_req ;
-  char * lncpy = calloc(len, sizeof(char));
-  memcpy(lncpy, raw_req, len);
+  ssize_t len = ln_end - line;
+  if (len < 0)
+    return -1;
 
-  lncpy = strstr(lncpy, " ");
+  line[len] = '\0';
 
-  while (*lncpy == SPACE) {
-    ++lncpy;
+  return len;
+}
+
+static ssize_t
+ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
+  size_t len = ws_conn_handshake_get_ln(line);
+  if (len < 14) {
+    return -1;
   }
 
-  char * path = lncpy;
-  char *pathEnd = strstr(lncpy, " HTTP");
-  size_t pathLen = pathEnd - path;
-  printf("pathLen %zu\n", pathLen);
-  hs->path = calloc(pathLen+1, sizeof(char));
-  
-  memcpy(hs->path, path, pathLen);
+  // must be a GET request
+  if (memcmp(line, "GET ", 4) != 0) {
+    return -1;
+  };
 
-  printf("path <%s>\n", hs->path);
+  // skip GET and space after
+  line = strstr(line, " ");
+  while (*line == SPACE) {
+    ++line;
+  }
 
+  if (!line)
+    return -1;
 
+  char *path = line; // expected start of path
+  // path ends just before the protocol version
+  char *pathEnd = strstr(path, " HTTP/1.1");
+  // make sure the protocol version is correct and the path is not empty
+  if (!pathEnd) {
+    return -1;
+  }
+  ssize_t pathLen = pathEnd - path;
+  if (pathLen < 1) {
+    return -1;
+  }
 
+  hs->path = path;
 
+  hs->path[pathLen] = '\0';
 
+  return len;
 }
 
-static void ws_conn_handshake_parse(char *raw_req, size_t req_len, struct ws_conn_handshake *hs){
+static ssize_t ws_conn_handshake_parse_header(char *line,
+                                              struct http_header *hdr) {
+  ssize_t len = ws_conn_handshake_get_ln(line);
+  if (len > 2) {
+    char *sep = strchr(line, ':');
+    if (!sep) {
+      return -1;
+    }
+    sep[0] = '\0';
+    ++sep;
+    while (*sep == SPACE) {
+      ++sep;
+    }
+    
+    if (!sep){
+      return -1;
+    }
+    
+    char *name = line;
+    char *val = sep;
+
+
+    hdr->name = name;
+    hdr->val = val;
+  } else {
+    return len;
+  }
+
+  return len;
+}
+
+static void ws_conn_handshake_parse(char *raw_req,
+                                    struct ws_conn_handshake *hs) {
   size_t max_headers = hs->header_count;
-  ws_conn_handshake_parse_first_ln(raw_req, req_len, hs);
+  ssize_t n = ws_conn_handshake_parse_request_ln(raw_req, hs);
+  if (n == -1) {
+    return;
+  }
+
+  size_t offset = n + 2; // skip CRLF
+
+  for (size_t i = 0; i < hs->header_count; ++i) {
+    n = ws_conn_handshake_parse_header(raw_req + offset, hs->headers + i);
+    if (n == -1 || n == 0) {
+      printf("done = %zu\n", i);
+      return;
+    }
+    offset += n + 2; // skip CRLF
+  }
+
 }
-
-
-
 
 // takes a nul terminated string and finds an http request header
 static inline int get_header(const char *headers, const char *key, char *val,
@@ -1731,7 +1799,7 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 
 static enum ws_send_status
 ws_conn_do_handshake_reply(ws_conn_t *c,
-                             struct ws_conn_handshake_response *resp) {
+                           struct ws_conn_handshake_response *resp) {
   // bail out if the connection is closed or already upgraded
   if (is_closed(c) || is_upgraded(c)) {
     return WS_SEND_DROPPED_NOT_ALLOWED;
@@ -1755,9 +1823,11 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
   // write headers
   for (size_t i = 0; i < resp->header_count; ++i) {
     // 4 calls to memmove per header!!!! sad :(
-    put_ret = buf_put(c->send_buf, resp->headers[i].name, strlen(resp->headers[i].name));
+    put_ret = buf_put(c->send_buf, resp->headers[i].name,
+                      strlen(resp->headers[i].name));
     put_ret = buf_put(c->send_buf, ": ", 2);
-    put_ret = buf_put(c->send_buf, resp->headers[i].val, strlen(resp->headers[i].val));
+    put_ret = buf_put(c->send_buf, resp->headers[i].val,
+                      strlen(resp->headers[i].val));
     put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
   }
 
@@ -1808,7 +1878,7 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
       // everything written to the socket
       // shutdown our write end
       if (shutdown(c->fd, SHUT_WR) == -1) {
-        if (!c->base->on_ws_err) {
+        if (c->base->on_ws_err) {
           int err = errno;
           c->base->on_ws_err(c->base, err);
         } else {
@@ -1917,9 +1987,10 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     return;
   }
 
-  struct ws_conn_handshake *hs = calloc(1, sizeof(struct ws_conn_handshake) + (sizeof(struct http_header) * 8));
+  struct ws_conn_handshake *hs = calloc(
+      1, sizeof(struct ws_conn_handshake) + (sizeof(struct http_header) * 8));
   hs->header_count = 8;
-  ws_conn_handshake_parse((char *)headers, request_buf_len, hs);
+  ws_conn_handshake_parse((char *)headers, hs);
 
   char sec_websocket_key[25] = {0};
   int ret = get_header((char *)headers, SEC_WS_KEY_HDR, sec_websocket_key,
@@ -1963,24 +2034,23 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     // default response
 
     struct http_header resp_headers[4] = {
-      {
-        .name = "Upgrade",
-        .val = "websocket",
-      },
-      {
-        .name = "Connection",
-        .val = "Upgrade",
-      },
-      {
-        .name = "Server",
-        .val = "cws",
-      },
-      {
-        .name = "Sec-WebSocket-Accept",
-        .val = accept_key,
-      },
+        {
+            .name = "Upgrade",
+            .val = "websocket",
+        },
+        {
+            .name = "Connection",
+            .val = "Upgrade",
+        },
+        {
+            .name = "Server",
+            .val = "cws",
+        },
+        {
+            .name = "Sec-WebSocket-Accept",
+            .val = accept_key,
+        },
     };
-
 
     struct ws_conn_handshake_response r = {
         .upgrade = true,
