@@ -30,7 +30,10 @@
 #include <netinet/tcp.h>
 #include <openssl/sha.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
@@ -1624,6 +1627,52 @@ static int conn_read(ws_conn_t *conn) {
   return 0;
 }
 
+
+
+struct ws_conn_handshake {
+  char *path;
+  char *accept_key;
+  size_t header_count;
+  struct http_header headers[];
+};
+
+
+static inline void ws_conn_handshake_parse_first_ln(char *raw_req, size_t req_len, struct ws_conn_handshake *hs){
+  char * ln_end = strstr(raw_req, "\r\n");
+  size_t len = ln_end - raw_req ;
+  char * lncpy = calloc(len, sizeof(char));
+  memcpy(lncpy, raw_req, len);
+
+  lncpy = strstr(lncpy, " ");
+
+  while (*lncpy == SPACE) {
+    ++lncpy;
+  }
+
+  char * path = lncpy;
+  char *pathEnd = strstr(lncpy, " HTTP");
+  size_t pathLen = pathEnd - path;
+  printf("pathLen %zu\n", pathLen);
+  hs->path = calloc(pathLen+1, sizeof(char));
+  
+  memcpy(hs->path, path, pathLen);
+
+  printf("path <%s>\n", hs->path);
+
+
+
+
+
+}
+
+static void ws_conn_handshake_parse(char *raw_req, size_t req_len, struct ws_conn_handshake *hs){
+  size_t max_headers = hs->header_count;
+  ws_conn_handshake_parse_first_ln(raw_req, req_len, hs);
+}
+
+
+
+
 // takes a nul terminated string and finds an http request header
 static inline int get_header(const char *headers, const char *key, char *val,
                              size_t n) {
@@ -1867,6 +1916,10 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     // wait for more
     return;
   }
+
+  struct ws_conn_handshake *hs = calloc(1, sizeof(struct ws_conn_handshake) + (sizeof(struct http_header) * 8));
+  hs->header_count = 8;
+  ws_conn_handshake_parse((char *)headers, request_buf_len, hs);
 
   char sec_websocket_key[25] = {0};
   int ret = get_header((char *)headers, SEC_WS_KEY_HDR, sec_websocket_key,
