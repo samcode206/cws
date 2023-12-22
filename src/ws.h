@@ -64,6 +64,14 @@ struct http_header {
   char *val;
 };
 
+struct ws_conn_handshake {
+  char *path;
+  size_t header_count;
+  size_t max_headers;
+  char sec_websocket_accept[29]; // 28 + 1 for nul
+  struct http_header headers[];
+};
+
 struct ws_conn_handshake_response {
   bool per_msg_deflate;
   bool upgrade;
@@ -724,15 +732,12 @@ typedef void (*ws_err_accept_cb_t)(ws_server_t *s, int err);
 /**
  * Optional Callback invoked on receiving a WebSocket upgrade request.
  *
- * The 'accept_key_header' provided is pre-calculated and should be incorporated into the
- * response as part of the WebSocket handshake protocol. 
- *
  * @param c                   Pointer to the WebSocket connection (`ws_conn_t`).
- * @param request             Pointer to the buffer containing the raw upgrade request data.
+ * @param request             Pointer to the Request data (`struct ws_conn_handshake`)
  * @param accept_key_header   Pre-calculated WebSocket accept key header.
  *
  */
-typedef void (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, const char *request, const char *accept_key_header);
+typedef void (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, const struct ws_conn_handshake *hs);
 
 
 
@@ -762,7 +767,8 @@ struct ws_server_params {
   const char *addr;
   uint16_t port;
   bool verbose;              // logs server config to stdout 
-  uint64_t max_conns;        // Maximum connections the server is willing to accept.
+  size_t max_conns;        // Maximum connections the server is willing to accept.
+  size_t max_header_count; // Maximum number of headers to parse in the upgrade equest. (defaults to 32 and max is 512)
                              // Defaults to the system's limit for maximum open file descriptors.
   size_t max_buffered_bytes; // Maximum amount of websocket payload data to buffer before the connection
                              // is dropped. Defaults to 16000 bytes.

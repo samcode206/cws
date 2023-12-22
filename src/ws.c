@@ -461,6 +461,7 @@ typedef struct server {
   size_t max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
   struct ws_conn_pool *conn_pool;
+  struct ws_conn_handshake *hs;
   ws_drain_cb_t on_ws_drain;
   ws_disconnect_cb_t on_ws_disconnect;
   ws_on_upgrade_req_cb_t on_ws_upgrade_req;
@@ -996,8 +997,28 @@ static void ws_server_register_buffers(ws_server_t *s,
   s->pending_timers.len = 0;
   s->pending_timers.cap = s->max_conns;
 
+  if (!params->max_header_count) {
+    params->max_header_count = 32;
+  } else if (params->max_header_count > 512) {
+    params->max_header_count = 512;
+  }
+
+  // allocate shared handshake structure
+  s->hs =
+      calloc(1, sizeof(struct ws_conn_handshake) +
+                    (sizeof(struct http_header) * params->max_header_count));
+  if (s->hs == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
+
+  s->hs->max_headers = params->max_header_count;
+
   // make sure we got the mem needed
-  assert(s->writeable_conns.conns != NULL && s->pending_timers.conns != NULL);
+  if (s->writeable_conns.conns == NULL || s->pending_timers.conns == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  };
 }
 
 ws_server_t *ws_server_create(struct ws_server_params *params) {
@@ -1080,6 +1101,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
     printf("- max_conns:   %zu\n", s->max_conns);
     printf("- compression: %s\n", compression_enabled);
     printf("- debug:       %s\n", debug_enabled);
+    printf("- max_headers: %zu\n", params->max_header_count);
   }
 
   s->max_per_read = s->buffer_pool->buf_sz;
@@ -1629,14 +1651,6 @@ static int conn_read(ws_conn_t *conn) {
   return 0;
 }
 
-struct ws_conn_handshake {
-  char *path;
-  size_t header_count;
-  size_t max_headers;
-  char sec_websocket_accept[29]; // 28 + 1 for nul
-  struct http_header headers[];
-};
-
 static ssize_t ws_conn_handshake_get_ln(char *line) {
   char *ln_end = strstr(line, CRLF);
   if (!ln_end)
@@ -1732,11 +1746,11 @@ static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #define MAGIC_STR_LEN 36
 
-static void ws_conn_handshake_parse(char *raw_req,
-                                    struct ws_conn_handshake *hs) {
+static int ws_conn_handshake_parse(char *raw_req,
+                                   struct ws_conn_handshake *hs) {
   ssize_t n = ws_conn_handshake_parse_request_ln(raw_req, hs);
   if (n == -1) {
-    return;
+    return -1;
   }
 
   size_t offset = n + 2; // skip CRLF
@@ -1751,7 +1765,7 @@ static void ws_conn_handshake_parse(char *raw_req,
 
     if (strncasecmp(hs->headers[i].name, "Sec-WebSocket-Key", 17) == 0) {
       if (strlen(hs->headers[i].val) != 24) {
-        break;
+        return -1;
       }
 
       unsigned char key_with_magic_str[61];
@@ -1764,7 +1778,7 @@ static void ws_conn_handshake_parse(char *raw_req,
       ssize_t n = base64_encode(hs->sec_websocket_accept, (char *)hash, 20);
       if (n != 29) {
         // bad accept key
-        break;
+        return -1;
       }
 
       sec_websocket_key_found = true;
@@ -1776,59 +1790,11 @@ static void ws_conn_handshake_parse(char *raw_req,
     offset += n + 2; // skip CRLF
   }
 
-  printf("total header count = %zu\n", hs->header_count);
-}
-
-// takes a nul terminated string and finds an http request header
-static inline int get_header(const char *headers, const char *key, char *val,
-                             size_t n) {
-  char *header_start = strcasestr(headers, key);
-  if (header_start) {
-    header_start =
-        strchr(header_start,
-               ':'); // skip colon symbol, if not found header is malformed
-    if (header_start == NULL) {
-      return -1;
-    }
-
-    ++header_start; // skipping colon symbol happens here after validating it's
-                    // existence in the buffer
-    // skip spaces
-    while (*header_start == SPACE) {
-      ++header_start;
-    }
-
-    const char *header_end =
-        strstr(header_start, CRLF); // move to the end of the header value
-    if (header_end) {
-      // if string is larger than n, return to caller with ERR_HDR_TOO_LARGE
-      if ((header_end - header_start) + 1 > n) {
-        return -1;
-      }
-      memcpy(val, header_start, (header_end - header_start));
-      val[header_end - header_start + 1] =
-          '\0'; // nul terminate the header value
-      return header_end - header_start +
-             1; // we only add one here because of adding '\0'
-    } else {
-      return -1; // if no CRLF is found the headers is malformed
-    }
+  if (!sec_websocket_key_found) {
+    return -1;
   }
 
-  return -1; // header isn't found
-}
-
-static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
-                                       size_t len) {
-  unsigned char buf[64] = {0};
-  memcpy(buf, akhdr_val, strlen(akhdr_val));
-  strcat((char *)buf, magic_str);
-  len += MAGIC_STR_LEN;
-
-  unsigned char hash[20] = {0};
-  SHA1(buf, len, hash);
-
-  return base64_encode(derived_val, (const char *)hash, sizeof hash);
+  return 0;
 }
 
 static enum ws_send_status
@@ -1932,16 +1898,16 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
 static void handle_bad_request(ws_conn_t *conn) {
   struct http_header resp_headers[3] = {
       {
-          .name = "Content-Length",
-          .val = "0",
+          "Content-Length",
+          "0",
       },
       {
-          .name = "Connection",
-          .val = "close",
+          "Connection",
+          "close",
       },
       {
-          .name = "Server",
-          .val = "cws",
+          "Server",
+          "cws",
       },
   };
 
@@ -1953,6 +1919,7 @@ static void handle_bad_request(ws_conn_t *conn) {
 
   mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
   conn->recv_buf = NULL;
+  set_write_shutdown(conn);
   ws_conn_do_handshake_reply(conn, &r);
 }
 
@@ -1986,15 +1953,13 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     return;
   }
 
-  uint8_t *headers = buf_peek(conn->recv_buf);
+  char *headers = (char *)buf_peek(conn->recv_buf);
   headers[request_buf_len] = '\0';
 
   // make sure it's a GET request
   bool is_get_request = is_http_get_request(conn);
   if (!is_get_request) {
-    // this is the first read
-    // validate that it's a GET request and increase the needed_bytes
-    if (memcmp((char *)headers, GET_RQ, GET_RQ_LEN) == 0) {
+    if (memcmp((char *)headers, "GET ", 4) == 0) {
       set_http_get_request(conn);
       is_get_request = true;
       // Sec-WebSocket-Accept:s3pPLMBiTxaQ9kYGzzhZRbK+xOo= is 49 bytes and
@@ -2021,30 +1986,57 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     return;
   }
 
-  struct ws_conn_handshake *hs = calloc(
-      1, sizeof(struct ws_conn_handshake) + (sizeof(struct http_header) * 8));
-  hs->max_headers = 8;
-  ws_conn_handshake_parse((char *)headers, hs);
+  struct ws_conn_handshake *hs = s->hs;
+  hs->header_count = 0;
+  if (ws_conn_handshake_parse((char *)headers, hs) == 0) {
+    conn->needed_bytes = 2;
+    conn->read_timeout = time(NULL) + READ_TIMEOUT;
+    if (s->on_ws_upgrade_req) {
+      s->on_ws_upgrade_req(conn, hs);
+      hs->header_count = 0;
+    } else {
+// default handshake response
+#define WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT 4
 
-  char sec_websocket_key[25] = {0};
-  int ret = get_header((char *)headers, SEC_WS_KEY_HDR, sec_websocket_key,
-                       sizeof sec_websocket_key);
-  if (ret != 25) {
+      struct http_header
+          resp_headers[WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT] = {
+              {
+                  "Upgrade",
+                  "websocket",
+              },
+              {
+                  "Connection",
+                  "Upgrade",
+              },
+              {
+                  "Server",
+                  "cws",
+              },
+              {
+                  "Sec-WebSocket-Accept",
+                  hs->sec_websocket_accept,
+              },
+          };
+
+      struct ws_conn_handshake_response r = {
+          .upgrade = true,
+          .per_msg_deflate = true, // keep this true it will be ignored if
+                                   // not supported or not requested
+          .body = NULL,
+          .status = "101 Switching Protocols",
+          .headers = resp_headers,
+          .header_count = WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT,
+      };
+
+      mirrored_buf_put(s->buffer_pool, conn->recv_buf);
+      conn->recv_buf = NULL;
+      ws_conn_do_handshake_reply(conn, &r);
+    }
+
+  } else {
     handle_bad_request(conn);
     return;
   }
-
-  char accept_key[32] = {0};
-
-  int derived_len =
-      ws_derive_accept_hdr(sec_websocket_key, accept_key, ret - 1);
-  if (derived_len != 29) {
-    handle_bad_request(conn);
-    return;
-  }
-
-  char accept_header[64] = {0};
-  sprintf(accept_header, "Sec-WebSocket-Accept: %s", accept_key); // 50 bytes
 
 #ifdef WITH_COMPRESSION
   char sec_websocket_extensions[1024];
@@ -2056,50 +2048,6 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
   }
 
 #endif /* WITH_COMPRESSION */
-
-  conn->needed_bytes = 2;
-  conn->read_timeout = time(NULL) + READ_TIMEOUT;
-
-  if (s->on_ws_upgrade_req) {
-    s->on_ws_upgrade_req(conn, (char *)headers, accept_header);
-    mirrored_buf_put(s->buffer_pool, conn->recv_buf);
-    conn->recv_buf = NULL;
-  } else {
-    // default response
-
-    struct http_header resp_headers[4] = {
-        {
-            .name = "Upgrade",
-            .val = "websocket",
-        },
-        {
-            .name = "Connection",
-            .val = "Upgrade",
-        },
-        {
-            .name = "Server",
-            .val = "cws",
-        },
-        {
-            .name = "Sec-WebSocket-Accept",
-            .val = accept_key,
-        },
-    };
-
-    struct ws_conn_handshake_response r = {
-        .upgrade = true,
-        .per_msg_deflate = true, // keep this true it will be ignored if
-                                 // not supported or not requested
-        .body = NULL,
-        .status = "101 Switching Protocols",
-        .headers = resp_headers,
-        .header_count = 4,
-    };
-
-    mirrored_buf_put(s->buffer_pool, conn->recv_buf);
-    conn->recv_buf = NULL;
-    ws_conn_do_handshake_reply(conn, &r);
-  }
 }
 
 #ifdef WITH_COMPRESSION
