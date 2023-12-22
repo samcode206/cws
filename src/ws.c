@@ -1818,7 +1818,6 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
 
   bool upgrade = strstr(resp->status, "101") != NULL;
 
-
   // grab the send buffer
   conn_prep_send_buf(c);
 
@@ -1841,7 +1840,7 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
   }
 
 #ifdef WITH_COMPRESSION
-  if (resp->upgrade && resp->per_msg_deflate && is_compression_allowed(c)) {
+  if (upgrade && resp->per_msg_deflate && is_compression_allowed(c)) {
     put_ret = buf_put(c->send_buf,
                       "Sec-WebSocket-Extensions: permessage-deflate; "
                       "client_no_context_takeover\r\n",
@@ -1998,6 +1997,12 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
   struct ws_conn_handshake *hs = s->hs;
   hs->header_count = 0;
   if (ws_conn_handshake_parse((char *)headers, hs) == 0) {
+#ifdef WITH_COMPRESSION
+    if (hs->per_msg_deflate_requested) {
+      set_compression_allowed(conn);
+    }
+#endif /* WITH_COMPRESSION */
+
     conn->needed_bytes = 2;
     conn->read_timeout = time(NULL) + READ_TIMEOUT;
     mirrored_buf_put(s->buffer_pool, conn->recv_buf);
