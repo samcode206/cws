@@ -30,6 +30,7 @@
 #include <netinet/tcp.h>
 #include <openssl/sha.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1630,8 +1631,9 @@ static int conn_read(ws_conn_t *conn) {
 
 struct ws_conn_handshake {
   char *path;
-  char *accept_key;
   size_t header_count;
+  size_t max_headers;
+  char sec_websocket_accept[29]; // 28 + 1 for nul
   struct http_header headers[];
 };
 
@@ -1697,19 +1699,25 @@ static ssize_t ws_conn_handshake_parse_header(char *line,
     if (!sep) {
       return -1;
     }
-    sep[0] = '\0';
-    ++sep;
+
+    size_t name_len = sep - line;
+    sep[0] = '\0'; // nul terminate the header name
+
+    if (name_len < 1) {
+      return -1;
+    }
+
+    ++sep; // skip nul (previously :)
     while (*sep == SPACE) {
       ++sep;
     }
-    
-    if (!sep){
+
+    if (!sep) {
       return -1;
     }
-    
+
     char *name = line;
     char *val = sep;
-
 
     hdr->name = name;
     hdr->val = val;
@@ -1720,9 +1728,12 @@ static ssize_t ws_conn_handshake_parse_header(char *line,
   return len;
 }
 
+static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+#define MAGIC_STR_LEN 36
+
 static void ws_conn_handshake_parse(char *raw_req,
                                     struct ws_conn_handshake *hs) {
-  size_t max_headers = hs->header_count;
   ssize_t n = ws_conn_handshake_parse_request_ln(raw_req, hs);
   if (n == -1) {
     return;
@@ -1730,15 +1741,42 @@ static void ws_conn_handshake_parse(char *raw_req,
 
   size_t offset = n + 2; // skip CRLF
 
-  for (size_t i = 0; i < hs->header_count; ++i) {
+  bool sec_websocket_key_found = false;
+  for (size_t i = 0; i < hs->max_headers; ++i) {
     n = ws_conn_handshake_parse_header(raw_req + offset, hs->headers + i);
-    if (n == -1 || n == 0) {
-      printf("done = %zu\n", i);
-      return;
+    assert(n != -1); // remove this when we have a proper error handling
+    if (n == 0) {
+      break;
     }
+
+    if (strncasecmp(hs->headers[i].name, "Sec-WebSocket-Key", 17) == 0) {
+      if (strlen(hs->headers[i].val) != 24) {
+        break;
+      }
+
+      unsigned char key_with_magic_str[61];
+      memcpy(key_with_magic_str, hs->headers[i].val, 24);
+      memcpy(key_with_magic_str + 24, magic_str, MAGIC_STR_LEN);
+      key_with_magic_str[60] = '\0';
+
+      unsigned char hash[20];
+      SHA1(key_with_magic_str, 60, hash);
+      ssize_t n = base64_encode(hs->sec_websocket_accept, (char *)hash, 20);
+      if (n != 29) {
+        // bad accept key
+        break;
+      }
+
+      sec_websocket_key_found = true;
+      // calculate the accept key
+      // Sec-WebSocket-Accept
+    }
+
+    hs->header_count += 1;
     offset += n + 2; // skip CRLF
   }
 
+  printf("total header count = %zu\n", hs->header_count);
 }
 
 // takes a nul terminated string and finds an http request header
@@ -1779,10 +1817,6 @@ static inline int get_header(const char *headers, const char *key, char *val,
 
   return -1; // header isn't found
 }
-
-static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-#define MAGIC_STR_LEN 36
 
 static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
                                        size_t len) {
@@ -1989,7 +2023,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
 
   struct ws_conn_handshake *hs = calloc(
       1, sizeof(struct ws_conn_handshake) + (sizeof(struct http_header) * 8));
-  hs->header_count = 8;
+  hs->max_headers = 8;
   ws_conn_handshake_parse((char *)headers, hs);
 
   char sec_websocket_key[25] = {0};
