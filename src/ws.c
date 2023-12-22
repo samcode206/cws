@@ -464,7 +464,7 @@ typedef struct server {
   struct ws_conn_handshake *hs;
   ws_drain_cb_t on_ws_drain;
   ws_disconnect_cb_t on_ws_disconnect;
-  ws_on_upgrade_req_cb_t on_ws_upgrade_req;
+  ws_handshake_cb_t on_ws_handshake;
   ws_on_timeout_t on_ws_conn_timeout;
   struct ws_server_async_runner *async_runner;
   ws_err_cb_t on_ws_err;
@@ -890,8 +890,8 @@ static void ws_server_register_callbacks(ws_server_t *s,
     s->on_ws_accept_err = params->on_ws_accept_err;
   }
 
-  if (params->on_ws_upgrade_req) {
-    s->on_ws_upgrade_req = params->on_ws_upgrade_req;
+  if (params->on_ws_handshake) {
+    s->on_ws_handshake = params->on_ws_handshake;
   }
 
   if (params->on_ws_conn_timeout) {
@@ -1991,9 +1991,11 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
   if (ws_conn_handshake_parse((char *)headers, hs) == 0) {
     conn->needed_bytes = 2;
     conn->read_timeout = time(NULL) + READ_TIMEOUT;
-    if (s->on_ws_upgrade_req) {
-      s->on_ws_upgrade_req(conn, hs);
-      hs->header_count = 0;
+    hs->header_count = 0;
+    mirrored_buf_put(s->buffer_pool,conn->recv_buf);
+    conn->recv_buf = NULL;
+    if (s->on_ws_handshake) {
+      s->on_ws_handshake(conn, hs);
     } else {
 // default handshake response
 #define WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT 4
@@ -2038,16 +2040,16 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     return;
   }
 
-#ifdef WITH_COMPRESSION
-  char sec_websocket_extensions[1024];
-  int sec_websocket_extensions_ret =
-      get_header((char *)headers, "Sec-WebSocket-Extensions",
-                 sec_websocket_extensions, 1024);
-  if (sec_websocket_extensions_ret > 0) {
-    set_compression_allowed(conn);
-  }
+// #ifdef WITH_COMPRESSION
+//   char sec_websocket_extensions[1024];
+//   int sec_websocket_extensions_ret =
+//       get_header((char *)headers, "Sec-WebSocket-Extensions",
+//                  sec_websocket_extensions, 1024);
+//   if (sec_websocket_extensions_ret > 0) {
+//     set_compression_allowed(conn);
+//   }
 
-#endif /* WITH_COMPRESSION */
+// #endif /* WITH_COMPRESSION */
 }
 
 #ifdef WITH_COMPRESSION

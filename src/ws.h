@@ -737,7 +737,7 @@ typedef void (*ws_err_accept_cb_t)(ws_server_t *s, int err);
  * @param accept_key_header   Pre-calculated WebSocket accept key header.
  *
  */
-typedef void (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, const struct ws_conn_handshake *hs);
+typedef void (*ws_handshake_cb_t)(ws_conn_t *c, struct ws_conn_handshake *hs);
 
 
 
@@ -780,7 +780,7 @@ struct ws_server_params {
   ws_err_cb_t on_ws_err;               // Callback for when an internal error occurs.
   ws_accept_cb_t on_ws_accept;         // Callback for when a new connection has been accepted
   ws_err_accept_cb_t on_ws_accept_err; // Callback for when accept() fails.
-  ws_on_upgrade_req_cb_t on_ws_upgrade_req; // Callback for when a Websocket upgrade request is received
+  ws_handshake_cb_t on_ws_handshake; // Callback for when a Websocket handshake request is received
   void *ctx;                                // attaches a pointer to the server
 };
 
