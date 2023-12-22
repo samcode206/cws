@@ -261,6 +261,9 @@ enum ws_send_status
 ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp);
 
 
+const struct http_header *ws_conn_handshake_header_find(struct ws_conn_handshake *hs,
+                                          const char *name);
+
 /**
  * Checks if the connection is currently sending a fragmented message.
  *

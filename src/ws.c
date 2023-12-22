@@ -1991,8 +1991,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
   if (ws_conn_handshake_parse((char *)headers, hs) == 0) {
     conn->needed_bytes = 2;
     conn->read_timeout = time(NULL) + READ_TIMEOUT;
-    hs->header_count = 0;
-    mirrored_buf_put(s->buffer_pool,conn->recv_buf);
+    mirrored_buf_put(s->buffer_pool, conn->recv_buf);
     conn->recv_buf = NULL;
     if (s->on_ws_handshake) {
       s->on_ws_handshake(conn, hs);
@@ -2040,16 +2039,16 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     return;
   }
 
-// #ifdef WITH_COMPRESSION
-//   char sec_websocket_extensions[1024];
-//   int sec_websocket_extensions_ret =
-//       get_header((char *)headers, "Sec-WebSocket-Extensions",
-//                  sec_websocket_extensions, 1024);
-//   if (sec_websocket_extensions_ret > 0) {
-//     set_compression_allowed(conn);
-//   }
+  // #ifdef WITH_COMPRESSION
+  //   char sec_websocket_extensions[1024];
+  //   int sec_websocket_extensions_ret =
+  //       get_header((char *)headers, "Sec-WebSocket-Extensions",
+  //                  sec_websocket_extensions, 1024);
+  //   if (sec_websocket_extensions_ret > 0) {
+  //     set_compression_allowed(conn);
+  //   }
 
-// #endif /* WITH_COMPRESSION */
+  // #endif /* WITH_COMPRESSION */
 }
 
 #ifdef WITH_COMPRESSION
@@ -3944,4 +3943,20 @@ int ws_server_destroy(ws_server_t *s) {
 inline enum ws_send_status
 ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
   return ws_conn_do_handshake_reply(c, resp);
+}
+
+const struct http_header *ws_conn_handshake_header_find(struct ws_conn_handshake *hs,
+                                          const char *name) {
+  size_t count = hs->header_count;
+  struct http_header *headers = hs->headers;
+
+  if (count) {
+    while (count--) {
+      if (strcasecmp(headers[count].name, name) == 0) {
+        return &headers[count];
+      }
+    }
+  }
+
+  return NULL;
 }
