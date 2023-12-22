@@ -68,6 +68,7 @@ struct ws_conn_handshake {
   char *path;
   size_t header_count;
   size_t max_headers;
+  bool per_msg_deflate_requested;
   char sec_websocket_accept[29]; // 28 + 1 for nul
   struct http_header headers[];
 };

@@ -1784,6 +1784,12 @@ static int ws_conn_handshake_parse(char *raw_req,
       sec_websocket_key_found = true;
       // calculate the accept key
       // Sec-WebSocket-Accept
+    } else if (strncasecmp(hs->headers[i].name, "Sec-WebSocket-Extensions",
+                           24) == 0) {
+
+      if (strcasestr(hs->headers[i].val, "permessage-deflate")) {
+        hs->per_msg_deflate_requested = true;
+      }
     }
 
     hs->header_count += 1;
@@ -3945,8 +3951,8 @@ ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
   return ws_conn_do_handshake_reply(c, resp);
 }
 
-const struct http_header *ws_conn_handshake_header_find(struct ws_conn_handshake *hs,
-                                          const char *name) {
+const struct http_header *
+ws_conn_handshake_header_find(struct ws_conn_handshake *hs, const char *name) {
   size_t count = hs->header_count;
   struct http_header *headers = hs->headers;
 
