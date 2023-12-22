@@ -30,6 +30,7 @@
 #include <netinet/tcp.h>
 #include <openssl/sha.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
@@ -182,6 +183,10 @@ static inline bool is_compression_allowed(ws_conn_t *c) {
 
 static inline void set_compression_allowed(ws_conn_t *c) {
   c->flags |= CONN_COMPRESSION_ALLOWED;
+}
+
+static inline void clear_compression_allowed(ws_conn_t *c) {
+  c->flags &= ~CONN_COMPRESSION_ALLOWED;
 }
 
 static inline bool is_fragment_compressed(ws_conn_t *c) {
@@ -550,19 +555,7 @@ static void conn_dyn_buf_dispose(ws_conn_t *c) {
 
 static void conn_prep_send_buf(ws_conn_t *conn) {
   if (!conn->send_buf) {
-    // mirrored_buf_t *recv_buf = conn->recv_buf;
-    // // can we swap buffers so we don't go all the way to the buffer pool
-    // // commented out because we may overwrite the msg when user sends
-    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's
-    // us know that
-    // // that they no longer want the msg and we can make this safe
-    // if (recv_buf && !buf_len(recv_buf)) {
-    //   conn->send_buf = recv_buf;
-    //   conn->recv_buf = NULL;
-    // } else {
     conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-    assert(conn->send_buf != NULL);
-    // }
   }
 }
 
@@ -571,7 +564,7 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
 
 static void ws_conn_proccess_frames(ws_conn_t *conn);
 
-static void handle_upgrade(ws_conn_t *conn);
+static void ws_conn_do_handshake(ws_conn_t *conn);
 
 static inline int conn_read(ws_conn_t *conn);
 
@@ -1513,7 +1506,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                 ws_conn_proccess_frames(c);
                 clear_processing(c);
               } else {
-                handle_upgrade(c);
+                ws_conn_do_handshake(c);
               }
             }
           }
@@ -1687,10 +1680,120 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
   return base64_encode(derived_val, (const char *)hash, sizeof hash);
 }
 
-static void handle_upgrade(ws_conn_t *conn) {
-  ws_server_t *s = conn->base;
-  size_t resp_len = 0;
+static enum ws_send_status
+ws_conn_do_handshake_respond(ws_conn_t *c,
+                             struct ws_conn_upgrade_response *resp) {
+  // bail out if the connection is closed or already upgraded
+  if (is_closed(c) || is_upgraded(c)) {
+    return WS_SEND_DROPPED_NOT_ALLOWED;
+  }
 
+  // we need these or we don't have much of a response
+  if (!resp->status || !resp->headers || !resp->header_count) {
+    return WS_SEND_DROPPED_NOT_ALLOWED;
+  }
+
+  // grab the send buffer
+  conn_prep_send_buf(c);
+
+  // write first line
+  size_t status_len = strlen(resp->status);
+  int put_ret;
+  put_ret = buf_put(c->send_buf, "HTTP/1.1 ", 9);
+  put_ret = buf_put(c->send_buf, resp->status, status_len);
+  put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
+
+  // write headers
+  for (size_t i = 0; i < resp->header_count; ++i) {
+    size_t header_len = strlen(resp->headers[i]);
+    put_ret = buf_put(c->send_buf, resp->headers[i], header_len);
+    put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
+  }
+
+#ifdef WITH_COMPRESSION
+  if (resp->upgrade && resp->per_msg_deflate && is_compression_allowed(c)) {
+    put_ret = buf_put(c->send_buf,
+                      "Sec-WebSocket-Extensions: permessage-deflate; "
+                      "client_no_context_takeover\r\n",
+                      74);
+
+  } else {
+    // clear it incase it was set when we saw the header
+    // in the request and WITH_COMPRESSION is defined
+    clear_compression_allowed(c);
+  }
+#endif /* WITH_COMPRESSION */
+
+  // end of headers
+  put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
+
+  // if we have a body
+  // ignore if this is an upgrade request
+  if (!resp->upgrade && resp->body) {
+    size_t body_len = strlen(resp->body);
+    // add response body
+    put_ret = buf_put(c->send_buf, resp->body, body_len);
+  }
+
+  // check if put failed (it only fails when no space is available)
+  if (put_ret == -1) {
+    mirrored_buf_put(c->base->buffer_pool, c->send_buf);
+    c->send_buf = NULL;
+    return WS_SEND_DROPPED_TOO_LARGE;
+  }
+
+  if (!resp->upgrade) {
+    // we are going to close the connection after sending the response
+    set_write_shutdown(c);
+  }
+
+  int ret = conn_drain_write_buf(c);
+  if (ret == 1) {
+    if (resp->upgrade) {
+      clear_http_get_request(c);
+      set_upgraded(c);
+      c->base->on_ws_open(c);
+    } else {
+      // everything written to the socket
+      // shutdown our write end
+      if (shutdown(c->fd, SHUT_WR) == -1) {
+        if (!c->base->on_ws_err) {
+          int err = errno;
+          c->base->on_ws_err(c->base, err);
+        } else {
+          perror("shutdown");
+        }
+      };
+    }
+  } else if (ret == 0) {
+    return WS_SEND_OK_BACKPRESSURE;
+  } else {
+    return WS_SEND_FAILED;
+  }
+
+  return WS_SEND_OK;
+}
+
+static void handle_bad_request(ws_conn_t *conn) {
+  char *resp_headers[] = {
+      "Content-Length: 0",
+      "Connection: close",
+      "Server: cws",
+  };
+
+  struct ws_conn_upgrade_response r = {
+      .status = "400 Bad Request",
+      .headers = resp_headers,
+      .header_count = 3,
+  };
+
+  mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
+  conn->recv_buf = NULL;
+  ws_conn_do_handshake_respond(conn, &r);
+}
+
+static void ws_conn_do_handshake(ws_conn_t *conn) {
+  ws_server_t *s = conn->base;
   // read from the socket
   if (conn_read(conn) == -1) {
     return;
@@ -1719,11 +1822,7 @@ static void handle_upgrade(ws_conn_t *conn) {
     return;
   }
 
-  // if false by the time we write then call shutdown
-  bool ok = false;
-
   uint8_t *headers = buf_peek(conn->recv_buf);
-
   headers[request_buf_len] = '\0';
 
   // make sure it's a GET request
@@ -1741,122 +1840,83 @@ static void handle_upgrade(ws_conn_t *conn) {
     };
   };
 
-  if (is_get_request) {
-    // only start processing when the final header has arrived
-    bool header_end_reached =
-        memcmp((char *)headers + request_buf_len - CRLF2_LEN, CRLF2,
-               CRLF2_LEN) == 0;
-
-    // we reached the request headers end
-    // start reading the headers and extract Sec-WebSocket-Key
-    if (header_end_reached) {
-      char sec_websocket_key[25] = {0};
-      int ret = get_header((char *)headers, SEC_WS_KEY_HDR, sec_websocket_key,
-                           sizeof sec_websocket_key);
-
-      if (ret == 25) {
-        char accept_key[32];
-        int accept_key_len =
-            ws_derive_accept_hdr(sec_websocket_key, accept_key, ret - 1) - 1;
-
-        if (!s->on_ws_upgrade_req) {
-          ok = true;
-#ifdef WITH_COMPRESSION
-          bool pmd = false;
-
-          char sec_websocket_extensions[1024];
-          int sec_websocket_extensions_ret =
-              get_header((char *)headers, "Sec-WebSocket-Extensions",
-                         sec_websocket_extensions, 1024);
-          if (sec_websocket_extensions_ret > 0) {
-            pmd = true;
-          }
-#endif /* WITH_COMPRESSION */
-
-          buf_consume(conn->recv_buf, request_buf_len);
-          conn_prep_send_buf(conn);
-
-          buf_reset(conn->send_buf);
-          buf_put(conn->send_buf, switching_protocols,
-                  SWITCHING_PROTOCOLS_HDRS_LEN);
-          buf_put(conn->send_buf, accept_key, accept_key_len);
-#ifdef WITH_COMPRESSION
-          if (pmd) {
-            set_compression_allowed(conn);
-            buf_put(conn->send_buf,
-                    "\r\nSec-WebSocket-Extensions: permessage-deflate; "
-                    "client_no_context_takeover",
-                    74);
-          }
-#endif /* WITH_COMPRESSION */
-          buf_put(conn->send_buf, CRLF2, CRLF2_LEN);
-          resp_len = buf_len(conn->send_buf);
-        } else {
-          buf_consume(conn->recv_buf, request_buf_len);
-          conn_prep_send_buf(conn);
-          size_t max_resp_len = buf_space(conn->send_buf);
-          bool reject = 0;
-          resp_len = s->on_ws_upgrade_req(
-              conn, (char *)headers, accept_key, max_resp_len,
-              (char *)buf_peek(conn->send_buf), &reject);
-
-          if ((resp_len > 0) & (resp_len <= max_resp_len)) {
-            conn->send_buf->wpos += resp_len;
-            ok = !reject;
-          } else {
-            set_write_shutdown(conn);
-            buf_put(conn->send_buf, internal_server_error,
-                    INTERNAL_SERVER_ERROR_LEN);
-          }
-        }
-
-      } else {
-        set_write_shutdown(conn);
-        conn_prep_send_buf(conn);
-
-        buf_put(conn->send_buf, bad_request, BAD_REQUEST_LEN);
-        printf("error parsing http headers: %d\n", ret);
-      }
-
-    } else {
-      // there's still more data to be read from the network to get the full
-      // header
-
-      return;
-    }
-
-  } else {
-    conn_prep_send_buf(conn);
-    set_write_shutdown(conn);
-    buf_put(conn->send_buf, bad_request, BAD_REQUEST_LEN);
+  // if after the first read we still don't have a GET request
+  // then we have a bad handshake
+  if (!is_get_request) {
+    handle_bad_request(conn);
+    return;
   }
 
-  if (is_writeable(conn)) {
-    int ret = conn_drain_write_buf(conn);
-    if (ret == 1) {
-      mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
-      conn->recv_buf = NULL;
+  // only start processing when the final header has arrived
+  bool header_end_reached =
+      memcmp((char *)headers + request_buf_len - CRLF2_LEN, CRLF2, CRLF2_LEN) ==
+      0;
 
-      if (ok) {
-        clear_http_get_request(conn);
-        s->on_ws_open(conn);
-        set_upgraded(conn);
-        conn->read_timeout = time(NULL) + READ_TIMEOUT;
-        conn->needed_bytes =
-            2; // reset to the minimum needed to parse a ws header
-      } else {
-        if (shutdown(conn->fd, SHUT_WR) == -1) {
-          if (!s->on_ws_err) {
-            int err = errno;
-            s->on_ws_err(s, err);
-          } else {
-            perror("shutdown");
-          }
-        };
-      }
-    }
+  if (!header_end_reached) {
+    // wait for more
+    return;
+  }
+
+  char sec_websocket_key[25] = {0};
+  int ret = get_header((char *)headers, SEC_WS_KEY_HDR, sec_websocket_key,
+                       sizeof sec_websocket_key);
+  if (ret != 25) {
+    handle_bad_request(conn);
+    return;
+  }
+
+  char accept_key[32] = {0};
+
+  int derived_len =
+      ws_derive_accept_hdr(sec_websocket_key, accept_key, ret - 1);
+  if (derived_len != 29) {
+    handle_bad_request(conn);
+    return;
+  }
+
+  char accept_header[64] = {0};
+  sprintf(accept_header, "Sec-WebSocket-Accept: %s", accept_key); // 50 bytes
+
+#ifdef WITH_COMPRESSION
+  char sec_websocket_extensions[1024];
+  int sec_websocket_extensions_ret =
+      get_header((char *)headers, "Sec-WebSocket-Extensions",
+                 sec_websocket_extensions, 1024);
+  if (sec_websocket_extensions_ret > 0) {
+    set_compression_allowed(conn);
+  }
+
+#endif /* WITH_COMPRESSION */
+
+  conn->needed_bytes = 2;
+  conn->read_timeout = time(NULL) + READ_TIMEOUT;
+
+  if (s->on_ws_upgrade_req) {
+    s->on_ws_upgrade_req(conn, (char *)headers, accept_header);
+    mirrored_buf_put(s->buffer_pool, conn->recv_buf);
+    conn->recv_buf = NULL;
   } else {
-    buf_put(conn->send_buf, bad_request, BAD_REQUEST_LEN);
+    // default response
+    char *resp_headers[] = {
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Server: cws",
+        accept_header,
+    };
+
+    struct ws_conn_upgrade_response r = {
+        .upgrade = true,
+        .per_msg_deflate = true, // keep this true it will be ignored if
+                                 // not supported or not requested
+        .body = NULL,
+        .status = "101 Switching Protocols",
+        .headers = resp_headers,
+        .header_count = 4,
+    };
+
+    mirrored_buf_put(s->buffer_pool, conn->recv_buf);
+    conn->recv_buf = NULL;
+    ws_conn_do_handshake_respond(conn, &r);
   }
 }
 
@@ -3747,4 +3807,9 @@ int ws_server_destroy(ws_server_t *s) {
   free(s);
 
   return 0;
+}
+
+inline enum ws_send_status
+ws_conn_handshake_respond(ws_conn_t *c, struct ws_conn_upgrade_response *resp) {
+  return ws_conn_do_handshake_respond(c, resp);
 }
