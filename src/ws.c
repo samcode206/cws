@@ -1777,10 +1777,19 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
 }
 
 static void handle_bad_request(ws_conn_t *conn) {
-  char *resp_headers[] = {
-      "Content-Length: 0",
-      "Connection: close",
-      "Server: cws",
+  struct http_header resp_headers[3] = {
+      {
+          .name = "Content-Length",
+          .val = "0",
+      },
+      {
+          .name = "Connection",
+          .val = "close",
+      },
+      {
+          .name = "Server",
+          .val = "cws",
+      },
   };
 
   struct ws_conn_handshake_response r = {

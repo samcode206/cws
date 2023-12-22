@@ -250,7 +250,7 @@ enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, b
 
 */
 enum ws_send_status
-ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_upgrade_response *resp);
+ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp);
 
 
 /**
