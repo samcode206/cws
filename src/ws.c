@@ -1816,6 +1816,9 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
     return WS_SEND_DROPPED_NOT_ALLOWED;
   }
 
+  bool upgrade = strstr(resp->status, "101") != NULL;
+
+
   // grab the send buffer
   conn_prep_send_buf(c);
 
@@ -1856,7 +1859,7 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
 
   // if we have a body
   // ignore if this is an upgrade request
-  if (!resp->upgrade && resp->body) {
+  if (!upgrade && resp->body) {
     size_t body_len = strlen(resp->body);
     // add response body
     put_ret = buf_put(c->send_buf, resp->body, body_len);
@@ -1869,14 +1872,14 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
     return WS_SEND_DROPPED_TOO_LARGE;
   }
 
-  if (!resp->upgrade) {
+  if (!upgrade) {
     // we are going to close the connection after sending the response
     set_write_shutdown(c);
   }
 
   int ret = conn_drain_write_buf(c);
   if (ret == 1) {
-    if (resp->upgrade) {
+    if (upgrade) {
       clear_http_get_request(c);
       set_upgraded(c);
       c->base->on_ws_open(c);
@@ -2026,7 +2029,6 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
           };
 
       struct ws_conn_handshake_response r = {
-          .upgrade = true,
           .per_msg_deflate = true, // keep this true it will be ignored if
                                    // not supported or not requested
           .body = NULL,

@@ -75,7 +75,6 @@ struct ws_conn_handshake {
 
 struct ws_conn_handshake_response {
   bool per_msg_deflate;
-  bool upgrade;
   size_t header_count;
   char *status;
   char *body;

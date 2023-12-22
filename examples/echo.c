@@ -37,7 +37,6 @@ void onUpgrade(ws_conn_t *conn, struct ws_conn_handshake *hs) {
   };
 
   struct ws_conn_handshake_response res = {
-      .upgrade = 1,
       .body = NULL,
       .header_count = 5,
       .per_msg_deflate = 1,
