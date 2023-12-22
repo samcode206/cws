@@ -1681,8 +1681,8 @@ static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
 }
 
 static enum ws_send_status
-ws_conn_do_handshake_respond(ws_conn_t *c,
-                             struct ws_conn_upgrade_response *resp) {
+ws_conn_do_handshake_reply(ws_conn_t *c,
+                             struct ws_conn_handshake_response *resp) {
   // bail out if the connection is closed or already upgraded
   if (is_closed(c) || is_upgraded(c)) {
     return WS_SEND_DROPPED_NOT_ALLOWED;
@@ -1705,8 +1705,10 @@ ws_conn_do_handshake_respond(ws_conn_t *c,
 
   // write headers
   for (size_t i = 0; i < resp->header_count; ++i) {
-    size_t header_len = strlen(resp->headers[i]);
-    put_ret = buf_put(c->send_buf, resp->headers[i], header_len);
+    // 4 calls to memmove per header!!!! sad :(
+    put_ret = buf_put(c->send_buf, resp->headers[i].name, strlen(resp->headers[i].name));
+    put_ret = buf_put(c->send_buf, ": ", 2);
+    put_ret = buf_put(c->send_buf, resp->headers[i].val, strlen(resp->headers[i].val));
     put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
   }
 
@@ -1781,7 +1783,7 @@ static void handle_bad_request(ws_conn_t *conn) {
       "Server: cws",
   };
 
-  struct ws_conn_upgrade_response r = {
+  struct ws_conn_handshake_response r = {
       .status = "400 Bad Request",
       .headers = resp_headers,
       .header_count = 3,
@@ -1789,7 +1791,7 @@ static void handle_bad_request(ws_conn_t *conn) {
 
   mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
   conn->recv_buf = NULL;
-  ws_conn_do_handshake_respond(conn, &r);
+  ws_conn_do_handshake_reply(conn, &r);
 }
 
 static void ws_conn_do_handshake(ws_conn_t *conn) {
@@ -1897,14 +1899,28 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     conn->recv_buf = NULL;
   } else {
     // default response
-    char *resp_headers[] = {
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        "Server: cws",
-        accept_header,
+
+    struct http_header resp_headers[4] = {
+      {
+        .name = "Upgrade",
+        .val = "websocket",
+      },
+      {
+        .name = "Connection",
+        .val = "Upgrade",
+      },
+      {
+        .name = "Server",
+        .val = "cws",
+      },
+      {
+        .name = "Sec-WebSocket-Accept",
+        .val = accept_key,
+      },
     };
 
-    struct ws_conn_upgrade_response r = {
+
+    struct ws_conn_handshake_response r = {
         .upgrade = true,
         .per_msg_deflate = true, // keep this true it will be ignored if
                                  // not supported or not requested
@@ -1916,7 +1932,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
 
     mirrored_buf_put(s->buffer_pool, conn->recv_buf);
     conn->recv_buf = NULL;
-    ws_conn_do_handshake_respond(conn, &r);
+    ws_conn_do_handshake_reply(conn, &r);
   }
 }
 
@@ -3810,6 +3826,6 @@ int ws_server_destroy(ws_server_t *s) {
 }
 
 inline enum ws_send_status
-ws_conn_handshake_respond(ws_conn_t *c, struct ws_conn_upgrade_response *resp) {
-  return ws_conn_do_handshake_respond(c, resp);
+ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
+  return ws_conn_do_handshake_reply(c, resp);
 }

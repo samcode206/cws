@@ -58,13 +58,19 @@ typedef struct ws_conn_t ws_conn_t;
  */
 typedef struct server ws_server_t;
 
-struct ws_conn_upgrade_response {
+
+struct http_header {
+  char *name;
+  char *val;
+};
+
+struct ws_conn_handshake_response {
   bool per_msg_deflate;
   bool upgrade;
   size_t header_count;
   char *status;
   char *body;
-  char **headers;
+  struct http_header *headers;
 };
 
 
@@ -244,7 +250,7 @@ enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, b
 
 */
 enum ws_send_status
-ws_conn_handshake_respond(ws_conn_t *c, struct ws_conn_upgrade_response *resp);
+ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_upgrade_response *resp);
 
 
 /**
