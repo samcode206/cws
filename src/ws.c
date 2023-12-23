@@ -1710,31 +1710,25 @@ static ssize_t ws_conn_handshake_parse_header(char *line,
   ssize_t len = ws_conn_handshake_get_ln(line);
   if (len > 2) {
     char *sep = strchr(line, ':');
-    if (!sep) {
+    if (!sep)
       return -1;
-    }
 
-    size_t name_len = sep - line;
     sep[0] = '\0'; // nul terminate the header name
 
-    if (name_len < 1) {
+    if (sep - line < 1)
       return -1;
-    }
 
     ++sep; // skip nul (previously :)
-    while (*sep == SPACE) {
+
+    while (*sep == SPACE)
       ++sep;
-    }
 
-    if (!sep) {
+    if (!sep)
       return -1;
-    }
 
-    char *name = line;
-    char *val = sep;
+    hdr->name = line;
+    hdr->val = sep;
 
-    hdr->name = name;
-    hdr->val = val;
   } else {
     return len;
   }
