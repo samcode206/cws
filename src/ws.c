@@ -3581,48 +3581,44 @@ static inline bool http_header_val_is(const struct http_header *hdr,
 }
 
 
-static unsigned utf8_is_valid(uint8_t *s, size_t n) {
-  for (uint8_t *e = s + n; s != e;) {
-    if (s + 4 <= e) {
-      uint32_t tmp;
-      memcpy(&tmp, s, 4);
-      if ((tmp & 0x80808080) == 0) {
-        s += 4;
-        continue;
-      }
-    }
+static unsigned utf8_is_valid(uint8_t *str, size_t n) {
+    uint8_t *end = str + n;
+    while (str < end) {
+        // Check for ASCII optimization
+        uint32_t tmp;
+        if (str + 4 <= end) {
+            memcpy(&tmp, str, 4);
+            if ((tmp & 0x80808080) == 0) {
+                str += 4;
+                continue;
+            }
+        }
 
-    while (!(*s & 0x80)) {
-      if (++s == e) {
-        return 1;
-      }
-    }
+        // ASCII characters
+        while (!(*str & 0x80) && ++str < end);
 
-    if ((s[0] & 0x60) == 0x40) {
-      if (s + 1 >= e || (s[1] & 0xc0) != 0x80 || (s[0] & 0xfe) == 0xc0) {
-        return 0;
-      }
-      s += 2;
-    } else if ((s[0] & 0xf0) == 0xe0) {
-      if (s + 2 >= e || (s[1] & 0xc0) != 0x80 || (s[2] & 0xc0) != 0x80 ||
-          (s[0] == 0xe0 && (s[1] & 0xe0) == 0x80) ||
-          (s[0] == 0xed && (s[1] & 0xe0) == 0xa0)) {
-        return 0;
-      }
-      s += 3;
-    } else if ((s[0] & 0xf8) == 0xf0) {
-      if (s + 3 >= e || (s[1] & 0xc0) != 0x80 || (s[2] & 0xc0) != 0x80 ||
-          (s[3] & 0xc0) != 0x80 || (s[0] == 0xf0 && (s[1] & 0xf0) == 0x80) ||
-          (s[0] == 0xf4 && s[1] > 0x8f) || s[0] > 0xf4) {
-        return 0;
-      }
-      s += 4;
-    } else {
-      return 0;
+        // Multi-byte characters
+        if (str == end) return 1;
+        if ((str[0] & 0x60) == 0x40) { // 2-byte sequence
+            if (str + 1 >= end || (str[1] & 0xc0) != 0x80 || (str[0] & 0xfe) == 0xc0) return 0;
+            str += 2;
+        } else if ((str[0] & 0xf0) == 0xe0) { // 3-byte sequence
+            if (str + 2 >= end || (str[1] & 0xc0) != 0x80 || (str[2] & 0xc0) != 0x80 ||
+                (str[0] == 0xe0 && (str[1] & 0xe0) == 0x80) ||
+                (str[0] == 0xed && (str[1] & 0xe0) == 0xa0)) return 0;
+            str += 3;
+        } else if ((str[0] & 0xf8) == 0xf0) { // 4-byte sequence
+            if (str + 3 >= end || (str[1] & 0xc0) != 0x80 || (str[2] & 0xc0) != 0x80 ||
+                (str[3] & 0xc0) != 0x80 || (str[0] == 0xf0 && (str[1] & 0xf0) == 0x80) ||
+                (str[0] == 0xf4 && str[1] > 0x8f) || str[0] > 0xf4) return 0;
+            str += 4;
+        } else {
+            return 0;
+        }
     }
-  }
-  return 1;
+    return 1;
 }
+
 
 static const char b64_table[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
