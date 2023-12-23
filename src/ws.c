@@ -77,8 +77,6 @@
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-
-
 typedef struct mirrored_buf_t mirrored_buf_t;
 
 struct ws_conn_t {
@@ -287,8 +285,6 @@ static inline bool is_compressed_msg(uint8_t const *buf) {
   return (buf[0] & 0x40) != 0;
 }
 
-
-
 static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
                                                           uint8_t const *buf) {
   return (buf[0] & 0x10) != 0 || (buf[0] & 0x20) != 0 ||
@@ -359,8 +355,6 @@ static inline uint_fast8_t frame_valid(ws_conn_t *c, uint8_t const *frame,
 //     i += 4;
 //   }
 // }
-
-
 
 struct ws_conn_pool {
   ws_conn_t *base;
@@ -1653,7 +1647,6 @@ static int conn_read(ws_conn_t *conn) {
   return 0;
 }
 
-
 #ifdef WITH_COMPRESSION
 static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
                                            size_t payload_len) {
@@ -2568,7 +2561,6 @@ void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
   }
 }
 
-
 static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   long page_size = sysconf(_SC_PAGESIZE);
 
@@ -3170,8 +3162,6 @@ int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
   return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &ev);
 }
 
-
-
 const char *ws_conn_err_table[] = {
     "Unkown Error Code",
     "EOF",
@@ -3472,15 +3462,14 @@ int ws_server_destroy(ws_server_t *s) {
   return 0;
 }
 
-
-// ****************************** Websocket Handshake *******************************
+// ****************************** Websocket Handshake
+// *******************************
 
 #define SPACE 0x20
 #define CRLF "\r\n"
 #define CRLF_LEN 2
 #define CRLF2 "\r\n\r\n"
 #define CRLF2_LEN 4
-
 
 static ssize_t ws_conn_handshake_get_ln(char *line) {
   char *ln_end = strstr(line, CRLF);
@@ -3494,6 +3483,24 @@ static ssize_t ws_conn_handshake_get_ln(char *line) {
   line[len] = '\0';
 
   return len;
+}
+
+static bool http_header_field_value_valid(struct http_header *hdr) {
+  if (hdr->val == NULL)
+    return false;
+
+  // todo
+
+  return true;
+}
+
+static bool http_header_field_name_valid(struct http_header *hdr) {
+  if (hdr->name == NULL)
+    return false;
+
+  // todo
+
+  return true;
 }
 
 static ssize_t
@@ -3580,45 +3587,50 @@ static inline bool http_header_val_is(const struct http_header *hdr,
   return strncasecmp(hdr->val, val, n) == 0;
 }
 
-
 static unsigned utf8_is_valid(uint8_t *str, size_t n) {
-    uint8_t *end = str + n;
-    while (str < end) {
-        // Check for ASCII optimization
-        uint32_t tmp;
-        if (str + 4 <= end) {
-            memcpy(&tmp, str, 4);
-            if ((tmp & 0x80808080) == 0) {
-                str += 4;
-                continue;
-            }
-        }
-
-        // ASCII characters
-        while (!(*str & 0x80) && ++str < end);
-
-        // Multi-byte characters
-        if (str == end) return 1;
-        if ((str[0] & 0x60) == 0x40) { // 2-byte sequence
-            if (str + 1 >= end || (str[1] & 0xc0) != 0x80 || (str[0] & 0xfe) == 0xc0) return 0;
-            str += 2;
-        } else if ((str[0] & 0xf0) == 0xe0) { // 3-byte sequence
-            if (str + 2 >= end || (str[1] & 0xc0) != 0x80 || (str[2] & 0xc0) != 0x80 ||
-                (str[0] == 0xe0 && (str[1] & 0xe0) == 0x80) ||
-                (str[0] == 0xed && (str[1] & 0xe0) == 0xa0)) return 0;
-            str += 3;
-        } else if ((str[0] & 0xf8) == 0xf0) { // 4-byte sequence
-            if (str + 3 >= end || (str[1] & 0xc0) != 0x80 || (str[2] & 0xc0) != 0x80 ||
-                (str[3] & 0xc0) != 0x80 || (str[0] == 0xf0 && (str[1] & 0xf0) == 0x80) ||
-                (str[0] == 0xf4 && str[1] > 0x8f) || str[0] > 0xf4) return 0;
-            str += 4;
-        } else {
-            return 0;
-        }
+  uint8_t *end = str + n;
+  while (str < end) {
+    // Check for ASCII optimization
+    uint32_t tmp;
+    if (str + 4 <= end) {
+      memcpy(&tmp, str, 4);
+      if ((tmp & 0x80808080) == 0) {
+        str += 4;
+        continue;
+      }
     }
-    return 1;
-}
 
+    // ASCII characters
+    while (!(*str & 0x80) && ++str < end)
+      ;
+
+    // Multi-byte characters
+    if (str == end)
+      return 1;
+    if ((str[0] & 0x60) == 0x40) { // 2-byte sequence
+      if (str + 1 >= end || (str[1] & 0xc0) != 0x80 || (str[0] & 0xfe) == 0xc0)
+        return 0;
+      str += 2;
+    } else if ((str[0] & 0xf0) == 0xe0) { // 3-byte sequence
+      if (str + 2 >= end || (str[1] & 0xc0) != 0x80 ||
+          (str[2] & 0xc0) != 0x80 ||
+          (str[0] == 0xe0 && (str[1] & 0xe0) == 0x80) ||
+          (str[0] == 0xed && (str[1] & 0xe0) == 0xa0))
+        return 0;
+      str += 3;
+    } else if ((str[0] & 0xf8) == 0xf0) { // 4-byte sequence
+      if (str + 3 >= end || (str[1] & 0xc0) != 0x80 ||
+          (str[2] & 0xc0) != 0x80 || (str[3] & 0xc0) != 0x80 ||
+          (str[0] == 0xf0 && (str[1] & 0xf0) == 0x80) ||
+          (str[0] == 0xf4 && str[1] > 0x8f) || str[0] > 0xf4)
+        return 0;
+      str += 4;
+    } else {
+      return 0;
+    }
+  }
+  return 1;
+}
 
 static const char b64_table[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -3652,7 +3664,6 @@ static ssize_t base64_encode(char *encoded, const char *string, ssize_t len) {
   *p++ = '\0';
   return p - encoded;
 }
-
 
 static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
                                    size_t max_headers) {
@@ -3988,8 +3999,6 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     return;
   }
 }
-
-
 
 inline enum ws_send_status
 ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
