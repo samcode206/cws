@@ -1679,9 +1679,8 @@ ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
 
   // skip GET and space after
   line = strstr(line, " ");
-  while (*line == SPACE) {
+  while (*line == SPACE)
     ++line;
-  }
 
   if (!line)
     return -1;
