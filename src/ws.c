@@ -77,6 +77,12 @@
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
+#define SPACE 0x20
+#define CRLF "\r\n"
+#define CRLF_LEN 2
+#define CRLF2 "\r\n\r\n"
+#define CRLF2_LEN 4
+
 typedef struct mirrored_buf_t mirrored_buf_t;
 
 struct ws_conn_t {
@@ -461,9 +467,10 @@ typedef struct server {
   size_t max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
   struct ws_conn_pool *conn_pool;
-  struct ws_conn_handshake *hs;
   ws_drain_cb_t on_ws_drain;
   ws_disconnect_cb_t on_ws_disconnect;
+  size_t max_handshake_headers;
+  struct ws_conn_handshake *hs;
   ws_handshake_cb_t on_ws_handshake;
   ws_on_timeout_t on_ws_conn_timeout;
   struct ws_server_async_runner *async_runner;
@@ -1012,7 +1019,7 @@ static void ws_server_register_buffers(ws_server_t *s,
     exit(EXIT_FAILURE);
   }
 
-  s->hs->max_headers = params->max_header_count;
+  s->max_handshake_headers = params->max_header_count;
 
   // make sure we got the mem needed
   if (s->writeable_conns.conns == NULL || s->pending_timers.conns == NULL) {
@@ -1739,27 +1746,56 @@ static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #define MAGIC_STR_LEN 36
 
-static int ws_conn_handshake_parse(char *raw_req,
-                                   struct ws_conn_handshake *hs) {
+static inline bool http_header_name_is(const struct http_header *hdr,
+                                       const char *name, size_t n) {
+  return strncasecmp(hdr->name, name, n) == 0;
+}
+
+static inline bool http_header_val_is(const struct http_header *hdr,
+                                      const char *val, size_t n) {
+  return strncasecmp(hdr->val, val, n) == 0;
+}
+
+static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
+                                   size_t max_headers) {
   ssize_t n = ws_conn_handshake_parse_request_ln(raw_req, hs);
   if (n == -1) {
     return -1;
   }
 
   size_t offset = n + 2; // skip CRLF
-
+  bool done = false;
   bool sec_websocket_key_found = false;
-  for (size_t i = 0; i < hs->max_headers; ++i) {
+  bool connection_header_found = false;
+  bool upgrade_header_found = false;
+
+  for (size_t i = 0; i < max_headers; ++i) {
     n = ws_conn_handshake_parse_header(raw_req + offset, hs->headers + i);
-    assert(n != -1); // remove this when we have a proper error handling
     if (n == 0) {
+      done = true;
       break;
+    } else if (n < 0) {
+      return -1;
     }
 
-    if (strncasecmp(hs->headers[i].name, "Sec-WebSocket-Key", 17) == 0) {
-      if (strlen(hs->headers[i].val) != 24) {
+    if (!connection_header_found &&
+        http_header_name_is(hs->headers + i, "Connection", 10) &&
+        http_header_val_is(hs->headers + i, "Upgrade", 7)) {
+
+      connection_header_found = true;
+
+    } else if (!upgrade_header_found &&
+               http_header_name_is(hs->headers + i, "Upgrade", 7) &&
+               http_header_val_is(hs->headers + i, "websocket", 9)) {
+
+      upgrade_header_found = true;
+
+    } else if (!sec_websocket_key_found &&
+               strncasecmp(hs->headers[i].name, "Sec-WebSocket-Key", 17) == 0) {
+
+      // should be 24 bytes
+      if (strlen(hs->headers[i].val) != 24)
         return -1;
-      }
 
       unsigned char key_with_magic_str[61];
       memcpy(key_with_magic_str, hs->headers[i].val, 24);
@@ -1777,19 +1813,25 @@ static int ws_conn_handshake_parse(char *raw_req,
       sec_websocket_key_found = true;
       // calculate the accept key
       // Sec-WebSocket-Accept
-    } else if (strncasecmp(hs->headers[i].name, "Sec-WebSocket-Extensions",
-                           24) == 0) {
+    }
+#ifdef WITH_COMPRESSION
+    // check for per message deflate start
+    else if (http_header_name_is(hs->headers + i, "Sec-WebSocket-Extensions",
+                                 24)) {
 
       if (strcasestr(hs->headers[i].val, "permessage-deflate")) {
         hs->per_msg_deflate_requested = true;
       }
     }
+// check for per message deflate end
+#endif /* WITH_COMPRESSION */
 
     hs->header_count += 1;
     offset += n + 2; // skip CRLF
   }
 
-  if (!sec_websocket_key_found) {
+  if (!sec_websocket_key_found || !done || !connection_header_found ||
+      !upgrade_header_found) {
     return -1;
   }
 
@@ -1913,7 +1955,7 @@ static void handle_bad_request(ws_conn_t *conn) {
   };
 
   struct ws_conn_handshake_response r = {
-      .status = "400 Bad Request",
+      .status = WS_HANDSHAKE_STATUS_400,
       .headers = resp_headers,
       .header_count = 3,
   };
@@ -1989,7 +2031,8 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
 
   struct ws_conn_handshake *hs = s->hs;
   hs->header_count = 0;
-  if (ws_conn_handshake_parse((char *)headers, hs) == 0) {
+  if (ws_conn_handshake_parse((char *)headers, hs, s->max_handshake_headers) ==
+      0) {
 #ifdef WITH_COMPRESSION
     if (hs->per_msg_deflate_requested) {
       set_compression_allowed(conn);
@@ -2030,7 +2073,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
           .per_msg_deflate = true, // keep this true it will be ignored if
                                    // not supported or not requested
           .body = NULL,
-          .status = "101 Switching Protocols",
+          .status = WS_HANDSHAKE_STATUS_101,
           .headers = resp_headers,
           .header_count = WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT,
       };

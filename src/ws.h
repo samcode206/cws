@@ -67,7 +67,6 @@ struct http_header {
 struct ws_conn_handshake {
   char *path;
   size_t header_count;
-  size_t max_headers;
   bool per_msg_deflate_requested;
   char sec_websocket_accept[29]; // 28 + 1 for nul
   struct http_header headers[];
@@ -801,43 +800,12 @@ ws_server_t *ws_server_create(struct ws_server_params *params);
 // HTTP & Handshake Utils
 #define WS_VERSION 13
 
-#define SPACE 0x20
-#define CRLF "\r\n"
-#define CRLF_LEN 2
-#define CRLF2 "\r\n\r\n"
-#define CRLF2_LEN 4
+
+#define WS_HANDSHAKE_STATUS_101 "101 Switching Protocols"
+#define WS_HANDSHAKE_STATUS_400 "400 Bad Request"
+#define WS_HANDSHAKE_STATUS_404 "404 Not Found"
+#define WS_HANDSHAKE_STATUS_500 "500 Internal Server Error"
 
 
-#define GET_RQ "GET"
-#define GET_RQ_LEN 3
-
-#define SEC_WS_KEY_HDR "Sec-WebSocket-Key"
-
-static const char switching_protocols[111] =
-    "HTTP/1.1 101 Switching Protocols" CRLF
-    "Upgrade: websocket" CRLF
-    "Connection: Upgrade" CRLF
-    "Server: cws" CRLF
-    "Sec-WebSocket-Accept: ";
-
-#define SWITCHING_PROTOCOLS_HDRS_LEN 110
-
-
-static const char bad_request[80] =
-    "HTTP/1.1 400 Bad Request" CRLF
-    "Connection: close" CRLF
-    "Server: cws" CRLF
-    "Content-Length: 0" CRLF2;
-
-#define BAD_REQUEST_LEN 79
-
-
-static const char internal_server_error [90] = 
-    "HTTP/1.1 500 Internal Server Error" CRLF
-    "Server: cws" CRLF
-    "Connection: close" CRLF
-    "Content-Length: 0" CRLF2;
-
-#define INTERNAL_SERVER_ERROR_LEN 89
 
 #endif /* WS_PROTOCOL_PARSING23_H */
