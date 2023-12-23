@@ -3623,8 +3623,8 @@ static unsigned utf8_is_valid(uint8_t *str, size_t n) {
 static const char b64_table[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-static int base64_encode(char *encoded, const char *string, int len) {
-  int i;
+static ssize_t base64_encode(char *encoded, const char *string, ssize_t len) {
+  ssize_t i;
   char *p;
 
   p = encoded;
@@ -3703,11 +3703,7 @@ static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
       unsigned char hash[20];
       SHA1(key_with_magic_str, 60, hash);
       ssize_t n = base64_encode(hs->sec_websocket_accept, (char *)hash, 20);
-      if (n != 29) {
-        // bad accept key
-        return -1;
-      }
-
+      assert(n == 29);
       sec_websocket_key_found = true;
       // calculate the accept key
       // Sec-WebSocket-Accept
