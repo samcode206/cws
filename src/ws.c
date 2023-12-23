@@ -360,7 +360,7 @@ static inline uint_fast8_t frame_valid(ws_conn_t *c, uint8_t const *frame,
 //   }
 // }
 
-static unsigned utf8_is_valid(uint8_t *s, size_t n);
+
 
 struct ws_conn_pool {
   ws_conn_t *base;
@@ -1713,6 +1713,8 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 }
 
 #endif /* WITH_COMPRESSION */
+
+static unsigned utf8_is_valid(uint8_t *s, size_t n);
 
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
