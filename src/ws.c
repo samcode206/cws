@@ -3560,7 +3560,7 @@ static ssize_t ws_conn_handshake_parse_header(char *line,
     hdr->val = sep;
 
   } else {
-    return len;
+    return len == 0 ? len : -1;
   }
 
   return len;
