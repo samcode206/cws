@@ -1938,6 +1938,46 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
   return WS_SEND_OK;
 }
 
+static void
+ws_conn_handshake_send_default_response(ws_conn_t *conn,
+                                        struct ws_conn_handshake *hs) {
+#define WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT 4
+  ws_server_t *s = conn->base;
+
+  struct http_header resp_headers[WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT] =
+      {
+          {
+              "Upgrade",
+              "websocket",
+          },
+          {
+              "Connection",
+              "Upgrade",
+          },
+          {
+              "Server",
+              "cws",
+          },
+          {
+              "Sec-WebSocket-Accept",
+              hs->sec_websocket_accept,
+          },
+      };
+
+  struct ws_conn_handshake_response r = {
+      .per_msg_deflate = true, // keep this true it will be ignored if
+                               // not supported or not requested
+      .body = NULL,
+      .status = WS_HANDSHAKE_STATUS_101,
+      .headers = resp_headers,
+      .header_count = WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT,
+  };
+
+  mirrored_buf_put(s->buffer_pool, conn->recv_buf);
+  conn->recv_buf = NULL;
+  ws_conn_do_handshake_reply(conn, &r);
+}
+
 static void handle_bad_request(ws_conn_t *conn) {
   struct http_header resp_headers[3] = {
       {
@@ -2046,58 +2086,13 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     if (s->on_ws_handshake) {
       s->on_ws_handshake(conn, hs);
     } else {
-// default handshake response
-#define WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT 4
-
-      struct http_header
-          resp_headers[WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT] = {
-              {
-                  "Upgrade",
-                  "websocket",
-              },
-              {
-                  "Connection",
-                  "Upgrade",
-              },
-              {
-                  "Server",
-                  "cws",
-              },
-              {
-                  "Sec-WebSocket-Accept",
-                  hs->sec_websocket_accept,
-              },
-          };
-
-      struct ws_conn_handshake_response r = {
-          .per_msg_deflate = true, // keep this true it will be ignored if
-                                   // not supported or not requested
-          .body = NULL,
-          .status = WS_HANDSHAKE_STATUS_101,
-          .headers = resp_headers,
-          .header_count = WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT,
-      };
-
-      mirrored_buf_put(s->buffer_pool, conn->recv_buf);
-      conn->recv_buf = NULL;
-      ws_conn_do_handshake_reply(conn, &r);
+      ws_conn_handshake_send_default_response(conn, hs);
     }
 
   } else {
     handle_bad_request(conn);
     return;
   }
-
-  // #ifdef WITH_COMPRESSION
-  //   char sec_websocket_extensions[1024];
-  //   int sec_websocket_extensions_ret =
-  //       get_header((char *)headers, "Sec-WebSocket-Extensions",
-  //                  sec_websocket_extensions, 1024);
-  //   if (sec_websocket_extensions_ret > 0) {
-  //     set_compression_allowed(conn);
-  //   }
-
-  // #endif /* WITH_COMPRESSION */
 }
 
 #ifdef WITH_COMPRESSION
