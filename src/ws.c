@@ -3500,7 +3500,7 @@ static ssize_t ws_conn_handshake_get_ln(char *line) {
 
 static ssize_t
 ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
-  size_t len = ws_conn_handshake_get_ln(line);
+  ssize_t len = ws_conn_handshake_get_ln(line);
   if (len < 14) {
     return -1;
   }
