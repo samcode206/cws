@@ -3736,13 +3736,17 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
     return WS_SEND_DROPPED_NOT_ALLOWED;
   }
 
+  size_t status_len = strlen(resp->status);
+  if (status_len < 3) {
+    return WS_SEND_DROPPED_NOT_ALLOWED;
+  }
+
   bool upgrade = strstr(resp->status, "101") != NULL;
 
   // grab the send buffer
   conn_prep_send_buf(c);
 
   // write first line
-  size_t status_len = strlen(resp->status);
   int put_ret;
   put_ret = buf_put(c->send_buf, "HTTP/1.1 ", 9);
   put_ret = buf_put(c->send_buf, resp->status, status_len);
