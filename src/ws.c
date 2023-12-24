@@ -3462,18 +3462,63 @@ int ws_server_destroy(ws_server_t *s) {
   return 0;
 }
 
-// ****************************** Websocket Handshake
-// *******************************
+// ****************************** Websocket Handshake **************************
 
-#define SPACE 0x20
 #define CRLF "\r\n"
 #define CRLF_LEN 2
-#define CRLF2 "\r\n\r\n"
-#define CRLF2_LEN 4
+
+static inline bool is_letter(unsigned char byte) {
+  return (((byte > 0x60) & (byte < 0x7B)) | ((byte > 0x40) & (byte < 0x5B)));
+}
+
+static inline bool is_alpha_numeric_or_hyphen(unsigned char byte) {
+  return is_letter(byte) | (byte == '-') | ((byte > 0x2F) & (byte < 0x3A));
+}
+
+static bool http_header_field_name_valid(struct http_header *hdr) {
+  if (hdr->name == NULL)
+    return false;
+
+  size_t len = strlen(hdr->name);
+  if (len == 0)
+    return false;
+
+  // should start with a letter
+  if (!is_letter((unsigned char)hdr->name[0])) {
+    return false;
+  }
+
+  for (size_t i = 1; i < len; ++i) {
+    if (!is_alpha_numeric_or_hyphen((unsigned char)hdr->name[i])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static bool http_header_field_value_valid(struct http_header *hdr) {
+  if (hdr->val == NULL)
+    return false;
+
+  size_t len = strlen(hdr->val);
+  if (len == 0)
+    return false;
+
+  for (size_t i = 0; i < len; ++i) {
+    unsigned char byte = (unsigned char)hdr->val[i];
+    // Check if character is a valid visible character or space/horizontal tab
+    if (!((byte > 0x1F) | (byte == 0x09))) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 static ssize_t ws_conn_handshake_get_ln(char *line) {
   char *ln_end = strstr(line, CRLF);
-  if (!ln_end)
+  if (!ln_end || *ln_end == '\0')
     return -1;
 
   ssize_t len = ln_end - line;
@@ -3485,59 +3530,59 @@ static ssize_t ws_conn_handshake_get_ln(char *line) {
   return len;
 }
 
-static bool http_header_field_value_valid(struct http_header *hdr) {
-  if (hdr->val == NULL)
-    return false;
-
-  // todo
-
-  return true;
-}
-
-static bool http_header_field_name_valid(struct http_header *hdr) {
-  if (hdr->name == NULL)
-    return false;
-
-  // todo
-
-  return true;
-}
-
 static ssize_t
 ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
   size_t len = ws_conn_handshake_get_ln(line);
   if (len < 14) {
     return -1;
   }
+  
+  const char *beginning = line;
+  while (*line <= 0x20 && *line != '\0')
+    ++line;
 
-  // must be a GET request
+  // must be a GET request we are strict about the casing
+  // and no space must come before the method
   if (memcmp(line, "GET ", 4) != 0) {
     return -1;
   };
 
   // skip GET and space after
-  line = strstr(line, " ");
-  while (*line == SPACE)
+  line += 4;
+
+  // skip any control chars
+  while (*line <= 0x20)
     ++line;
 
-  if (!line)
+  if (*line == '\0')
     return -1;
 
-  char *path = line; // expected start of path
-  // path ends just before the protocol version
-  char *pathEnd = strstr(path, " HTTP/1.1");
-  // make sure the protocol version is correct and the path is not empty
-  if (!pathEnd) {
-    return -1;
-  }
-  ssize_t pathLen = pathEnd - path;
-  if (pathLen < 1) {
+  // should be at start of path now
+  char *path = line;
+  if (memcmp(path, "/", 1) != 0) {
     return -1;
   }
 
-  hs->path = path;
+  ssize_t remaining = len - (path - beginning);
+  /* '/ HTTP/1.1' got to be at least 10 bytes left */
+  if (remaining < 10) {
+    return -1;
+  }
 
-  hs->path[pathLen] = '\0';
+  for (size_t i = 0; i < remaining; i++) {
+    // look for any ! or less (ctl chars) in the path and stop there
+    if ((unsigned char)path[i] < 0x21) {
+      // if valid expect this to just be a space followed by protocol version
+      char *path_end = path + i;
+      if (memcmp(path_end, " HTTP/1.1", 9) == 0) {
+        path[i] = '\0';
+        hs->path = path;
+      } else {
+        return -1;
+      }
+      break;
+    }
+  }
 
   return len;
 }
@@ -3547,7 +3592,7 @@ static ssize_t ws_conn_handshake_parse_header(char *line,
   ssize_t len = ws_conn_handshake_get_ln(line);
   if (len > 2) {
     char *sep = strchr(line, ':');
-    if (!sep)
+    if (*sep == '\0' || sep == NULL)
       return -1;
 
     sep[0] = '\0'; // nul terminate the header name
@@ -3555,16 +3600,28 @@ static ssize_t ws_conn_handshake_parse_header(char *line,
     if (sep - line < 1)
       return -1;
 
-    ++sep; // skip nul (previously :)
-
-    while (*sep == SPACE)
-      ++sep;
-
-    if (!sep)
-      return -1;
+    ++sep; // skip nul (previously ':')
 
     hdr->name = line;
+    if (!http_header_field_name_valid(hdr)) {
+      fprintf(stderr, "invalid field name\n");
+      return -1;
+    };
+
+    // while ctl char or space skip
+    while (*sep < 0x21) {
+      // if not a space then invalid
+      if (*sep != 0x20) {
+        return -1;
+      }
+      sep++;
+    }
+
     hdr->val = sep;
+    if (!http_header_field_value_valid(hdr)) {
+      fprintf(stderr, "invalid field value\n");
+      return -1;
+    };
 
   } else {
     return len == 0 ? len : -1;
@@ -3572,10 +3629,6 @@ static ssize_t ws_conn_handshake_parse_header(char *line,
 
   return len;
 }
-
-static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-#define MAGIC_STR_LEN 36
 
 static inline bool http_header_name_is(const struct http_header *hdr,
                                        const char *name, size_t n) {
@@ -3587,83 +3640,11 @@ static inline bool http_header_val_is(const struct http_header *hdr,
   return strncasecmp(hdr->val, val, n) == 0;
 }
 
-static unsigned utf8_is_valid(uint8_t *str, size_t n) {
-  uint8_t *end = str + n;
-  while (str < end) {
-    // Check for ASCII optimization
-    uint32_t tmp;
-    if (str + 4 <= end) {
-      memcpy(&tmp, str, 4);
-      if ((tmp & 0x80808080) == 0) {
-        str += 4;
-        continue;
-      }
-    }
+static ssize_t base64_encode(char *encoded, const char *string, ssize_t len);
 
-    // ASCII characters
-    while (!(*str & 0x80) && ++str < end)
-      ;
+static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-    // Multi-byte characters
-    if (str == end)
-      return 1;
-    if ((str[0] & 0x60) == 0x40) { // 2-byte sequence
-      if (str + 1 >= end || (str[1] & 0xc0) != 0x80 || (str[0] & 0xfe) == 0xc0)
-        return 0;
-      str += 2;
-    } else if ((str[0] & 0xf0) == 0xe0) { // 3-byte sequence
-      if (str + 2 >= end || (str[1] & 0xc0) != 0x80 ||
-          (str[2] & 0xc0) != 0x80 ||
-          (str[0] == 0xe0 && (str[1] & 0xe0) == 0x80) ||
-          (str[0] == 0xed && (str[1] & 0xe0) == 0xa0))
-        return 0;
-      str += 3;
-    } else if ((str[0] & 0xf8) == 0xf0) { // 4-byte sequence
-      if (str + 3 >= end || (str[1] & 0xc0) != 0x80 ||
-          (str[2] & 0xc0) != 0x80 || (str[3] & 0xc0) != 0x80 ||
-          (str[0] == 0xf0 && (str[1] & 0xf0) == 0x80) ||
-          (str[0] == 0xf4 && str[1] > 0x8f) || str[0] > 0xf4)
-        return 0;
-      str += 4;
-    } else {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-static const char b64_table[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static ssize_t base64_encode(char *encoded, const char *string, ssize_t len) {
-  ssize_t i;
-  char *p;
-
-  p = encoded;
-  for (i = 0; i < len - 2; i += 3) {
-    *p++ = b64_table[(string[i] >> 2) & 0x3F];
-    *p++ = b64_table[((string[i] & 0x3) << 4) |
-                     ((int)(string[i + 1] & 0xF0) >> 4)];
-    *p++ = b64_table[((string[i + 1] & 0xF) << 2) |
-                     ((int)(string[i + 2] & 0xC0) >> 6)];
-    *p++ = b64_table[string[i + 2] & 0x3F];
-  }
-  if (i < len) {
-    *p++ = b64_table[(string[i] >> 2) & 0x3F];
-    if (i == (len - 1)) {
-      *p++ = b64_table[((string[i] & 0x3) << 4)];
-      *p++ = '=';
-    } else {
-      *p++ = b64_table[((string[i] & 0x3) << 4) |
-                       ((int)(string[i + 1] & 0xF0) >> 4)];
-      *p++ = b64_table[((string[i + 1] & 0xF) << 2)];
-    }
-    *p++ = '=';
-  }
-
-  *p++ = '\0';
-  return p - encoded;
-}
+#define MAGIC_STR_LEN 36
 
 static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
                                    size_t max_headers) {
@@ -3966,8 +3947,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
 
   // only start processing when the final header has arrived
   bool header_end_reached =
-      memcmp((char *)headers + request_buf_len - CRLF2_LEN, CRLF2, CRLF2_LEN) ==
-      0;
+      memcmp((char *)headers + request_buf_len - 4, CRLF CRLF, 4) == 0;
 
   if (!header_end_reached) {
     // wait for more
@@ -4019,4 +3999,82 @@ ws_conn_handshake_header_find(struct ws_conn_handshake *hs, const char *name) {
   }
 
   return NULL;
+}
+
+static unsigned utf8_is_valid(uint8_t *str, size_t n) {
+  uint8_t *end = str + n;
+  while (str < end) {
+    // Check for ASCII optimization
+    uint32_t tmp;
+    if (str + 4 <= end) {
+      memcpy(&tmp, str, 4);
+      if ((tmp & 0x80808080) == 0) {
+        str += 4;
+        continue;
+      }
+    }
+
+    // ASCII characters
+    while (!(*str & 0x80) && ++str < end)
+      ;
+
+    // Multi-byte characters
+    if (str == end)
+      return 1;
+    if ((str[0] & 0x60) == 0x40) { // 2-byte sequence
+      if (str + 1 >= end || (str[1] & 0xc0) != 0x80 || (str[0] & 0xfe) == 0xc0)
+        return 0;
+      str += 2;
+    } else if ((str[0] & 0xf0) == 0xe0) { // 3-byte sequence
+      if (str + 2 >= end || (str[1] & 0xc0) != 0x80 ||
+          (str[2] & 0xc0) != 0x80 ||
+          (str[0] == 0xe0 && (str[1] & 0xe0) == 0x80) ||
+          (str[0] == 0xed && (str[1] & 0xe0) == 0xa0))
+        return 0;
+      str += 3;
+    } else if ((str[0] & 0xf8) == 0xf0) { // 4-byte sequence
+      if (str + 3 >= end || (str[1] & 0xc0) != 0x80 ||
+          (str[2] & 0xc0) != 0x80 || (str[3] & 0xc0) != 0x80 ||
+          (str[0] == 0xf0 && (str[1] & 0xf0) == 0x80) ||
+          (str[0] == 0xf4 && str[1] > 0x8f) || str[0] > 0xf4)
+        return 0;
+      str += 4;
+    } else {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static const char b64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static ssize_t base64_encode(char *encoded, const char *string, ssize_t len) {
+  ssize_t i;
+  char *p;
+
+  p = encoded;
+  for (i = 0; i < len - 2; i += 3) {
+    *p++ = b64_table[(string[i] >> 2) & 0x3F];
+    *p++ = b64_table[((string[i] & 0x3) << 4) |
+                     ((int)(string[i + 1] & 0xF0) >> 4)];
+    *p++ = b64_table[((string[i + 1] & 0xF) << 2) |
+                     ((int)(string[i + 2] & 0xC0) >> 6)];
+    *p++ = b64_table[string[i + 2] & 0x3F];
+  }
+  if (i < len) {
+    *p++ = b64_table[(string[i] >> 2) & 0x3F];
+    if (i == (len - 1)) {
+      *p++ = b64_table[((string[i] & 0x3) << 4)];
+      *p++ = '=';
+    } else {
+      *p++ = b64_table[((string[i] & 0x3) << 4) |
+                       ((int)(string[i + 1] & 0xF0) >> 4)];
+      *p++ = b64_table[((string[i + 1] & 0xF) << 2)];
+    }
+    *p++ = '=';
+  }
+
+  *p++ = '\0';
+  return p - encoded;
 }

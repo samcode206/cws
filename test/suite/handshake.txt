@@ -1,0 +1,423 @@
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define CRLF "\r\n"
+
+struct http_header {
+  char *name;
+  char *val;
+};
+
+struct ws_conn_handshake {
+  char *path;
+  size_t header_count;
+  bool per_msg_deflate_requested;
+  char sec_websocket_accept[29]; // 28 + 1 for nul
+  struct http_header headers[];
+};
+
+static inline bool is_letter(unsigned char byte) {
+  return ((byte > 0x60) & (byte < 0x7B) | ((byte > 0x40) & (byte < 0x5B)));
+}
+
+static inline bool is_alpha_numeric_or_hyphen(unsigned char byte) {
+  return is_letter(byte) | (byte == '-') | (byte > 0x2F) & (byte < 0x3A);
+}
+
+static bool http_header_field_name_valid(struct http_header *hdr) {
+  if (hdr->name == NULL)
+    return false;
+
+  size_t len = strlen(hdr->name);
+  if (len == 0)
+    return false;
+
+  // should start with a letter
+  if (!is_letter((unsigned char)hdr->name[0])) {
+    return false;
+  }
+
+  for (size_t i = 1; i < len; ++i) {
+    if (!is_alpha_numeric_or_hyphen((unsigned char)hdr->name[i])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static bool http_header_field_value_valid(struct http_header *hdr) {
+  if (hdr->val == NULL)
+    return false;
+
+  size_t len = strlen(hdr->val);
+  if (len == 0)
+    return false;
+
+  for (size_t i = 0; i < len; ++i) {
+    unsigned char byte = (unsigned char)hdr->val[i];
+    // Check if character is a valid visible character or space/horizontal tab
+    if (!((byte > 0x1F) | (byte == 0x09))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static ssize_t ws_conn_handshake_get_ln(char *line) {
+  char *ln_end = strstr(line, CRLF);
+  if (!ln_end || *ln_end == '\0')
+    return -1;
+
+  ssize_t len = ln_end - line;
+  if (len < 0)
+    return -1;
+
+  line[len] = '\0';
+
+  return len;
+}
+
+static ssize_t
+ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
+  size_t len = ws_conn_handshake_get_ln(line);
+  if (len < 14) {
+    return -1;
+  }
+  const char *beginning = line;
+  while (*line <= 0x20 && *line != '\0')
+    ++line;
+
+  // must be a GET request we are strict about the casing
+  // and no space must come before the method
+  if (memcmp(line, "GET ", 4) != 0) {
+    return -1;
+  };
+
+  // skip GET and space after
+  line += 4;
+
+  // skip any control chars
+  while (*line <= 0x20)
+    ++line;
+
+  if (*line == '\0')
+    return -1;
+
+  // should be at start of path now
+  char *path = line;
+  if (memcmp(path, "/", 1) != 0) {
+    return -1;
+  }
+
+  ssize_t remaining = len - (path - beginning);
+  /* '/ HTTP/1.1' got to be at least 10 bytes left */
+  if (remaining < 10) {
+    return -1;
+  }
+
+  for (size_t i = 0; i < remaining; i++) {
+    // look for any ! or less (ctl chars) in the path and stop there
+    if ((unsigned char)path[i] < 0x21) {
+      // if valid expect this to just be a space followed by protocol version
+      char *path_end = path + i;
+      if (memcmp(path_end, " HTTP/1.1", 9) == 0) {
+        path[i] = '\0';
+        hs->path = path;
+      } else {
+        return -1;
+      }
+      break;
+    }
+  }
+
+  return len;
+}
+
+static ssize_t ws_conn_handshake_parse_header(char *line,
+                                              struct http_header *hdr) {
+  ssize_t len = ws_conn_handshake_get_ln(line);
+  if (len > 2) {
+    char *sep = strchr(line, ':');
+    if (*sep == '\0' || sep == NULL)
+      return -1;
+
+    sep[0] = '\0'; // nul terminate the header name
+
+    if (sep - line < 1)
+      return -1;
+
+    ++sep; // skip nul (previously ':')
+
+    hdr->name = line;
+    if (!http_header_field_name_valid(hdr)) {
+      printf("invalid field name\n");
+      return -1;
+    };
+
+    // while ctl char or space skip
+    while (*sep < 0x21) {
+      // if not a space then invalid
+      if (*sep != 0x20) {
+        return -1;
+      }
+      sep++;
+    }
+
+    hdr->val = sep;
+    if (!http_header_field_value_valid(hdr)) {
+      printf("invalid field value\n");
+      return -1;
+    };
+
+  } else {
+    return len == 0 ? len : -1;
+  }
+
+  return len;
+}
+
+static int test_parse(char *req, struct ws_conn_handshake *hs) {
+  char *line = req;
+  ssize_t len = ws_conn_handshake_parse_request_ln(line, hs);
+  if (len < 0) {
+    printf("failed to parse request line\n");
+    return -1;
+  }
+
+  line += len + 2; // skip CRLF
+
+  while (true) {
+    struct http_header *hdr = &hs->headers[hs->header_count];
+    ssize_t len = ws_conn_handshake_parse_header(line, hdr);
+    if (len < 0) {
+      printf("failed to parse header\n");
+      return -1;
+    }
+
+    if (len == 0) {
+      break;
+    }
+
+    line += len + 2; // skip CRLF
+    ++hs->header_count;
+  }
+
+  return 0;
+}
+
+static void print_req(struct ws_conn_handshake *hs) {
+  if (hs->header_count && hs->path) {
+    printf("-----------------------------------\n");
+    printf("header count: %zu\n", hs->header_count);
+    printf("path: %s\n", hs->path);
+    printf("headers:\n");
+    for (size_t i = 0; i < hs->header_count; ++i) {
+      printf("\t- %s: %s\n", hs->headers[i].name, hs->headers[i].val);
+    }
+    printf("-----------------------------------\n");
+  } else {
+    printf("bad handshake not printing\n");
+  }
+}
+
+int main() {
+  size_t hdr_sz =
+      sizeof(struct ws_conn_handshake) + (16 * sizeof(struct http_header));
+  struct ws_conn_handshake *hs = calloc(1, hdr_sz);
+
+  char valid_req1[] = "GET /api/v1beta1/chats HTTP/1.1\r\n"
+                      "Host: server.example.com\r\n"
+                      "Upgrade: websocket\r\n"
+                      "Connection: Upgrade\r\n"
+                      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                      "Origin: http://example.com\r\n\r\n";
+
+  assert(test_parse(valid_req1, hs) == 0);
+  print_req(hs);
+  memset(hs, 0, hdr_sz);
+
+  // bad path
+  char bad_req1[] = "GET /api\r/v1beta1/chats HTTP/1.1\r\n"
+                    "Host: server.example.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+  assert(test_parse(bad_req1, hs) == -1);
+  print_req(hs);
+  memset(hs, 0, hdr_sz);
+
+  // no path
+  char bad_req2[] = "GET HTTP/1.1\r\n"
+                    "Host: server.example.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+  assert(test_parse(bad_req2, hs) == -1);
+  print_req(hs);
+  memset(hs, 0, hdr_sz);
+
+  // wrong method
+  char bad_req3[] = "POST / HTTP/1.1\r\n"
+                    "Host: server.example.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+  assert(test_parse(bad_req3, hs) == -1);
+  print_req(hs);
+  memset(hs, 0, hdr_sz);
+
+  // nul terminator in path
+  char bad_req4[] = "GET /\0api/v1bet\0a1/chats\0 HTTP/1.1\r\n"
+                    "Host: server.example.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+  assert(test_parse(bad_req4, hs) == -1);
+  print_req(hs);
+  memset(hs, 0, hdr_sz);
+
+  // nul terminator at start
+  char bad_req5[] = "\0GET /api/v1beta1/chats HTTP/1.1\r\n"
+                    "Host: server.example.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+  assert(test_parse(bad_req5, hs) == -1);
+  print_req(hs);
+  memset(hs, 0, hdr_sz);
+
+  // invalid char in header value
+  char bad_req6[] = "GET /api/v1beta1/chats HTTP/1.1\r\n"
+                    "Host: server.examp\rle.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+
+  assert(test_parse(bad_req6, hs) == -1);
+  print_req(hs);
+  memset(hs, 0, hdr_sz);
+
+
+
+  // invalid char in header value
+  char bad_req7[] = "GET /api/v1beta1/chats HTTP/1.1\r\n"
+                    "Host: server.examp\0le.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+
+  assert(test_parse(bad_req7, hs) == -1);
+  print_req(hs);
+  memset(hs, 0, hdr_sz);
+
+
+  // invalid char in header value
+  char bad_req8[] = "GET /api/v1beta1/chats HTTP/1.1\r\n"
+                    "Host: server.example.com\r\n"
+                    "Upgrade: \0websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+
+  assert(test_parse(bad_req8, hs) == -1);
+  //print_req(hs); // this would print the first valid header
+  memset(hs, 0, hdr_sz);
+
+
+
+  // invalid char in header value
+  char bad_req9[] = "GET /api/v1beta1/chats HTTP/1.1\r\n"
+                    "Host: server.example.com\r\n"
+                    "Upgrade:\0 websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+
+  assert(test_parse(bad_req9, hs) == -1);
+  //print_req(hs); // this would print the first valid header
+  memset(hs, 0, hdr_sz);
+
+
+
+
+  // no CRLF in one of the headers
+  char bad_req10[] = "GET /api/v1beta1/chats HTTP/1.1\r\n"
+                    "Host: server.example.com\r\n"
+                    "Upgrade: websocket\r"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: http://example.com\r\n\r\n";
+
+
+  assert(test_parse(bad_req10, hs) == -1);
+  //print_req(hs); // this would print the first valid header
+  memset(hs, 0, hdr_sz);
+
+
+// multiple methods 
+char bad_req11[] = "GET POST /api/v1beta1/chats HTTP/1.1\r\n"
+                   "Host: server.example.com\r\n"
+                   "Upgrade: websocket\r\n"
+                   "Connection: Upgrade\r\n"
+                   "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                   "Origin: http://example.com\r\n\r\n";
+
+
+  assert(test_parse(bad_req11, hs) == -1);
+  print_req(hs); 
+  memset(hs, 0, hdr_sz);
+
+
+
+char bad_req12[] = "GET  /api/v1beta1/chats  HTTP/1.1\r\n" // Extra spaces
+                   "Host: server.example.com\r\n"
+                   "Upgrade: websocket\r\n"
+                   "Connection: Upgrade\r\n"
+                   "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                   "Origin: http://example.com\r\n\r\n";
+
+
+  assert(test_parse(bad_req12, hs) == -1);
+  print_req(hs); 
+  memset(hs, 0, hdr_sz);
+
+
+// header name starts with a number
+char bad_req13[] = "GET /api/v1beta1/chats HTTP/1.1\r\n"
+                      "4Host: server.example.com\r\n"
+                      "Upgrade: websocket\r\n"
+                      "Connection: Upgrade\r\n"
+                      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                      "Origin: http://example.com\r\n\r\n";
+    
+
+  assert(test_parse(bad_req13, hs) == -1);
+  print_req(hs); 
+  memset(hs, 0, hdr_sz);
+
+
+  free(hs);
+  exit(EXIT_SUCCESS);
+}
