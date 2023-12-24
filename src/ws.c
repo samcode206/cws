@@ -3536,7 +3536,7 @@ ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
   if (len < 14) {
     return -1;
   }
-  
+
   const char *beginning = line;
   while (*line <= 0x20 && *line != '\0')
     ++line;
@@ -3754,7 +3754,15 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
 
   // write headers
   for (size_t i = 0; i < resp->header_count; ++i) {
-    // 4 calls to memmove per header!!!! sad :(
+    if (resp->headers[i].name == NULL || resp->headers[i].val == NULL ||
+        http_header_name_is(resp->headers + i, "Connection", 10) || 
+        http_header_name_is(resp->headers + i, "Upgrade", 7) || 
+        http_header_name_is(resp->headers + i, "Sec-WebSocket-Extensions", 24)) {
+      continue;
+    }
+
+
+
     put_ret = buf_put(c->send_buf, resp->headers[i].name,
                       strlen(resp->headers[i].name));
     put_ret = buf_put(c->send_buf, ": ", 2);
@@ -3762,6 +3770,9 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
                       strlen(resp->headers[i].val));
     put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
   }
+
+  put_ret = buf_put(c->send_buf, "Upgrade: websocket\r\n", 20);
+  put_ret = buf_put(c->send_buf, "Connection: Upgrade\r\n", 21);
 
 #ifdef WITH_COMPRESSION
   if (upgrade && resp->per_msg_deflate && is_compression_allowed(c)) {
@@ -3830,19 +3841,11 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
 static void
 ws_conn_handshake_send_default_response(ws_conn_t *conn,
                                         struct ws_conn_handshake *hs) {
-#define WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT 4
+#define WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT 2
   ws_server_t *s = conn->base;
 
   struct http_header resp_headers[WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT] =
       {
-          {
-              "Upgrade",
-              "websocket",
-          },
-          {
-              "Connection",
-              "Upgrade",
-          },
           {
               "Server",
               "cws",
