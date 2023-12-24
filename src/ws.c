@@ -30,11 +30,6 @@
 #include <netinet/tcp.h>
 #include <openssl/sha.h>
 #include <pthread.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
@@ -42,7 +37,6 @@
 #include <sys/signal.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
-#include <sys/types.h>
 #include <sys/uio.h>
 #include <time.h>
 
