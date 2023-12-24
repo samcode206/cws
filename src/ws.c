@@ -3519,7 +3519,7 @@ ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
   line += 4;
 
   // skip any control chars
-  while (*line <= 0x20)
+  while (*line <= 0x20 && *line != '\0')
     ++line;
 
   if (*line == '\0')
@@ -3743,10 +3743,10 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
 
 #ifdef WITH_COMPRESSION
   if (upgrade && resp->per_msg_deflate && is_compression_allowed(c)) {
-    put_ret = buf_put(c->send_buf,
+  put_ret = buf_put(c->send_buf,
                       "Sec-WebSocket-Extensions: permessage-deflate; "
-                      "client_no_context_takeover\r\n",
-                      74);
+                      "client_no_context_takeover; server_no_context_takeover\r\n",
+                      102);
 
   } else {
     // clear it incase it was set when we saw the header
