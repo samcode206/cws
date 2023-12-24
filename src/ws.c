@@ -470,7 +470,6 @@ typedef struct server {
   z_stream *dstrm;
 #endif /* WITH_COMPRESSION */
 
-  bool accept_paused;    // are we paused on accepting new connections
   int tfd;               // timer fd
   size_t internal_polls; // number of internal fds being watched by epoll
   int user_epoll;
@@ -1178,24 +1177,55 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
   unsigned int now = (unsigned int)time(NULL);
   // how many conns should we try to accept in total
-  size_t accepts = (s->accept_paused == 0) * (s->max_conns - s->open_conns);
-  // if we can do atleast one, then let's get started...
+  size_t accepts = 1024; // we do a batch of 1024 accepts at a time
 
   int sockopt_on = 1;
-
-  if (accepts) {
-    while (accepts--) {
-      if (s->fd == -1) {
-        return;
+  while (accepts--) {
+    if (s->fd == -1) {
+      return;
+    }
+    int fd = accept4(s->fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (fd == -1) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return; // done
+      } else if (errno == EMFILE || errno == ENFILE) {
+        // too many open files in either the proccess or entire system
+        // remove the server from epoll, it must be re added when atleast one
+        // fd closes
+        if (s->on_ws_accept_err) {
+          int err = errno;
+          s->on_ws_accept_err(s, err);
+        }
+        return; // done
+      } else if (errno == ENONET || errno == EPROTO || errno == ENOPROTOOPT ||
+                 errno == EOPNOTSUPP || errno == ENETDOWN ||
+                 errno == ENETUNREACH || errno == EHOSTDOWN ||
+                 errno == EHOSTUNREACH || errno == ECONNABORTED ||
+                 errno == EINTR) {
+        if (s->on_ws_accept_err) {
+          int err = errno;
+          s->on_ws_accept_err(s, err);
+        }
+        // call the accept error callback if registered
+        // and continue on to the next connection in the accept queue
+      } else {
+        // this is non recoverable, report to the internal error callback
+        if (s->on_ws_err) {
+          int err = errno;
+          s->on_ws_err(s, err);
+          exit(EXIT_FAILURE);
+        } else {
+          perror("accept");
+          exit(EXIT_FAILURE);
+        }
+        return; // done
       }
-
-      int client_fd =
-          accept4(s->fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
-      if (client_fd != -1) {
+    } else {
+      if (s->open_conns + 1 <= s->max_conns) {
+        // accept callback can return -1 to reject the connection
         if (s->on_ws_accept &&
-            s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr,
-                            client_fd) == -1) {
-          if (close(client_fd) == -1) {
+            s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr, fd) == -1) {
+          if (close(fd) == -1) {
             if (s->on_ws_err) {
               int err = errno;
               s->on_ws_err(s, err);
@@ -1208,7 +1238,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
         };
 
         // disable Nagle's algorithm
-        if (setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &sockopt_on,
+        if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &sockopt_on,
                        sizeof(sockopt_on)) == -1) {
           if (s->on_ws_err) {
             int err = errno;
@@ -1221,64 +1251,13 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
           return;
         }
 
-        ws_server_new_conn(s, client_fd, now);
-
+        ws_server_new_conn(s, fd, now);
       } else {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          return; // done
-        } else if (errno == EMFILE || errno == ENFILE) {
-          // too many open files in either the proccess or entire system
-          // remove the server from epoll, it must be re added when atleast one
-          // fd closes
-          struct epoll_event ev = {
-              0,
-          };
-
-          ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd, &ev);
-          s->accept_paused = 1;
-          s->internal_polls--;
-          if (s->on_ws_accept_err) {
-            int err = errno;
-            s->on_ws_accept_err(s, err);
-          }
-          return; // done
-        } else if (errno == ENONET || errno == EPROTO || errno == ENOPROTOOPT ||
-                   errno == EOPNOTSUPP || errno == ENETDOWN ||
-                   errno == ENETUNREACH || errno == EHOSTDOWN ||
-                   errno == EHOSTUNREACH || errno == ECONNABORTED ||
-                   errno == EINTR) {
-          if (s->on_ws_accept_err) {
-            int err = errno;
-            s->on_ws_accept_err(s, err);
-          }
-          // call the accept error callback if registered
-          // and continue on to the next connection in the accept queue
-        } else {
-          // this is non recoverable, report to the internal error callback
-          if (s->on_ws_err) {
-            int err = errno;
-            s->on_ws_err(s, err);
-            exit(EXIT_FAILURE);
-          } else {
-            perror("accept");
-            exit(EXIT_FAILURE);
-          }
-          return; // done
+        if (s->on_ws_accept_err) {
+          s->on_ws_accept_err(s, 0);
         }
-      }
-    }
-
-    if (s->max_conns == s->open_conns) {
-      // remove the server from epoll, it must be re added when atleast one
-      // fd closes
-      struct epoll_event ev = {
-          0,
-      };
-      ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd, &ev);
-      s->accept_paused = 1;
-      s->internal_polls--;
-      if (s->on_ws_accept_err) {
-        s->on_ws_accept_err(s, 0);
+        // we are at max connections
+        close(fd);
       }
     }
   }
@@ -1535,15 +1514,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
           }
         }
       }
-    }
-
-    bool accept_resumable = s->accept_paused && s->open_conns < s->max_conns;
-
-    if (accept_resumable) {
-      memset(&ev, 0, sizeof ev);
-      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd, &ev);
-      s->internal_polls++;
-      s->accept_paused = 0;
     }
 
     if (check_user_epoll) {
@@ -2538,8 +2508,6 @@ inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
 inline void *ws_server_ctx(ws_server_t *s) { return s->ctx; }
 
 inline void ws_server_set_ctx(ws_server_t *s, void *ctx) { s->ctx = ctx; }
-
-inline bool ws_server_accept_paused(ws_server_t *s) { return s->accept_paused; }
 
 inline bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
 
@@ -3755,13 +3723,12 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
   // write headers
   for (size_t i = 0; i < resp->header_count; ++i) {
     if (resp->headers[i].name == NULL || resp->headers[i].val == NULL ||
-        http_header_name_is(resp->headers + i, "Connection", 10) || 
-        http_header_name_is(resp->headers + i, "Upgrade", 7) || 
-        http_header_name_is(resp->headers + i, "Sec-WebSocket-Extensions", 24)) {
+        http_header_name_is(resp->headers + i, "Connection", 10) ||
+        http_header_name_is(resp->headers + i, "Upgrade", 7) ||
+        http_header_name_is(resp->headers + i, "Sec-WebSocket-Extensions",
+                            24)) {
       continue;
     }
-
-
 
     put_ret = buf_put(c->send_buf, resp->headers[i].name,
                       strlen(resp->headers[i].name));

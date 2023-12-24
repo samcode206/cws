@@ -359,15 +359,6 @@ bool ws_conn_msg_bin(ws_conn_t *c);
 bool ws_conn_compression_allowed(ws_conn_t *c);
 
 
-/**
- * Checks if the WebSocket server is currently pausing the acceptance of new connections.
- *
- * @param s Pointer to the WebSocket server (`ws_server_t`).
- * @return  True if the server is pausing new connections, false otherwise.
- */
-bool ws_server_accept_paused(ws_server_t *s);
-
-
 
 /**
  * Checks if reading from the given WebSocket connection is currently paused.
