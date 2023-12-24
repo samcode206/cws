@@ -3462,7 +3462,7 @@ int ws_server_destroy(ws_server_t *s) {
   return 0;
 }
 
-// ****************************** Websocket Handshake **************************
+// ******************************
 
 #define CRLF "\r\n"
 #define CRLF_LEN 2
