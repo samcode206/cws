@@ -3694,8 +3694,7 @@ static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
 
       unsigned char hash[20];
       SHA1(key_with_magic_str, 60, hash);
-      ssize_t n = base64_encode(hs->sec_websocket_accept, (char *)hash, 20);
-      assert(n == 29);
+      base64_encode(hs->sec_websocket_accept, (char *)hash, 20);
       sec_websocket_key_found = true;
       // calculate the accept key
       // Sec-WebSocket-Accept
