@@ -59,6 +59,27 @@ typedef struct ws_conn_t ws_conn_t;
 typedef struct server ws_server_t;
 
 
+struct http_header {
+  char *name;
+  char *val;
+};
+
+struct ws_conn_handshake {
+  char *path;
+  size_t header_count;
+  bool per_msg_deflate_requested;
+  char sec_websocket_accept[29]; // 28 + 1 for nul
+  struct http_header headers[];
+};
+
+struct ws_conn_handshake_response {
+  bool per_msg_deflate;
+  size_t header_count;
+  char *status;
+  char *body;
+  struct http_header *headers;
+};
+
 
 enum ws_send_status {
   /*
@@ -233,6 +254,16 @@ enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, b
 
 
 /**
+
+*/
+enum ws_send_status
+ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp);
+
+
+const struct http_header *ws_conn_handshake_header_find(struct ws_conn_handshake *hs,
+                                          const char *name);
+
+/**
  * Checks if the connection is currently sending a fragmented message.
  *
  * When this function returns true, it indicates that the WebSocket connection
@@ -326,15 +357,6 @@ bool ws_conn_msg_bin(ws_conn_t *c);
  * @return  True if compression is allowed, false otherwise.
  */
 bool ws_conn_compression_allowed(ws_conn_t *c);
-
-
-/**
- * Checks if the WebSocket server is currently pausing the acceptance of new connections.
- *
- * @param s Pointer to the WebSocket server (`ws_server_t`).
- * @return  True if the server is pausing new connections, false otherwise.
- */
-bool ws_server_accept_paused(ws_server_t *s);
 
 
 
@@ -701,31 +723,14 @@ typedef int (*ws_accept_cb_t)(ws_server_t *s, struct sockaddr_storage *caddr, in
 typedef void (*ws_err_accept_cb_t)(ws_server_t *s, int err);
 
 /**
- * Optional Callback invoked on receiving a raw WebSocket upgrade request.
+ * Optional Callback invoked on receiving a WebSocket upgrade request.
  *
- * The callee is provided access to the request data and must craft a valid raw HTTP response
- * adhering to the standards for WebSocket upgrades.
+ * @param c                   Pointer to the WebSocket connection (`ws_conn_t`).
+ * @param request             Pointer to the Request data (`struct ws_conn_handshake`)
+ * @param accept_key_header   Pre-calculated WebSocket accept key header.
  *
- * The 'accept_key' provided is pre-calculated and should be incorporated into the
- * response as part of the WebSocket handshake protocol. The user has the option
- * to either proceed with or reject the upgrade. In case of rejection, any appropriate
- * HTTP response can be sent back, and the user must set the 'reject' pointer to true (1).
- * In case of proceeding with the upgrade, there is no need to modify the 'reject' flag.
- *
- * @param c            Pointer to the WebSocket connection (`ws_conn_t`).
- * @param request      Pointer to the buffer containing the raw upgrade request data.
- * @param accept_key   Pre-calculated WebSocket accept key.
- * @param max_resp_len Maximum length allowable for the response.
- * @param resp_dst     Destination buffer for the raw HTTP response.
- * @param reject       Pointer to a boolean flag to indicate rejection of the upgrade. Set to true
- *                     if the upgrade is to be rejected, otherwise it should remain unchanged.
- *
- * @return The size of the response written to 'resp_dst'. The size must be within
- *         the bounds of 'max_resp_len' and properly formatted as an HTTP response.
- *         Returning 0, or a size exceeding 'max_resp_len', indicates a failure in processing,
- *         resulting in the handshake being aborted and a 500 status response being sent.
  */
-typedef size_t (*ws_on_upgrade_req_cb_t)(ws_conn_t *c, char *request, const char *accept_key, size_t max_resp_len, char *resp_dst, bool *reject);
+typedef void (*ws_handshake_cb_t)(ws_conn_t *c, struct ws_conn_handshake *hs);
 
 
 
@@ -755,7 +760,8 @@ struct ws_server_params {
   const char *addr;
   uint16_t port;
   bool verbose;              // logs server config to stdout 
-  uint64_t max_conns;        // Maximum connections the server is willing to accept.
+  size_t max_conns;        // Maximum connections the server is willing to accept.
+  size_t max_header_count; // Maximum number of headers to parse in the upgrade equest. (defaults to 32 and max is 512)
                              // Defaults to the system's limit for maximum open file descriptors.
   size_t max_buffered_bytes; // Maximum amount of websocket payload data to buffer before the connection
                              // is dropped. Defaults to 16000 bytes.
@@ -767,7 +773,7 @@ struct ws_server_params {
   ws_err_cb_t on_ws_err;               // Callback for when an internal error occurs.
   ws_accept_cb_t on_ws_accept;         // Callback for when a new connection has been accepted
   ws_err_accept_cb_t on_ws_accept_err; // Callback for when accept() fails.
-  ws_on_upgrade_req_cb_t on_ws_upgrade_req; // Callback for when a Websocket upgrade request is received
+  ws_handshake_cb_t on_ws_handshake; // Callback for when a Websocket handshake request is received
   void *ctx;                                // attaches a pointer to the server
 };
 
@@ -785,43 +791,12 @@ ws_server_t *ws_server_create(struct ws_server_params *params);
 // HTTP & Handshake Utils
 #define WS_VERSION 13
 
-#define SPACE 0x20
-#define CRLF "\r\n"
-#define CRLF_LEN (sizeof CRLF - 1)
-#define CRLF2 "\r\n\r\n"
-#define CRLF2_LEN (sizeof CRLF2 - 1)
+
+#define WS_HANDSHAKE_STATUS_101 "101 Switching Protocols"
+#define WS_HANDSHAKE_STATUS_400 "400 Bad Request"
+#define WS_HANDSHAKE_STATUS_404 "404 Not Found"
+#define WS_HANDSHAKE_STATUS_500 "500 Internal Server Error"
 
 
-#define GET_RQ "GET"
-#define GET_RQ_LEN 3
-
-#define SEC_WS_KEY_HDR "Sec-WebSocket-Key"
-
-static const char switching_protocols[111] =
-    "HTTP/1.1 101 Switching Protocols" CRLF
-    "Upgrade: websocket" CRLF
-    "Connection: Upgrade" CRLF
-    "Server: cws" CRLF
-    "Sec-WebSocket-Accept: ";
-
-#define SWITCHING_PROTOCOLS_HDRS_LEN 110
-
-
-static const char bad_request[80] =
-    "HTTP/1.1 400 Bad Request" CRLF
-    "Connection: close" CRLF
-    "Server: cws" CRLF
-    "Content-Length: 0" CRLF2;
-
-#define BAD_REQUEST_LEN 79
-
-
-static const char internal_server_error [90] = 
-    "HTTP/1.1 500 Internal Server Error" CRLF
-    "Server: cws" CRLF
-    "Connection: close" CRLF
-    "Content-Length: 0" CRLF2;
-
-#define INTERNAL_SERVER_ERROR_LEN 89
 
 #endif /* WS_PROTOCOL_PARSING23_H */

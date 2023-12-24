@@ -184,6 +184,10 @@ static inline void set_compression_allowed(ws_conn_t *c) {
   c->flags |= CONN_COMPRESSION_ALLOWED;
 }
 
+static inline void clear_compression_allowed(ws_conn_t *c) {
+  c->flags &= ~CONN_COMPRESSION_ALLOWED;
+}
+
 static inline bool is_fragment_compressed(ws_conn_t *c) {
   return (c->flags & CONN_RX_COMPRESSED_FRAGMENTS) != 0;
 }
@@ -275,9 +279,6 @@ static inline bool is_compressed_msg(uint8_t const *buf) {
   return (buf[0] & 0x40) != 0;
 }
 
-static int base64_encode(char *coded_dst, const char *plain_src,
-                         int len_plain_src);
-
 static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
                                                           uint8_t const *buf) {
   return (buf[0] & 0x10) != 0 || (buf[0] & 0x20) != 0 ||
@@ -348,8 +349,6 @@ static inline uint_fast8_t frame_valid(ws_conn_t *c, uint8_t const *frame,
 //     i += 4;
 //   }
 // }
-
-static unsigned utf8_is_valid(uint8_t *s, size_t n);
 
 struct ws_conn_pool {
   ws_conn_t *base;
@@ -453,7 +452,9 @@ typedef struct server {
   struct ws_conn_pool *conn_pool;
   ws_drain_cb_t on_ws_drain;
   ws_disconnect_cb_t on_ws_disconnect;
-  ws_on_upgrade_req_cb_t on_ws_upgrade_req;
+  size_t max_handshake_headers;
+  struct ws_conn_handshake *hs;
+  ws_handshake_cb_t on_ws_handshake;
   ws_on_timeout_t on_ws_conn_timeout;
   struct ws_server_async_runner *async_runner;
   ws_err_cb_t on_ws_err;
@@ -463,7 +464,6 @@ typedef struct server {
   z_stream *dstrm;
 #endif /* WITH_COMPRESSION */
 
-  bool accept_paused;    // are we paused on accepting new connections
   int tfd;               // timer fd
   size_t internal_polls; // number of internal fds being watched by epoll
   int user_epoll;
@@ -550,19 +550,7 @@ static void conn_dyn_buf_dispose(ws_conn_t *c) {
 
 static void conn_prep_send_buf(ws_conn_t *conn) {
   if (!conn->send_buf) {
-    // mirrored_buf_t *recv_buf = conn->recv_buf;
-    // // can we swap buffers so we don't go all the way to the buffer pool
-    // // commented out because we may overwrite the msg when user sends
-    // // we may re enabled this feature by adding a ws_conn_msg_dispose let's
-    // us know that
-    // // that they no longer want the msg and we can make this safe
-    // if (recv_buf && !buf_len(recv_buf)) {
-    //   conn->send_buf = recv_buf;
-    //   conn->recv_buf = NULL;
-    // } else {
     conn->send_buf = mirrored_buf_get(conn->base->buffer_pool);
-    assert(conn->send_buf != NULL);
-    // }
   }
 }
 
@@ -571,7 +559,7 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
 
 static void ws_conn_proccess_frames(ws_conn_t *conn);
 
-static void handle_upgrade(ws_conn_t *conn);
+static void ws_conn_do_handshake(ws_conn_t *conn);
 
 static inline int conn_read(ws_conn_t *conn);
 
@@ -891,8 +879,8 @@ static void ws_server_register_callbacks(ws_server_t *s,
     s->on_ws_accept_err = params->on_ws_accept_err;
   }
 
-  if (params->on_ws_upgrade_req) {
-    s->on_ws_upgrade_req = params->on_ws_upgrade_req;
+  if (params->on_ws_handshake) {
+    s->on_ws_handshake = params->on_ws_handshake;
   }
 
   if (params->on_ws_conn_timeout) {
@@ -998,8 +986,28 @@ static void ws_server_register_buffers(ws_server_t *s,
   s->pending_timers.len = 0;
   s->pending_timers.cap = s->max_conns;
 
+  if (!params->max_header_count) {
+    params->max_header_count = 32;
+  } else if (params->max_header_count > 512) {
+    params->max_header_count = 512;
+  }
+
+  // allocate shared handshake structure
+  s->hs =
+      calloc(1, sizeof(struct ws_conn_handshake) +
+                    (sizeof(struct http_header) * params->max_header_count));
+  if (s->hs == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
+
+  s->max_handshake_headers = params->max_header_count;
+
   // make sure we got the mem needed
-  assert(s->writeable_conns.conns != NULL && s->pending_timers.conns != NULL);
+  if (s->writeable_conns.conns == NULL || s->pending_timers.conns == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  };
 }
 
 ws_server_t *ws_server_create(struct ws_server_params *params) {
@@ -1082,6 +1090,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
     printf("- max_conns:   %zu\n", s->max_conns);
     printf("- compression: %s\n", compression_enabled);
     printf("- debug:       %s\n", debug_enabled);
+    printf("- max_headers: %zu\n", params->max_header_count);
   }
 
   s->max_per_read = s->buffer_pool->buf_sz;
@@ -1162,24 +1171,55 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
   unsigned int now = (unsigned int)time(NULL);
   // how many conns should we try to accept in total
-  size_t accepts = (s->accept_paused == 0) * (s->max_conns - s->open_conns);
-  // if we can do atleast one, then let's get started...
+  size_t accepts = 1024; // we do a batch of 1024 accepts at a time
 
   int sockopt_on = 1;
-
-  if (accepts) {
-    while (accepts--) {
-      if (s->fd == -1) {
-        return;
+  while (accepts--) {
+    if (s->fd == -1) {
+      return;
+    }
+    int fd = accept4(s->fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (fd == -1) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return; // done
+      } else if (errno == EMFILE || errno == ENFILE) {
+        // too many open files in either the proccess or entire system
+        // remove the server from epoll, it must be re added when atleast one
+        // fd closes
+        if (s->on_ws_accept_err) {
+          int err = errno;
+          s->on_ws_accept_err(s, err);
+        }
+        return; // done
+      } else if (errno == ENONET || errno == EPROTO || errno == ENOPROTOOPT ||
+                 errno == EOPNOTSUPP || errno == ENETDOWN ||
+                 errno == ENETUNREACH || errno == EHOSTDOWN ||
+                 errno == EHOSTUNREACH || errno == ECONNABORTED ||
+                 errno == EINTR) {
+        if (s->on_ws_accept_err) {
+          int err = errno;
+          s->on_ws_accept_err(s, err);
+        }
+        // call the accept error callback if registered
+        // and continue on to the next connection in the accept queue
+      } else {
+        // this is non recoverable, report to the internal error callback
+        if (s->on_ws_err) {
+          int err = errno;
+          s->on_ws_err(s, err);
+          exit(EXIT_FAILURE);
+        } else {
+          perror("accept");
+          exit(EXIT_FAILURE);
+        }
+        return; // done
       }
-
-      int client_fd =
-          accept4(s->fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
-      if (client_fd != -1) {
+    } else {
+      if (s->open_conns + 1 <= s->max_conns) {
+        // accept callback can return -1 to reject the connection
         if (s->on_ws_accept &&
-            s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr,
-                            client_fd) == -1) {
-          if (close(client_fd) == -1) {
+            s->on_ws_accept(s, (struct sockaddr_storage *)sockaddr, fd) == -1) {
+          if (close(fd) == -1) {
             if (s->on_ws_err) {
               int err = errno;
               s->on_ws_err(s, err);
@@ -1192,7 +1232,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
         };
 
         // disable Nagle's algorithm
-        if (setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &sockopt_on,
+        if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &sockopt_on,
                        sizeof(sockopt_on)) == -1) {
           if (s->on_ws_err) {
             int err = errno;
@@ -1205,64 +1245,13 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
           return;
         }
 
-        ws_server_new_conn(s, client_fd, now);
-
+        ws_server_new_conn(s, fd, now);
       } else {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          return; // done
-        } else if (errno == EMFILE || errno == ENFILE) {
-          // too many open files in either the proccess or entire system
-          // remove the server from epoll, it must be re added when atleast one
-          // fd closes
-          struct epoll_event ev = {
-              0,
-          };
-
-          ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd, &ev);
-          s->accept_paused = 1;
-          s->internal_polls--;
-          if (s->on_ws_accept_err) {
-            int err = errno;
-            s->on_ws_accept_err(s, err);
-          }
-          return; // done
-        } else if (errno == ENONET || errno == EPROTO || errno == ENOPROTOOPT ||
-                   errno == EOPNOTSUPP || errno == ENETDOWN ||
-                   errno == ENETUNREACH || errno == EHOSTDOWN ||
-                   errno == EHOSTUNREACH || errno == ECONNABORTED ||
-                   errno == EINTR) {
-          if (s->on_ws_accept_err) {
-            int err = errno;
-            s->on_ws_accept_err(s, err);
-          }
-          // call the accept error callback if registered
-          // and continue on to the next connection in the accept queue
-        } else {
-          // this is non recoverable, report to the internal error callback
-          if (s->on_ws_err) {
-            int err = errno;
-            s->on_ws_err(s, err);
-            exit(EXIT_FAILURE);
-          } else {
-            perror("accept");
-            exit(EXIT_FAILURE);
-          }
-          return; // done
+        if (s->on_ws_accept_err) {
+          s->on_ws_accept_err(s, 0);
         }
-      }
-    }
-
-    if (s->max_conns == s->open_conns) {
-      // remove the server from epoll, it must be re added when atleast one
-      // fd closes
-      struct epoll_event ev = {
-          0,
-      };
-      ws_server_epoll_ctl(s, EPOLL_CTL_DEL, s->fd, &ev);
-      s->accept_paused = 1;
-      s->internal_polls--;
-      if (s->on_ws_accept_err) {
-        s->on_ws_accept_err(s, 0);
+        // we are at max connections
+        close(fd);
       }
     }
   }
@@ -1513,21 +1502,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
                 ws_conn_proccess_frames(c);
                 clear_processing(c);
               } else {
-                handle_upgrade(c);
+                ws_conn_do_handshake(c);
               }
             }
           }
         }
       }
-    }
-
-    bool accept_resumable = s->accept_paused && s->open_conns < s->max_conns;
-
-    if (accept_resumable) {
-      memset(&ev, 0, sizeof ev);
-      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd, &ev);
-      s->internal_polls++;
-      s->accept_paused = 0;
     }
 
     if (check_user_epoll) {
@@ -1631,235 +1611,6 @@ static int conn_read(ws_conn_t *conn) {
   return 0;
 }
 
-// takes a nul terminated string and finds an http request header
-static inline int get_header(const char *headers, const char *key, char *val,
-                             size_t n) {
-  char *header_start = strcasestr(headers, key);
-  if (header_start) {
-    header_start =
-        strchr(header_start,
-               ':'); // skip colon symbol, if not found header is malformed
-    if (header_start == NULL) {
-      return -1;
-    }
-
-    ++header_start; // skipping colon symbol happens here after validating it's
-                    // existence in the buffer
-    // skip spaces
-    while (*header_start == SPACE) {
-      ++header_start;
-    }
-
-    const char *header_end =
-        strstr(header_start, CRLF); // move to the end of the header value
-    if (header_end) {
-      // if string is larger than n, return to caller with ERR_HDR_TOO_LARGE
-      if ((header_end - header_start) + 1 > n) {
-        return -1;
-      }
-      memcpy(val, header_start, (header_end - header_start));
-      val[header_end - header_start + 1] =
-          '\0'; // nul terminate the header value
-      return header_end - header_start +
-             1; // we only add one here because of adding '\0'
-    } else {
-      return -1; // if no CRLF is found the headers is malformed
-    }
-  }
-
-  return -1; // header isn't found
-}
-
-static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-#define MAGIC_STR_LEN 36
-
-static inline int ws_derive_accept_hdr(const char *akhdr_val, char *derived_val,
-                                       size_t len) {
-  unsigned char buf[64] = {0};
-  memcpy(buf, akhdr_val, strlen(akhdr_val));
-  strcat((char *)buf, magic_str);
-  len += MAGIC_STR_LEN;
-
-  unsigned char hash[20] = {0};
-  SHA1(buf, len, hash);
-
-  return base64_encode(derived_val, (const char *)hash, sizeof hash);
-}
-
-static void handle_upgrade(ws_conn_t *conn) {
-  ws_server_t *s = conn->base;
-  size_t resp_len = 0;
-
-  // read from the socket
-  if (conn_read(conn) == -1) {
-    return;
-  };
-
-  // get how much has accumulated so far
-  size_t request_buf_len = buf_len(conn->recv_buf);
-
-  // if we are disposing the connection
-  // it means that we received a bad request or an internal server error ocurred
-  if (is_write_shutdown(conn)) {
-    conn->fragments_len += request_buf_len;
-    // client sending too much data after shutting down our write end
-    if (conn->fragments_len > 8192) {
-      ws_conn_destroy(conn, WS_ERR_BAD_HANDSHAKE);
-    }
-
-    // reset the buffer, we discard all data after socket is marked disposing
-    buf_reset(conn->recv_buf);
-    return;
-  }
-
-  // if we still have less than needed bytes
-  // stop and wait for more
-  if (request_buf_len < conn->needed_bytes) {
-    return;
-  }
-
-  // if false by the time we write then call shutdown
-  bool ok = false;
-
-  uint8_t *headers = buf_peek(conn->recv_buf);
-
-  headers[request_buf_len] = '\0';
-
-  // make sure it's a GET request
-  bool is_get_request = is_http_get_request(conn);
-  if (!is_get_request) {
-    // this is the first read
-    // validate that it's a GET request and increase the needed_bytes
-    if (memcmp((char *)headers, GET_RQ, GET_RQ_LEN) == 0) {
-      set_http_get_request(conn);
-      is_get_request = true;
-      // Sec-WebSocket-Accept:s3pPLMBiTxaQ9kYGzzhZRbK+xOo= is 49 bytes and
-      // that's the absolute minimum (practically still higher because there
-      // will be other headers)
-      conn->needed_bytes += 49;
-    };
-  };
-
-  if (is_get_request) {
-    // only start processing when the final header has arrived
-    bool header_end_reached =
-        memcmp((char *)headers + request_buf_len - CRLF2_LEN, CRLF2,
-               CRLF2_LEN) == 0;
-
-    // we reached the request headers end
-    // start reading the headers and extract Sec-WebSocket-Key
-    if (header_end_reached) {
-      char sec_websocket_key[25] = {0};
-      int ret = get_header((char *)headers, SEC_WS_KEY_HDR, sec_websocket_key,
-                           sizeof sec_websocket_key);
-
-      if (ret == 25) {
-        char accept_key[32];
-        int accept_key_len =
-            ws_derive_accept_hdr(sec_websocket_key, accept_key, ret - 1) - 1;
-
-        if (!s->on_ws_upgrade_req) {
-          ok = true;
-#ifdef WITH_COMPRESSION
-          bool pmd = false;
-
-          char sec_websocket_extensions[1024];
-          int sec_websocket_extensions_ret =
-              get_header((char *)headers, "Sec-WebSocket-Extensions",
-                         sec_websocket_extensions, 1024);
-          if (sec_websocket_extensions_ret > 0) {
-            pmd = true;
-          }
-#endif /* WITH_COMPRESSION */
-
-          buf_consume(conn->recv_buf, request_buf_len);
-          conn_prep_send_buf(conn);
-
-          buf_reset(conn->send_buf);
-          buf_put(conn->send_buf, switching_protocols,
-                  SWITCHING_PROTOCOLS_HDRS_LEN);
-          buf_put(conn->send_buf, accept_key, accept_key_len);
-#ifdef WITH_COMPRESSION
-          if (pmd) {
-            set_compression_allowed(conn);
-            buf_put(conn->send_buf,
-                    "\r\nSec-WebSocket-Extensions: permessage-deflate; "
-                    "client_no_context_takeover",
-                    74);
-          }
-#endif /* WITH_COMPRESSION */
-          buf_put(conn->send_buf, CRLF2, CRLF2_LEN);
-          resp_len = buf_len(conn->send_buf);
-        } else {
-          buf_consume(conn->recv_buf, request_buf_len);
-          conn_prep_send_buf(conn);
-          size_t max_resp_len = buf_space(conn->send_buf);
-          bool reject = 0;
-          resp_len = s->on_ws_upgrade_req(
-              conn, (char *)headers, accept_key, max_resp_len,
-              (char *)buf_peek(conn->send_buf), &reject);
-
-          if ((resp_len > 0) & (resp_len <= max_resp_len)) {
-            conn->send_buf->wpos += resp_len;
-            ok = !reject;
-          } else {
-            set_write_shutdown(conn);
-            buf_put(conn->send_buf, internal_server_error,
-                    INTERNAL_SERVER_ERROR_LEN);
-          }
-        }
-
-      } else {
-        set_write_shutdown(conn);
-        conn_prep_send_buf(conn);
-
-        buf_put(conn->send_buf, bad_request, BAD_REQUEST_LEN);
-        printf("error parsing http headers: %d\n", ret);
-      }
-
-    } else {
-      // there's still more data to be read from the network to get the full
-      // header
-
-      return;
-    }
-
-  } else {
-    conn_prep_send_buf(conn);
-    set_write_shutdown(conn);
-    buf_put(conn->send_buf, bad_request, BAD_REQUEST_LEN);
-  }
-
-  if (is_writeable(conn)) {
-    int ret = conn_drain_write_buf(conn);
-    if (ret == 1) {
-      mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
-      conn->recv_buf = NULL;
-
-      if (ok) {
-        clear_http_get_request(conn);
-        s->on_ws_open(conn);
-        set_upgraded(conn);
-        conn->read_timeout = time(NULL) + READ_TIMEOUT;
-        conn->needed_bytes =
-            2; // reset to the minimum needed to parse a ws header
-      } else {
-        if (shutdown(conn->fd, SHUT_WR) == -1) {
-          if (!s->on_ws_err) {
-            int err = errno;
-            s->on_ws_err(s, err);
-          } else {
-            perror("shutdown");
-          }
-        };
-      }
-    }
-  } else {
-    buf_put(conn->send_buf, bad_request, BAD_REQUEST_LEN);
-  }
-}
-
 #ifdef WITH_COMPRESSION
 static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
                                            size_t payload_len) {
@@ -1919,6 +1670,8 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 }
 
 #endif /* WITH_COMPRESSION */
+
+static unsigned utf8_is_valid(uint8_t *s, size_t n);
 
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
@@ -2750,8 +2503,6 @@ inline void *ws_server_ctx(ws_server_t *s) { return s->ctx; }
 
 inline void ws_server_set_ctx(ws_server_t *s, void *ctx) { s->ctx = ctx; }
 
-inline bool ws_server_accept_paused(ws_server_t *s) { return s->accept_paused; }
-
 inline bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
 
 inline size_t ws_server_open_conns(ws_server_t *s) { return s->open_conns; }
@@ -2770,49 +2521,6 @@ void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
   } else {
     c->write_timeout = 0;
   }
-}
-
-static unsigned utf8_is_valid(uint8_t *s, size_t n) {
-  for (uint8_t *e = s + n; s != e;) {
-    if (s + 4 <= e) {
-      uint32_t tmp;
-      memcpy(&tmp, s, 4);
-      if ((tmp & 0x80808080) == 0) {
-        s += 4;
-        continue;
-      }
-    }
-
-    while (!(*s & 0x80)) {
-      if (++s == e) {
-        return 1;
-      }
-    }
-
-    if ((s[0] & 0x60) == 0x40) {
-      if (s + 1 >= e || (s[1] & 0xc0) != 0x80 || (s[0] & 0xfe) == 0xc0) {
-        return 0;
-      }
-      s += 2;
-    } else if ((s[0] & 0xf0) == 0xe0) {
-      if (s + 2 >= e || (s[1] & 0xc0) != 0x80 || (s[2] & 0xc0) != 0x80 ||
-          (s[0] == 0xe0 && (s[1] & 0xe0) == 0x80) ||
-          (s[0] == 0xed && (s[1] & 0xe0) == 0xa0)) {
-        return 0;
-      }
-      s += 3;
-    } else if ((s[0] & 0xf8) == 0xf0) {
-      if (s + 3 >= e || (s[1] & 0xc0) != 0x80 || (s[2] & 0xc0) != 0x80 ||
-          (s[3] & 0xc0) != 0x80 || (s[0] == 0xf0 && (s[1] & 0xf0) == 0x80) ||
-          (s[0] == 0xf4 && s[1] > 0x8f) || s[0] > 0xf4) {
-        return 0;
-      }
-      s += 4;
-    } else {
-      return 0;
-    }
-  }
-  return 1;
 }
 
 static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
@@ -3416,39 +3124,6 @@ int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
   return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &ev);
 }
 
-static const char b64_table[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static int base64_encode(char *encoded, const char *string, int len) {
-  int i;
-  char *p;
-
-  p = encoded;
-  for (i = 0; i < len - 2; i += 3) {
-    *p++ = b64_table[(string[i] >> 2) & 0x3F];
-    *p++ = b64_table[((string[i] & 0x3) << 4) |
-                     ((int)(string[i + 1] & 0xF0) >> 4)];
-    *p++ = b64_table[((string[i + 1] & 0xF) << 2) |
-                     ((int)(string[i + 2] & 0xC0) >> 6)];
-    *p++ = b64_table[string[i + 2] & 0x3F];
-  }
-  if (i < len) {
-    *p++ = b64_table[(string[i] >> 2) & 0x3F];
-    if (i == (len - 1)) {
-      *p++ = b64_table[((string[i] & 0x3) << 4)];
-      *p++ = '=';
-    } else {
-      *p++ = b64_table[((string[i] & 0x3) << 4) |
-                       ((int)(string[i + 1] & 0xF0) >> 4)];
-      *p++ = b64_table[((string[i + 1] & 0xF) << 2)];
-    }
-    *p++ = '=';
-  }
-
-  *p++ = '\0';
-  return p - encoded;
-}
-
 const char *ws_conn_err_table[] = {
     "Unkown Error Code",
     "EOF",
@@ -3747,4 +3422,626 @@ int ws_server_destroy(ws_server_t *s) {
   free(s);
 
   return 0;
+}
+
+// ******************************
+
+#define CRLF "\r\n"
+#define CRLF_LEN 2
+
+static inline bool is_letter(unsigned char byte) {
+  return (((byte > 0x60) & (byte < 0x7B)) | ((byte > 0x40) & (byte < 0x5B)));
+}
+
+static inline bool is_alpha_numeric_or_hyphen(unsigned char byte) {
+  return is_letter(byte) | (byte == '-') | ((byte > 0x2F) & (byte < 0x3A));
+}
+
+static bool http_header_field_name_valid(struct http_header *hdr) {
+  if (hdr->name == NULL)
+    return false;
+
+  size_t len = strlen(hdr->name);
+  if (len == 0)
+    return false;
+
+  // should start with a letter
+  if (!is_letter((unsigned char)hdr->name[0])) {
+    return false;
+  }
+
+  for (size_t i = 1; i < len; ++i) {
+    if (!is_alpha_numeric_or_hyphen((unsigned char)hdr->name[i])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static bool http_header_field_value_valid(struct http_header *hdr) {
+  if (hdr->val == NULL)
+    return false;
+
+  size_t len = strlen(hdr->val);
+  if (len == 0)
+    return false;
+
+  for (size_t i = 0; i < len; ++i) {
+    unsigned char byte = (unsigned char)hdr->val[i];
+    // Check if character is a valid visible character or space/horizontal tab
+    if (!((byte > 0x1F) | (byte == 0x09))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static ssize_t ws_conn_handshake_get_ln(char *line) {
+  char *ln_end = strstr(line, CRLF);
+  if (!ln_end || *ln_end == '\0')
+    return -1;
+
+  ssize_t len = ln_end - line;
+  if (len < 0)
+    return -1;
+
+  line[len] = '\0';
+
+  return len;
+}
+
+static ssize_t
+ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
+  ssize_t len = ws_conn_handshake_get_ln(line);
+  if (len < 14) {
+    return -1;
+  }
+
+  const char *beginning = line;
+  while (*line <= 0x20 && *line != '\0')
+    ++line;
+
+  // must be a GET request we are strict about the casing
+  // and no space must come before the method
+  if (memcmp(line, "GET ", 4) != 0) {
+    return -1;
+  };
+
+  // skip GET and space after
+  line += 4;
+
+  // skip any control chars
+  while (*line <= 0x20 && *line != '\0')
+    ++line;
+
+  if (*line == '\0')
+    return -1;
+
+  // should be at start of path now
+  char *path = line;
+  if (memcmp(path, "/", 1) != 0) {
+    return -1;
+  }
+
+  ssize_t remaining = len - (path - beginning);
+  /* '/ HTTP/1.1' got to be at least 10 bytes left */
+  if (remaining < 10) {
+    return -1;
+  }
+
+  for (size_t i = 0; i < remaining; i++) {
+    // look for any ! or less (ctl chars) in the path and stop there
+    if ((unsigned char)path[i] < 0x21) {
+      // if valid expect this to just be a space followed by protocol version
+      char *path_end = path + i;
+      if (memcmp(path_end, " HTTP/1.1", 9) == 0) {
+        path[i] = '\0';
+        hs->path = path;
+      } else {
+        return -1;
+      }
+      break;
+    }
+  }
+
+  return len;
+}
+
+static ssize_t ws_conn_handshake_parse_header(char *line,
+                                              struct http_header *hdr) {
+  ssize_t len = ws_conn_handshake_get_ln(line);
+  if (len > 2) {
+    char *sep = strchr(line, ':');
+    if (*sep == '\0' || sep == NULL)
+      return -1;
+
+    sep[0] = '\0'; // nul terminate the header name
+
+    if (sep - line < 1)
+      return -1;
+
+    ++sep; // skip nul (previously ':')
+
+    hdr->name = line;
+    if (!http_header_field_name_valid(hdr)) {
+      fprintf(stderr, "invalid field name\n");
+      return -1;
+    };
+
+    // while ctl char or space skip
+    while (*sep < 0x21) {
+      // if not a space then invalid
+      if (*sep != 0x20) {
+        return -1;
+      }
+      sep++;
+    }
+
+    hdr->val = sep;
+    if (!http_header_field_value_valid(hdr)) {
+      fprintf(stderr, "invalid field value\n");
+      return -1;
+    };
+
+  } else {
+    return len == 0 ? len : -1;
+  }
+
+  return len;
+}
+
+static inline bool http_header_name_is(const struct http_header *hdr,
+                                       const char *name, size_t n) {
+  return strncasecmp(hdr->name, name, n) == 0;
+}
+
+static inline bool http_header_val_is(const struct http_header *hdr,
+                                      const char *val, size_t n) {
+  return strncasecmp(hdr->val, val, n) == 0;
+}
+
+static ssize_t base64_encode(char *encoded, const char *string, ssize_t len);
+
+static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+#define MAGIC_STR_LEN 36
+
+static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
+                                   size_t max_headers) {
+  ssize_t n = ws_conn_handshake_parse_request_ln(raw_req, hs);
+  if (n == -1) {
+    return -1;
+  }
+
+  size_t offset = n + 2; // skip CRLF
+  bool done = false;
+  bool sec_websocket_key_found = false;
+  bool connection_header_found = false;
+  bool upgrade_header_found = false;
+
+  for (size_t i = 0; i < max_headers; ++i) {
+    n = ws_conn_handshake_parse_header(raw_req + offset, hs->headers + i);
+    if (n == 0) {
+      done = true;
+      break;
+    } else if (n < 0) {
+      return -1;
+    }
+
+    if (!connection_header_found &&
+        http_header_name_is(hs->headers + i, "Connection", 10) &&
+        http_header_val_is(hs->headers + i, "Upgrade", 7)) {
+
+      connection_header_found = true;
+
+    } else if (!upgrade_header_found &&
+               http_header_name_is(hs->headers + i, "Upgrade", 7) &&
+               http_header_val_is(hs->headers + i, "websocket", 9)) {
+
+      upgrade_header_found = true;
+
+    } else if (!sec_websocket_key_found &&
+               strncasecmp(hs->headers[i].name, "Sec-WebSocket-Key", 17) == 0) {
+
+      // should be 24 bytes
+      if (strlen(hs->headers[i].val) != 24)
+        return -1;
+
+      unsigned char key_with_magic_str[61];
+      memcpy(key_with_magic_str, hs->headers[i].val, 24);
+      memcpy(key_with_magic_str + 24, magic_str, MAGIC_STR_LEN);
+      key_with_magic_str[60] = '\0';
+
+      unsigned char hash[20];
+      SHA1(key_with_magic_str, 60, hash);
+      base64_encode(hs->sec_websocket_accept, (char *)hash, 20);
+      sec_websocket_key_found = true;
+      // calculate the accept key
+      // Sec-WebSocket-Accept
+    }
+#ifdef WITH_COMPRESSION
+    // check for per message deflate start
+    else if (http_header_name_is(hs->headers + i, "Sec-WebSocket-Extensions",
+                                 24)) {
+
+      if (strcasestr(hs->headers[i].val, "permessage-deflate")) {
+        hs->per_msg_deflate_requested = true;
+      }
+    }
+// check for per message deflate end
+#endif /* WITH_COMPRESSION */
+
+    hs->header_count += 1;
+    offset += n + 2; // skip CRLF
+  }
+
+  if (!sec_websocket_key_found || !done || !connection_header_found ||
+      !upgrade_header_found) {
+    return -1;
+  }
+
+  return 0;
+}
+
+static enum ws_send_status
+ws_conn_do_handshake_reply(ws_conn_t *c,
+                           struct ws_conn_handshake_response *resp) {
+  // bail out if the connection is closed or already upgraded
+  if (is_closed(c) || is_upgraded(c)) {
+    return WS_SEND_DROPPED_NOT_ALLOWED;
+  }
+
+  // we need these or we don't have much of a response
+  if (!resp->status || !resp->headers || !resp->header_count) {
+    return WS_SEND_DROPPED_NOT_ALLOWED;
+  }
+
+  size_t status_len = strlen(resp->status);
+  if (status_len < 3) {
+    return WS_SEND_DROPPED_NOT_ALLOWED;
+  }
+
+  bool upgrade = strstr(resp->status, "101") != NULL;
+
+  // grab the send buffer
+  conn_prep_send_buf(c);
+
+  // write first line
+  int put_ret;
+  put_ret = buf_put(c->send_buf, "HTTP/1.1 ", 9);
+  put_ret = buf_put(c->send_buf, resp->status, status_len);
+  put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
+
+  // write headers
+  for (size_t i = 0; i < resp->header_count; ++i) {
+    if (resp->headers[i].name == NULL || resp->headers[i].val == NULL ||
+        http_header_name_is(resp->headers + i, "Connection", 10) ||
+        http_header_name_is(resp->headers + i, "Upgrade", 7) ||
+        http_header_name_is(resp->headers + i, "Sec-WebSocket-Extensions",
+                            24)) {
+      continue;
+    }
+
+    put_ret = buf_put(c->send_buf, resp->headers[i].name,
+                      strlen(resp->headers[i].name));
+    put_ret = buf_put(c->send_buf, ": ", 2);
+    put_ret = buf_put(c->send_buf, resp->headers[i].val,
+                      strlen(resp->headers[i].val));
+    put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
+  }
+
+  put_ret = buf_put(c->send_buf, "Upgrade: websocket\r\n", 20);
+  put_ret = buf_put(c->send_buf, "Connection: Upgrade\r\n", 21);
+
+#ifdef WITH_COMPRESSION
+  if (upgrade && resp->per_msg_deflate && is_compression_allowed(c)) {
+  put_ret = buf_put(c->send_buf,
+                      "Sec-WebSocket-Extensions: permessage-deflate; "
+                      "client_no_context_takeover; server_no_context_takeover\r\n",
+                      102);
+
+  } else {
+    // clear it incase it was set when we saw the header
+    // in the request and WITH_COMPRESSION is defined
+    clear_compression_allowed(c);
+  }
+#endif /* WITH_COMPRESSION */
+
+  // end of headers
+  put_ret = buf_put(c->send_buf, CRLF, CRLF_LEN);
+
+  // if we have a body
+  // ignore if this is an upgrade request
+  if (!upgrade && resp->body) {
+    size_t body_len = strlen(resp->body);
+    // add response body
+    put_ret = buf_put(c->send_buf, resp->body, body_len);
+  }
+
+  // check if put failed (it only fails when no space is available)
+  if (put_ret == -1) {
+    mirrored_buf_put(c->base->buffer_pool, c->send_buf);
+    c->send_buf = NULL;
+    return WS_SEND_DROPPED_TOO_LARGE;
+  }
+
+  if (!upgrade) {
+    // we are going to close the connection after sending the response
+    set_write_shutdown(c);
+  }
+
+  int ret = conn_drain_write_buf(c);
+  if (ret == 1) {
+    if (upgrade) {
+      clear_http_get_request(c);
+      set_upgraded(c);
+      c->base->on_ws_open(c);
+    } else {
+      // everything written to the socket
+      // shutdown our write end
+      if (shutdown(c->fd, SHUT_WR) == -1) {
+        if (c->base->on_ws_err) {
+          int err = errno;
+          c->base->on_ws_err(c->base, err);
+        } else {
+          perror("shutdown");
+        }
+      };
+    }
+  } else if (ret == 0) {
+    return WS_SEND_OK_BACKPRESSURE;
+  } else {
+    return WS_SEND_FAILED;
+  }
+
+  return WS_SEND_OK;
+}
+
+static void
+ws_conn_handshake_send_default_response(ws_conn_t *conn,
+                                        struct ws_conn_handshake *hs) {
+#define WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT 2
+  ws_server_t *s = conn->base;
+
+  struct http_header resp_headers[WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT] =
+      {
+          {
+              "Server",
+              "cws",
+          },
+          {
+              "Sec-WebSocket-Accept",
+              hs->sec_websocket_accept,
+          },
+      };
+
+  struct ws_conn_handshake_response r = {
+      .per_msg_deflate = true, // keep this true it will be ignored if
+                               // not supported or not requested
+      .body = NULL,
+      .status = WS_HANDSHAKE_STATUS_101,
+      .headers = resp_headers,
+      .header_count = WS_CONN_HANDSHAKE_DEFAULT_RESP_HEADER_COUNT,
+  };
+
+  mirrored_buf_put(s->buffer_pool, conn->recv_buf);
+  conn->recv_buf = NULL;
+  ws_conn_do_handshake_reply(conn, &r);
+}
+
+static void handle_bad_request(ws_conn_t *conn) {
+  struct http_header resp_headers[3] = {
+      {
+          "Content-Length",
+          "0",
+      },
+      {
+          "Connection",
+          "close",
+      },
+      {
+          "Server",
+          "cws",
+      },
+  };
+
+  struct ws_conn_handshake_response r = {
+      .status = WS_HANDSHAKE_STATUS_400,
+      .headers = resp_headers,
+      .header_count = 3,
+  };
+
+  mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
+  conn->recv_buf = NULL;
+  set_write_shutdown(conn);
+  ws_conn_do_handshake_reply(conn, &r);
+}
+
+static void ws_conn_do_handshake(ws_conn_t *conn) {
+  ws_server_t *s = conn->base;
+  // read from the socket
+  if (conn_read(conn) == -1) {
+    return;
+  };
+
+  // get how much has accumulated so far
+  size_t request_buf_len = buf_len(conn->recv_buf);
+
+  // if we are disposing the connection
+  // it means that we received a bad request or an internal server error ocurred
+  if (is_write_shutdown(conn)) {
+    conn->fragments_len += request_buf_len;
+    // client sending too much data after shutting down our write end
+    if (conn->fragments_len > 8192) {
+      ws_conn_destroy(conn, WS_ERR_BAD_HANDSHAKE);
+    }
+
+    // reset the buffer, we discard all data after socket is marked disposing
+    buf_reset(conn->recv_buf);
+    return;
+  }
+
+  // if we still have less than needed bytes
+  // stop and wait for more
+  if (request_buf_len < conn->needed_bytes) {
+    return;
+  }
+
+  char *headers = (char *)buf_peek(conn->recv_buf);
+  headers[request_buf_len] = '\0';
+
+  // make sure it's a GET request
+  bool is_get_request = is_http_get_request(conn);
+  if (!is_get_request) {
+    if (memcmp((char *)headers, "GET ", 4) == 0) {
+      set_http_get_request(conn);
+      is_get_request = true;
+      // Sec-WebSocket-Accept:s3pPLMBiTxaQ9kYGzzhZRbK+xOo= is 49 bytes and
+      // that's the absolute minimum (practically still higher because there
+      // will be other headers)
+      conn->needed_bytes += 49;
+    };
+  };
+
+  // if after the first read we still don't have a GET request
+  // then we have a bad handshake
+  if (!is_get_request) {
+    handle_bad_request(conn);
+    return;
+  }
+
+  // only start processing when the final header has arrived
+  bool header_end_reached =
+      memcmp((char *)headers + request_buf_len - 4, CRLF CRLF, 4) == 0;
+
+  if (!header_end_reached) {
+    // wait for more
+    return;
+  }
+
+  struct ws_conn_handshake *hs = s->hs;
+  hs->header_count = 0;
+  if (ws_conn_handshake_parse((char *)headers, hs, s->max_handshake_headers) ==
+      0) {
+#ifdef WITH_COMPRESSION
+    if (hs->per_msg_deflate_requested) {
+      set_compression_allowed(conn);
+    }
+#endif /* WITH_COMPRESSION */
+
+    conn->needed_bytes = 2;
+    conn->read_timeout = time(NULL) + READ_TIMEOUT;
+    mirrored_buf_put(s->buffer_pool, conn->recv_buf);
+    conn->recv_buf = NULL;
+    if (s->on_ws_handshake) {
+      s->on_ws_handshake(conn, hs);
+    } else {
+      ws_conn_handshake_send_default_response(conn, hs);
+    }
+
+  } else {
+    handle_bad_request(conn);
+    return;
+  }
+}
+
+inline enum ws_send_status
+ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
+  return ws_conn_do_handshake_reply(c, resp);
+}
+
+const struct http_header *
+ws_conn_handshake_header_find(struct ws_conn_handshake *hs, const char *name) {
+  size_t count = hs->header_count;
+  struct http_header *headers = hs->headers;
+
+  if (count) {
+    while (count--) {
+      if (strcasecmp(headers[count].name, name) == 0) {
+        return &headers[count];
+      }
+    }
+  }
+
+  return NULL;
+}
+
+static unsigned utf8_is_valid(uint8_t *str, size_t n) {
+  uint8_t *end = str + n;
+  while (str < end) {
+    // Check for ASCII optimization
+    uint32_t tmp;
+    if (str + 4 <= end) {
+      memcpy(&tmp, str, 4);
+      if ((tmp & 0x80808080) == 0) {
+        str += 4;
+        continue;
+      }
+    }
+
+    // ASCII characters
+    while (!(*str & 0x80) && ++str < end)
+      ;
+
+    // Multi-byte characters
+    if (str == end)
+      return 1;
+    if ((str[0] & 0x60) == 0x40) { // 2-byte sequence
+      if (str + 1 >= end || (str[1] & 0xc0) != 0x80 || (str[0] & 0xfe) == 0xc0)
+        return 0;
+      str += 2;
+    } else if ((str[0] & 0xf0) == 0xe0) { // 3-byte sequence
+      if (str + 2 >= end || (str[1] & 0xc0) != 0x80 ||
+          (str[2] & 0xc0) != 0x80 ||
+          (str[0] == 0xe0 && (str[1] & 0xe0) == 0x80) ||
+          (str[0] == 0xed && (str[1] & 0xe0) == 0xa0))
+        return 0;
+      str += 3;
+    } else if ((str[0] & 0xf8) == 0xf0) { // 4-byte sequence
+      if (str + 3 >= end || (str[1] & 0xc0) != 0x80 ||
+          (str[2] & 0xc0) != 0x80 || (str[3] & 0xc0) != 0x80 ||
+          (str[0] == 0xf0 && (str[1] & 0xf0) == 0x80) ||
+          (str[0] == 0xf4 && str[1] > 0x8f) || str[0] > 0xf4)
+        return 0;
+      str += 4;
+    } else {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static const char b64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static ssize_t base64_encode(char *encoded, const char *string, ssize_t len) {
+  ssize_t i;
+  char *p;
+
+  p = encoded;
+  for (i = 0; i < len - 2; i += 3) {
+    *p++ = b64_table[(string[i] >> 2) & 0x3F];
+    *p++ = b64_table[((string[i] & 0x3) << 4) |
+                     ((int)(string[i + 1] & 0xF0) >> 4)];
+    *p++ = b64_table[((string[i + 1] & 0xF) << 2) |
+                     ((int)(string[i + 2] & 0xC0) >> 6)];
+    *p++ = b64_table[string[i + 2] & 0x3F];
+  }
+  if (i < len) {
+    *p++ = b64_table[(string[i] >> 2) & 0x3F];
+    if (i == (len - 1)) {
+      *p++ = b64_table[((string[i] & 0x3) << 4)];
+      *p++ = '=';
+    } else {
+      *p++ = b64_table[((string[i] & 0x3) << 4) |
+                       ((int)(string[i + 1] & 0xF0) >> 4)];
+      *p++ = b64_table[((string[i + 1] & 0xF) << 2)];
+    }
+    *p++ = '=';
+  }
+
+  *p++ = '\0';
+  return p - encoded;
 }

@@ -3,19 +3,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
-#include <sys/timerfd.h>
 #include <sys/signal.h>
 
 #define MAX_CONNS 1024
 
-size_t total = 0;
-
 void onOpen(ws_conn_t *conn) {}
 
-
-
 void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
-  // printf("msg %zu\n", n);
   if (ws_conn_msg_ready(conn)) {
     ws_conn_put_msg(conn, msg, n, OP_BIN, 0);
   } else {

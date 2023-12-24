@@ -74,7 +74,6 @@ int on_accept(ws_server_t *s, struct sockaddr_storage *caddr, int fd) {
 void on_accept_err(ws_server_t *s, int err) {
   printf("accept4(): %s\n", strerror(err));
   printf("open_conns = %zu \n", ws_server_open_conns(s));
-  printf("is_paused=%d\n", ws_server_accept_paused(s));
 }
 
 void on_timeout(ws_conn_t *c, unsigned timeout_kind) {
