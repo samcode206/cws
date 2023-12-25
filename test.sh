@@ -3,6 +3,7 @@
 
 suite_dir="./test/suite"
 
+set -e
 
 for file in "$suite_dir"/*.c; do
     base_name=$(basename "$file" .c)

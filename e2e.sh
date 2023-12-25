@@ -3,6 +3,8 @@
 
 suite_dir="./test/e2e"
 
+set -e
+
 for file in "$suite_dir"/*.c; do
     base_name=$(basename "$file" .c)
     gcc ./src/*.c "$file" -lz -lcrypto -O3 -march=native -mtune=native -Wall --pedantic -o "$suite_dir/$base_name"
