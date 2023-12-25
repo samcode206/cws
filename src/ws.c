@@ -3349,6 +3349,8 @@ int ws_server_shutdown(ws_server_t *s) {
       .data = {.ptr = NULL},
   };
 
+  eventfd_write(s->async_runner->chanfd, 1);
+
   close(s->fd);
   epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
   s->internal_polls--;
@@ -3385,10 +3387,7 @@ int ws_server_shutdown(ws_server_t *s) {
   }
 
   // close event fd
-  if (s->async_runner->chanfd) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
-    close(s->async_runner->chanfd);
-    s->async_runner->chanfd = -1;
+  if (s->async_runner->chanfd && s->internal_polls) {
     s->internal_polls--;
   }
 
@@ -3410,6 +3409,15 @@ inline void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read) {
 inline int ws_server_active_events(ws_server_t *s) { return s->active_events; }
 
 int ws_server_destroy(ws_server_t *s) {
+  // this one was used to wake up from epoll_wait when we shut down
+  // this is why we didn't close it in ws_server_shutdown
+
+  struct epoll_event ev = {0};
+
+  epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
+  close(s->async_runner->chanfd);
+  s->async_runner->chanfd = -1;
+
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
   ws_server_async_runner_destroy(s);
@@ -3417,6 +3425,22 @@ int ws_server_destroy(ws_server_t *s) {
   close(s->epoll_fd);
   s->epoll_fd = -1;
 
+  #ifdef WITH_COMPRESSION
+
+  if (s->istrm) {
+    inflateEnd(s->istrm);
+    free(s->istrm);
+  }
+
+  if (s->dstrm) {
+    deflateEnd(s->dstrm);
+    free(s->dstrm);
+  }
+
+  #endif /* WITH_COMPRESSION */
+
+
+  free(s->hs);
   free(s->writeable_conns.conns);
   free(s->pending_timers.conns);
   free(s);
@@ -3737,10 +3761,11 @@ ws_conn_do_handshake_reply(ws_conn_t *c,
 
 #ifdef WITH_COMPRESSION
   if (upgrade && resp->per_msg_deflate && is_compression_allowed(c)) {
-  put_ret = buf_put(c->send_buf,
-                      "Sec-WebSocket-Extensions: permessage-deflate; "
-                      "client_no_context_takeover; server_no_context_takeover\r\n",
-                      102);
+    put_ret =
+        buf_put(c->send_buf,
+                "Sec-WebSocket-Extensions: permessage-deflate; "
+                "client_no_context_takeover; server_no_context_takeover\r\n",
+                102);
 
   } else {
     // clear it incase it was set when we saw the header

@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -88,7 +89,18 @@ void on_timeout(ws_conn_t *c, unsigned timeout_kind) {
   ws_conn_destroy(c, WS_ERR_READ_TIMEOUT);
 }
 
+
+
+ws_server_t *s = NULL;
+
+void on_sigint(int sig) {
+  int ret = ws_server_shutdown(s);
+  printf("ret = %d\n", ret);
+}
+
 void *start_server() {
+  signal(SIGINT, on_sigint);
+
   const uint16_t port = 9919;
   const int backlog = 1024;
   struct ws_server_params sp = {
@@ -101,18 +113,21 @@ void *start_server() {
       // .on_ws_accept = on_accept,
       .on_ws_accept_err = on_accept_err,
       .on_ws_conn_timeout = on_timeout,
-      .max_conns = 1024,
+      .max_conns = 1000,
       .verbose = 1,
   };
 
-  ws_server_t *s = ws_server_create(&sp);
+  s = ws_server_create(&sp);
 
-  ws_server_start(s, backlog);
+  int ret = ws_server_start(s, backlog);
+  printf("ret = %d\n", ret);
+
+  ws_server_destroy(s);
 
   return NULL;
 }
 
-#define NUM_THREADS 1
+
 int main(void) {
   printf("%d\n", getpid());
   start_server();
