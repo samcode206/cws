@@ -42,4 +42,4 @@ struct test_table CONN_POOL_TESTSUITE[NUM_TESTS] = {
      TEST_MIRRORED_BUF_POOL_CREATE_DESTROY},
 };
 
-int main(void) { RUN_TESTS("ws_conn_pool", CONN_POOL_TESTSUITE, NUM_TESTS); }
+int main(void) { RUN_TESTS("buffer pool", CONN_POOL_TESTSUITE, NUM_TESTS); }
