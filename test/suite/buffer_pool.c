@@ -78,10 +78,44 @@ int TEST_MIRRORED_BUF_POOL_USE_ALL_BUFS(const char *name) {
 
       s->buffer_pool = p;
       server_mirrored_buf_pool_destroy(s);
-      
+
       free(s);
     }
   }
+
+  return EXIT_SUCCESS;
+}
+
+int TEST_MIRRORED_BUF_RING_BUFFER_BEHAVIOR(const char *name) {
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size == -1) {
+    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+    exit(1);
+  }
+
+  ws_server_t *s = malloc(sizeof(ws_server_t));
+  assert(s != NULL);
+  struct mirrored_buf_pool *p = mirrored_buf_pool_create(1, page_size, 1);
+  assert(p != NULL);
+  s->buffer_pool = p;
+
+  mirrored_buf_t *b = mirrored_buf_get(p);
+  assert(b->buf_sz == page_size);
+  assert(b->buf != NULL);
+
+  b->buf[page_size] = 'a';
+  b->buf[page_size + 1] = 'b';
+  b->buf[page_size + 2] = 'c';
+  b->buf[page_size + 3] = '\0';
+
+  // we should be able to read the data from the start of buffer
+  assert(strcmp((char *)b->buf, "abc") == 0);
+    
+
+
+  server_mirrored_buf_pool_destroy(s);
+
+  free(s);
 
   return EXIT_SUCCESS;
 }

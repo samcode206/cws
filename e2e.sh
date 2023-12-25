@@ -7,7 +7,7 @@ set -e
 
 for file in "$suite_dir"/*.c; do
     base_name=$(basename "$file" .c)
-    gcc ./src/*.c "$file" -lz -lcrypto -O3 -march=native -mtune=native -Wall --pedantic -o "$suite_dir/$base_name"
+    gcc ./src/*.c "$file" -lz -lcrypto -O3 -march=native -mtune=native -o "$suite_dir/$base_name"
 
     if [ $? -eq 0 ]; then
         "$suite_dir/$base_name"
