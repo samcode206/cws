@@ -2229,7 +2229,7 @@ static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
       mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
       conn->send_buf = NULL;
       return WS_SEND_OK;
-    } else if (n == 0 || ((n == -1) & ((errno != EAGAIN) | (errno != EINTR)))) {
+    } else if (n == 0 || ((n == -1) & ((errno != EAGAIN) & (errno != EINTR)))) {
       return WS_SEND_FAILED;
     } else {
       ws_conn_notify_on_writeable(conn);
@@ -2498,8 +2498,9 @@ bool ws_conn_msg_ready(ws_conn_t *c) {
   mirrored_buf_t *rb = c->recv_buf;
   if (is_upgraded(c) & !is_closed(c) & (rb != NULL)) {
     size_t val = 0;
-    unsigned int ret =
-        frame_decode_payload_len(buf_peek(rb), buf_len(rb), &val);
+    // note* : this doesn't account for total_trimmed and may be wrong
+    unsigned int ret = frame_decode_payload_len(
+        rb->buf + rb->rpos + c->fragments_len, buf_len(rb), &val);
     (void)val;
     return ret == 0;
   } else {
@@ -3160,6 +3161,30 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd,
   server_pending_timers_append(conn);
 }
 
+static bool ws_server_accept_err_recoverable(int err) {
+  switch (err) {
+  case ENONET:
+  case EPROTO:
+  case ENOPROTOOPT:
+  case EOPNOTSUPP:
+  case ENETDOWN:
+  case ENETUNREACH:
+  case EHOSTDOWN:
+  case EHOSTUNREACH:
+  case ECONNABORTED:
+  case EMFILE:
+  case ENFILE:
+  case EAGAIN:
+#if EAGAIN != EWOULDBLOCK
+  case EWOULDBLOCK:
+#endif
+  case EINTR:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
   unsigned int now = (unsigned int)time(NULL);
@@ -3175,20 +3200,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
     if (fd == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         return; // done
-      } else if (errno == EMFILE || errno == ENFILE) {
-        // too many open files in either the proccess or entire system
-        // remove the server from epoll, it must be re added when atleast one
-        // fd closes
-        if (s->on_ws_accept_err) {
-          int err = errno;
-          s->on_ws_accept_err(s, err);
-        }
-        return; // done
-      } else if (errno == ENONET || errno == EPROTO || errno == ENOPROTOOPT ||
-                 errno == EOPNOTSUPP || errno == ENETDOWN ||
-                 errno == ENETUNREACH || errno == EHOSTDOWN ||
-                 errno == EHOSTUNREACH || errno == ECONNABORTED ||
-                 errno == EINTR) {
+      } else if (ws_server_accept_err_recoverable(errno)) {
         if (s->on_ws_accept_err) {
           int err = errno;
           s->on_ws_accept_err(s, err);
