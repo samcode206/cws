@@ -37,9 +37,9 @@ int TEST_MIRRORED_BUF_POOL_CREATE_DESTROY(const char *name) {
 
 #define NUM_TESTS 1
 
-struct test_table CONN_POOL_TESTSUITE[NUM_TESTS] = {
+struct test_table BUF_POOL_TESTSUITE[NUM_TESTS] = {
     {"Creating/Destroying Mirrored buffer pools",
      TEST_MIRRORED_BUF_POOL_CREATE_DESTROY},
 };
 
-int main(void) { RUN_TESTS("buffer pool", CONN_POOL_TESTSUITE, NUM_TESTS); }
+int main(void) { RUN_TESTS("buffer pool", BUF_POOL_TESTSUITE, NUM_TESTS); }
