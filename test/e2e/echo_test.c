@@ -1,23 +1,25 @@
-#include "sock_util.h"
 #include "../../src/ws.h"
+#include "../test.h"
+#include "sock_util.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/eventfd.h>
 
 #define PORT 9919
 #define ADDR "::1"
 
+ws_server_t *s;
+int done;
+
 void server_on_open(ws_conn_t *conn) {}
 
 void server_on_msg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
-  // printf("msg %zu\n", n);
   ws_conn_send_msg(conn, msg, n, OP_BIN, 0);
 }
 
-void server_on_disconnect(ws_conn_t *conn, int err) {
-  printf("%s\n", ws_conn_strerror(conn));
-}
+void server_on_disconnect(ws_conn_t *conn, int err) {}
 
 void *server_init(void *_) {
   struct ws_server_params p = {
@@ -30,14 +32,24 @@ void *server_init(void *_) {
       .max_conns = 2,
   };
 
-  ws_server_t *s = ws_server_create(&p);
+  s = ws_server_create(&p);
+  assert(s != NULL);
 
-  ws_server_start(s, 1024);
+  int ret = ws_server_start(s, 1024);
+  assert(ret == 0);
+
+  assert(ws_server_destroy(s) == 0);
 
   return NULL;
 }
 
-int main(void) {
+void async_shutdown(ws_server_t *s, struct async_cb_ctx *ctx) {
+  ws_server_shutdown(s);
+
+  assert(eventfd_write(done, 1) == 0);
+}
+
+int ECHO_TEST(const char *name) {
   pthread_t server_w;
 
   if (pthread_create(&server_w, NULL, server_init, NULL) == -1) {
@@ -79,5 +91,27 @@ int main(void) {
     free(frame);
   }
 
-  printf("PASS\n");
+  done = eventfd(0, EFD_CLOEXEC);
+  assert(done != -1);
+
+  struct async_cb_ctx *cb_info = malloc(sizeof(struct async_cb_ctx));
+  cb_info->cb = async_shutdown;
+  cb_info->ctx = NULL;
+
+  assert(ws_server_sched_callback(s, cb_info) == 0);
+
+  eventfd_t value;
+  eventfd_read(done, &value);
+
+  (void)value;
+
+  return EXIT_SUCCESS;
 }
+
+#define NUN_TESTS 1
+
+struct test_table tests[NUN_TESTS] = {
+    {"ECHO_TEST", ECHO_TEST},
+};
+
+int main(void) { RUN_TESTS("Echo", tests, NUN_TESTS); }

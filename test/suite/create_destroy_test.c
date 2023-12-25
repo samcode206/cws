@@ -1,6 +1,6 @@
 #include "../../src/ws.c"
 
-#include "test.h"
+#include "../test.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
