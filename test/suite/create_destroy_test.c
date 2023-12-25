@@ -1,8 +1,9 @@
 #include "../../src/ws.c"
 
+#include "test.h"
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "test.h"
 
 void onOpen(ws_conn_t *conn) {}
 
@@ -36,7 +37,9 @@ int TEST_WS_CREATE_MISSING_CBS(const char *name) {
       .max_buffered_bytes = 1,
   };
 
-  if (ws_server_create(&p) != NULL) {
+  ws_server_t *s;
+
+  if ((s = ws_server_create(&p)) != NULL) {
     fprintf(stderr,
             "%s : expect server to be null when a mandatory callback is "
             "missing"
@@ -46,7 +49,7 @@ int TEST_WS_CREATE_MISSING_CBS(const char *name) {
   }
 
   p.on_ws_open = onOpen;
-  if (ws_server_create(&p) != NULL) {
+  if ((s = ws_server_create(&p)) != NULL) {
     fprintf(stderr,
             "%s : expect server to be null when a mandatory callback is "
             "missing"
@@ -56,7 +59,7 @@ int TEST_WS_CREATE_MISSING_CBS(const char *name) {
   }
 
   p.on_ws_msg = onMsg;
-  if (ws_server_create(&p) != NULL) {
+  if ((s = ws_server_create(&p)) != NULL) {
     fprintf(stderr,
             "%s : expect server to be null when a mandatory callback is "
             "missing"
@@ -66,14 +69,15 @@ int TEST_WS_CREATE_MISSING_CBS(const char *name) {
   }
 
   p.on_ws_disconnect = onDisconnect;
-  if (ws_server_create(&p) == NULL) {
+  if ((s = ws_server_create(&p)) == NULL) {
     fprintf(stderr,
-            "%s : expect server to be null when a mandatory callback is "
+            "%s : expect server to have been created when no mandatory is"
             "missing"
             "\n",
             name);
     return EXIT_FAILURE;
   } else {
+    assert(ws_server_destroy(s) == 0);
     return EXIT_SUCCESS;
   }
 }
@@ -89,7 +93,9 @@ int TEST_WS_CREATE_IPV4_IPV6(const char *name) {
       .max_buffered_bytes = 1,
   };
 
-  if (ws_server_create(&p) == NULL) {
+  ws_server_t *s;
+
+  if ((s = ws_server_create(&p)) == NULL) {
     fprintf(stderr,
             "%s : expected server to be created with ipv4 address"
             "\n",
@@ -97,16 +103,20 @@ int TEST_WS_CREATE_IPV4_IPV6(const char *name) {
     return EXIT_FAILURE;
   }
 
+  assert(ws_server_destroy(s) == 0);
+
   p.port = 9919;
   p.addr = "::1";
 
-  if (ws_server_create(&p) == NULL) {
+  if ((s = ws_server_create(&p)) == NULL) {
     fprintf(stderr,
             "%s : expected server to be created with ipv6 address"
             "\n",
             name);
     return EXIT_FAILURE;
   }
+
+  assert(ws_server_destroy(s) == 0);
 
   return EXIT_SUCCESS;
 }
@@ -139,9 +149,10 @@ int TEST_WS_CREATE_MAX_BUFFERED_BYTES(const char *name) {
     return EXIT_FAILURE;
   }
 
+  assert(ws_server_destroy(s) == 0);
+
   return EXIT_SUCCESS;
 }
-
 
 #define NUM_TESTS 4
 
@@ -152,8 +163,6 @@ struct test_table WS_CREATE_TESTSUITE[NUM_TESTS] = {
     {"ws_server_create max buffered bytes", TEST_WS_CREATE_MAX_BUFFERED_BYTES},
 };
 
-
 int main(void) {
-  RUN_TESTS("ws_server_create", WS_CREATE_TESTSUITE, NUM_TESTS);
-
+  RUN_TESTS("ws create/destroy", WS_CREATE_TESTSUITE, NUM_TESTS);
 }

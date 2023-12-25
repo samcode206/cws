@@ -74,14 +74,16 @@ int TEST_WS_CONN_POOL_CREATE(const char *name) {
     free(s);
   }
 
-
   return EXIT_SUCCESS;
 }
 
 int TEST_WS_CONN_POOL_EMPTY(const char *name) {
+  ws_server_t *s = calloc(1, sizeof(ws_server_t));
 
   size_t nmemb = 8;
   struct ws_conn_pool *p = ws_conn_pool_create(nmemb);
+
+  s->conn_pool = p;
 
   size_t i = 0;
   while (i < nmemb) {
@@ -99,6 +101,8 @@ int TEST_WS_CONN_POOL_EMPTY(const char *name) {
     return EXIT_FAILURE;
   }
 
+  server_ws_conn_pool_destroy(s);
+  free(s);
 
   return EXIT_SUCCESS;
 }

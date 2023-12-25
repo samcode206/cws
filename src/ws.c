@@ -3799,6 +3799,28 @@ int ws_server_destroy(ws_server_t *s) {
   close(s->async_runner->chanfd);
   s->async_runner->chanfd = -1;
 
+
+  if (s->user_epoll > 0) {
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &ev);
+    close(s->user_epoll);
+    s->user_epoll = -1;
+  }
+
+  if (s->fd > 0) {
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
+    close(s->fd);
+    s->fd = -1;
+  }
+
+  if (s->tfd > 0) {
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &ev);
+    close(s->tfd);
+    s->tfd = -1;
+  }
+
+  
+
+
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
   ws_server_async_runner_destroy(s);
