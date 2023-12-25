@@ -259,8 +259,18 @@ enum ws_send_status ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, b
 
 
 /**
-
-*/
+ * Sends a handshake response over the WebSocket connection.
+ *
+ * This function is used to send a custom handshake response. It allows for detailed control
+ * over the response headers and status code sent back to the client during the WebSocket 
+ * handshake process. This is typically used to respond to an incoming WebSocket upgrade request.
+ * to switch to the websocket protocol the response status should be set to WS_HANDSHAKE_STATUS_101
+ * and the response headers should include the sec_websocket_accept header with the value from the request
+ *
+ * @param c    Pointer to the WebSocket connection (`ws_conn_t`) handling the handshake.
+ * @param resp Pointer to a structure containing the handshake response details (`ws_conn_handshake_response`).
+ * @return     enum ws_send_status indicating the result of the handshake response attempt.
+ */
 enum ws_send_status
 ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp);
 
