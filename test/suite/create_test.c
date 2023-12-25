@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "test.h"
 
 void onOpen(ws_conn_t *conn) {}
 
@@ -9,23 +10,22 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {}
 
 void onDisconnect(ws_conn_t *conn, int err) {}
 
-int test_ws_server_create_bad_args(const char *name) {
+int TEST_WS_CREATE_BAD_ARGS(const char *name) {
   struct ws_server_params p = {0};
 
   if (ws_server_create(&p) != NULL) {
     fprintf(stderr,
-            "[FAIL] %s : expect server to be null when no valid arguments "
+            "%s : expect server to be null when no valid arguments "
             "are provided to ws_server_create\n",
             name);
     return EXIT_FAILURE;
   } else {
-    fprintf(stdout, "[PASS] %s\n", name);
   };
 
   return EXIT_SUCCESS;
 }
 
-int test_ws_server_create_no_mandatory_cbs(const char *name) {
+int TEST_WS_CREATE_MISSING_CBS(const char *name) {
   struct ws_server_params p = {
       .port = 9919,
       .addr = "::1",
@@ -38,7 +38,7 @@ int test_ws_server_create_no_mandatory_cbs(const char *name) {
 
   if (ws_server_create(&p) != NULL) {
     fprintf(stderr,
-            "[FAIL] %s : expect server to be null when a mandatory callback is "
+            "%s : expect server to be null when a mandatory callback is "
             "missing"
             "\n",
             name);
@@ -48,7 +48,7 @@ int test_ws_server_create_no_mandatory_cbs(const char *name) {
   p.on_ws_open = onOpen;
   if (ws_server_create(&p) != NULL) {
     fprintf(stderr,
-            "[FAIL] %s : expect server to be null when a mandatory callback is "
+            "%s : expect server to be null when a mandatory callback is "
             "missing"
             "\n",
             name);
@@ -58,7 +58,7 @@ int test_ws_server_create_no_mandatory_cbs(const char *name) {
   p.on_ws_msg = onMsg;
   if (ws_server_create(&p) != NULL) {
     fprintf(stderr,
-            "[FAIL] %s : expect server to be null when a mandatory callback is "
+            "%s : expect server to be null when a mandatory callback is "
             "missing"
             "\n",
             name);
@@ -68,18 +68,17 @@ int test_ws_server_create_no_mandatory_cbs(const char *name) {
   p.on_ws_disconnect = onDisconnect;
   if (ws_server_create(&p) == NULL) {
     fprintf(stderr,
-            "[FAIL] %s : expect server to be null when a mandatory callback is "
+            "%s : expect server to be null when a mandatory callback is "
             "missing"
             "\n",
             name);
     return EXIT_FAILURE;
   } else {
-    fprintf(stdout, "[PASS] %s\n", name);
     return EXIT_SUCCESS;
   }
 }
 
-int test_ws_server_create_ipv4_ipv6(const char *name) {
+int TEST_WS_CREATE_IPV4_IPV6(const char *name) {
   struct ws_server_params p = {
       .port = 9917,
       .addr = "127.0.0.1",
@@ -92,7 +91,7 @@ int test_ws_server_create_ipv4_ipv6(const char *name) {
 
   if (ws_server_create(&p) == NULL) {
     fprintf(stderr,
-            "[FAIL] %s : expected server to be created with ipv4 address"
+            "%s : expected server to be created with ipv4 address"
             "\n",
             name);
     return EXIT_FAILURE;
@@ -103,18 +102,16 @@ int test_ws_server_create_ipv4_ipv6(const char *name) {
 
   if (ws_server_create(&p) == NULL) {
     fprintf(stderr,
-            "[FAIL] %s : expected server to be created with ipv6 address"
+            "%s : expected server to be created with ipv6 address"
             "\n",
             name);
     return EXIT_FAILURE;
   }
 
-  fprintf(stdout, "[PASS] %s\n", name);
-
   return EXIT_SUCCESS;
 }
 
-int test_ws_create_buffer_sizing(const char *name) {
+int TEST_WS_CREATE_MAX_BUFFERED_BYTES(const char *name) {
   struct ws_server_params p = {
       .port = 9919,
       .addr = "::1",
@@ -128,7 +125,7 @@ int test_ws_create_buffer_sizing(const char *name) {
   ws_server_t *s = ws_server_create(&p);
   if (s == NULL) {
     fprintf(stderr,
-            "[FAIL] %s : expected server to be created"
+            "%s : expected server to be created"
             "\n",
             name);
     return EXIT_FAILURE;
@@ -136,37 +133,27 @@ int test_ws_create_buffer_sizing(const char *name) {
 
   if (s->buffer_pool->buf_sz != getpagesize()) {
     fprintf(stderr,
-            "[FAIL] %s : expected buffer size to be %d got %zu"
+            "%s : expected buffer size to be %d got %zu"
             "\n",
             name, getpagesize(), s->buffer_pool->buf_sz);
     return EXIT_FAILURE;
   }
 
-  fprintf(stdout, "[PASS] %s\n", name);
-
   return EXIT_SUCCESS;
 }
 
-void result(int *ret, int cur) {
-  if (*ret == EXIT_SUCCESS) {
-    if (cur != EXIT_SUCCESS) {
-      *ret = cur;
-    }
-  }
-}
+
+#define NUM_TESTS 4
+
+struct test_table WS_CREATE_TESTSUITE[NUM_TESTS] = {
+    {"ws_server_create bad args", TEST_WS_CREATE_BAD_ARGS},
+    {"ws_server_create missing callbacks", TEST_WS_CREATE_MISSING_CBS},
+    {"ws_server_create ipv4 ipv6", TEST_WS_CREATE_IPV4_IPV6},
+    {"ws_server_create max buffered bytes", TEST_WS_CREATE_MAX_BUFFERED_BYTES},
+};
+
 
 int main(void) {
-  int ret = 0;
+  RUN_TESTS("ws_server_create", WS_CREATE_TESTSUITE, NUM_TESTS);
 
-  result(&ret, test_ws_server_create_bad_args("ws_server_create empty params"));
-  result(&ret, test_ws_server_create_no_mandatory_cbs(
-                   "ws_server_create no mandatory callbacks"));
-
-  result(&ret, test_ws_server_create_ipv4_ipv6(
-                   "ws_server_create binds to ipv4 or ipv6"));
-
-  result(&ret, test_ws_create_buffer_sizing(
-                   "test_ws_create_buffer_size to next page size multiple"));
-
-  exit(ret);
 }

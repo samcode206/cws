@@ -1,10 +1,11 @@
 #include "../../src/ws.c"
 
+#include "test.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/wait.h>
 
-int test_ws_conn_pool_create(const char *name) {
+int TEST_WS_CONN_POOL_CREATE(const char *name) {
   size_t nmemb = 1;
 
   for (; nmemb < 1024; nmemb++) {
@@ -23,7 +24,7 @@ int test_ws_conn_pool_create(const char *name) {
       ws_conn_t *c = ws_conn_get(p);
       if (!c) {
         fprintf(stderr,
-                "[FAIL] %s : expected to have gotten a connection from the "
+                "%s : expected to have gotten a connection from the "
                 "connection pool",
                 name);
         return EXIT_FAILURE;
@@ -33,7 +34,7 @@ int test_ws_conn_pool_create(const char *name) {
 
     if (p->avb != 0) {
       fprintf(stderr,
-              "[FAIL] %s : expected to have 0 available connections"
+              "%s : expected to have 0 available connections"
               "connection pool",
               name);
       return EXIT_FAILURE;
@@ -46,7 +47,7 @@ int test_ws_conn_pool_create(const char *name) {
 
     if (p->avb != nmemb) {
       fprintf(stderr,
-              "[FAIL] %s : expected to have %zu available connections"
+              "%s expected to have %zu available connections"
               "connection pool",
               name, nmemb);
       return EXIT_FAILURE;
@@ -58,7 +59,7 @@ int test_ws_conn_pool_create(const char *name) {
       ws_conn_t *c = ws_conn_get(p);
       if (!c) {
         fprintf(stderr,
-                "[FAIL] %s : expected to have gotten a connection from the "
+                "%s : expected to have gotten a connection from the "
                 "connection pool",
                 name);
         return EXIT_FAILURE;
@@ -73,12 +74,11 @@ int test_ws_conn_pool_create(const char *name) {
     free(s);
   }
 
-  fprintf(stdout, "[PASS] %s\n", name);
 
   return EXIT_SUCCESS;
 }
 
-int test_ws_conn_pool_too_many_gets(const char *name) {
+int TEST_WS_CONN_POOL_EMPTY(const char *name) {
 
   size_t nmemb = 8;
   struct ws_conn_pool *p = ws_conn_pool_create(nmemb);
@@ -99,28 +99,15 @@ int test_ws_conn_pool_too_many_gets(const char *name) {
     return EXIT_FAILURE;
   }
 
-  fprintf(stdout, "[PASS] %s\n", name);
+
   return EXIT_SUCCESS;
 }
 
-void result(int *ret, int cur) {
-  if (*ret == EXIT_SUCCESS) {
-    if (cur != EXIT_SUCCESS) {
-      *ret = cur;
-    }
-  }
-}
+#define NUM_TESTS 2
 
-int main(void) {
-  int ret = 0;
+struct test_table CONN_POOL_TESTSUITE[NUM_TESTS] = {
+    {"ws_conn_pool_create", TEST_WS_CONN_POOL_CREATE},
+    {"ws_conn_pool_empty", TEST_WS_CONN_POOL_EMPTY},
+};
 
-  result(&ret, test_ws_conn_pool_create(
-                   "creating/deleting/getting/putting connection in the "
-                   "connection pool of different sizes"));
-
-  result(&ret,
-         test_ws_conn_pool_too_many_gets("getting a connection from the pool "
-                                         "when empty should return NULL"));
-
-  exit(ret);
-}
+int main(void) { RUN_TESTS("ws_conn_pool", CONN_POOL_TESTSUITE, NUM_TESTS); }
