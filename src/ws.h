@@ -26,14 +26,13 @@
 #define _GNU_SOURCE
 #endif
 
-#ifndef WS_PROTOCOL_PARSING23_H
-#define WS_PROTOCOL_PARSING23_H
+#ifndef LWS_HDR_1113
+#define LWS_HDR_1113
 
 #include <errno.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -68,7 +67,7 @@ struct ws_conn_handshake {
   char *path;
   size_t header_count;
   bool per_msg_deflate_requested;
-  char sec_websocket_accept[29]; // 28 + 1 for nul
+  char sec_websocket_accept[29];
   struct http_header headers[];
 };
 
@@ -226,6 +225,9 @@ size_t ws_conn_max_sendable_len(ws_conn_t *c);
 size_t ws_conn_estimate_readable_len(ws_conn_t *c);
 
 
+/**
+* Returns true if another frame MAY be soon ready for processing
+*/
 bool ws_conn_msg_ready(ws_conn_t *c);
 
 /**
@@ -237,6 +239,9 @@ bool ws_conn_msg_ready(ws_conn_t *c);
 bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len);
 
 
+/**
+* Returns the number of bytes currently pending in the connection's send buffer.
+*/
 size_t ws_conn_pending_bytes(ws_conn_t *c);
 
 
@@ -799,4 +804,4 @@ ws_server_t *ws_server_create(struct ws_server_params *params);
 
 
 
-#endif /* WS_PROTOCOL_PARSING23_H */
+#endif /* LWS_HDR_1113 */

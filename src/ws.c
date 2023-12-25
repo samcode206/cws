@@ -39,6 +39,8 @@
 #include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
+#include <stdio.h>
+
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
