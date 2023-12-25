@@ -110,7 +110,7 @@ int TEST_MIRRORED_BUF_RING_BUFFER_BEHAVIOR(const char *name) {
 
   // we should be able to read the data from the start of buffer
   assert(strcmp((char *)b->buf, "abc") == 0);
-    
+
 
 
   server_mirrored_buf_pool_destroy(s);
@@ -120,7 +120,7 @@ int TEST_MIRRORED_BUF_RING_BUFFER_BEHAVIOR(const char *name) {
   return EXIT_SUCCESS;
 }
 
-#define NUM_TESTS 2
+#define NUM_TESTS 3
 
 struct test_table BUF_POOL_TESTSUITE[NUM_TESTS] = {
     {"Creating/Destroying Mirrored buffer pools",
@@ -128,6 +128,10 @@ struct test_table BUF_POOL_TESTSUITE[NUM_TESTS] = {
     {
         "Using all buffers in a mirrored buffer pool",
         TEST_MIRRORED_BUF_POOL_USE_ALL_BUFS,
-    }};
+    },
+    {
+        "Mirrored buffer ring buffer behavior",
+        TEST_MIRRORED_BUF_RING_BUFFER_BEHAVIOR,
+    },};
 
 int main(void) { RUN_TESTS("buffer pool", BUF_POOL_TESTSUITE, NUM_TESTS); }
