@@ -34,7 +34,7 @@ $(DOBJ): $(SRC)
 
 
 $(SHARED_LIB): $(DOBJ)
-	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^ -lcrypto $(if $(WITH_COMPRESSION),-lz)
+	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^ $(if $(WITH_COMPRESSION),-lz)
 
 
 $(STATIC_LIB): $(SOBJ)
@@ -76,5 +76,5 @@ autobahn: install
 
 
 async_task:
-	gcc ./src/*.c ./test/e2e/async_task.c -lz -lcrypto -O3 -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./src/*.c ./test/e2e/async_task.c -lz O3 -march=native -mtune=native -Wall --pedantic -o server
 
