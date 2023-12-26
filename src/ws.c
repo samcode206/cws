@@ -132,8 +132,21 @@ static unsigned ws_server_time() {
   ssize_t t = time(NULL);
   if (likely((t > 0) & (t < 4294967296))) {
     return (unsigned)t;
+  } else {
+    perror("time");
+    exit(EXIT_FAILURE);
   }
+
   return 0;
+}
+
+static inline uint_fast8_t io_tmp_err(ssize_t n) {
+#if EAGAIN != EWOULDBLOCK
+  return (n == -1) &
+         ((errno == EAGAIN) | (errno == EWOULDBLOCK) | (errno == EINTR));
+#else
+  return (n == -1) & ((errno == EAGAIN) | (errno == EINTR));
+#endif
 }
 
 static size_t get_pagesize() {
@@ -593,7 +606,7 @@ const char *ws_conn_strerror(ws_conn_t *c) {
       if (!c->fragments_len) {
         return ws_conn_err_table[1];
       } else {
-        return strerror(c->fragments_len);
+        return strerror((int)c->fragments_len);
       }
     }
 
@@ -947,7 +960,7 @@ static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd,
     // some error happened
   } else if (n == 0 || n == -1) {
     // if temporary error do a copy
-    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
+    if (io_tmp_err(n)) {
       buf_put(r, iovs[0].iov_base, iovs[0].iov_len);
       buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
     }
@@ -955,12 +968,12 @@ static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd,
     return n;
     // less than the header was written
   } else if (n < iovs[0].iov_len) {
-    buf_put(r, (uint8_t *)iovs[0].iov_base + n, iovs[0].iov_len - n);
+    buf_put(r, (uint8_t *)iovs[0].iov_base + n, iovs[0].iov_len - (size_t)n);
     buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
     return n;
   } else {
     // header was written but only part of the payload
-    size_t leftover = n - iovs[0].iov_len;
+    size_t leftover = (size_t)n - iovs[0].iov_len;
     buf_put(r, (uint8_t *)iovs[1].iov_base + leftover,
             iovs[1].iov_len - leftover);
     return n;
@@ -988,7 +1001,7 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
     // some error happened
   } else if (n == 0 || n == -1) {
     // if temporary error do a copy
-    if ((n == -1) & ((errno == EAGAIN) | (errno == EINTR))) {
+    if (io_tmp_err(n)) {
       // copy both header and payload first iov already in the buffer
       buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
       buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
@@ -996,7 +1009,7 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
     return n;
     // couldn't drain the buffer copy the header and payload
   } else if (n < iovs[0].iov_len) {
-    buf_consume(r, n);
+    buf_consume(r, (size_t)n);
     if (rem_dst) {
       buf_move(r, dst, buf_len(r));
     }
@@ -1006,7 +1019,7 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
   }
   // drained the buffer but only wrote parts of the new frame
   else if (n > iovs[0].iov_len) {
-    ssize_t wrote = n - iovs[0].iov_len;
+    size_t wrote = (size_t)n - iovs[0].iov_len;
     buf_consume(r, iovs[0].iov_len);
 
     // less than header was written
@@ -1089,10 +1102,10 @@ static int conn_read(ws_conn_t *conn) {
 
   ssize_t n = buf_recv(rb, conn->fd, space, 0);
   if (n == -1 || n == 0) {
-    if (n == -1 && (errno == EAGAIN || errno == EINTR)) {
+    if (io_tmp_err(n)) {
       return 0;
     }
-    conn->fragments_len = n == -1 ? errno : 0;
+    conn->fragments_len = (size_t)(n == -1 ? errno : 0);
     ws_conn_destroy(conn, WS_ERR_READ);
     return -1;
   }
@@ -1134,7 +1147,7 @@ static int conn_drain_write_buf(ws_conn_t *conn) {
 
   n = buf_send(conn->send_buf, conn->fd, MSG_NOSIGNAL);
   if ((n == -1 && errno != EAGAIN && errno != EINTR) | (n == 0)) {
-    conn->fragments_len = n == -1 ? errno : 0;
+    conn->fragments_len = (size_t)(n == -1 ? errno : 0);
     ws_conn_destroy(conn, WS_ERR_WRITE);
     return -1;
   }
@@ -1407,7 +1420,7 @@ static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
 #endif /* WITH_COMPRESSION */
 
     hs->header_count += 1;
-    offset += n + 2; // skip CRLF
+    offset += (size_t)n + 2; // skip CRLF
   }
 
   if (!sec_websocket_key_found || !done || !connection_header_found ||
@@ -1837,7 +1850,8 @@ static inline uint32_t frame_is_masked(const unsigned char *buf) {
 }
 
 static inline size_t frame_get_header_len(size_t const n) {
-  return 2 + ((n > (size_t)125) * 2) + ((n > (size_t)0xFFFF) * 6);
+  return (size_t)2 + ((n > (size_t)125) * (size_t)2) +
+         ((n > (size_t)0xFFFF) * (size_t)6);
 }
 
 static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
@@ -1987,7 +2001,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
             conn->needed_bytes = full_frame_len;
             goto clean_up_buffer;
           } else {
-            frame_buf_len += rn;
+            frame_buf_len += (size_t)rn;
           }
         }
 
@@ -2196,14 +2210,14 @@ static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
   memset(hbuf, 0, 2);
   hbuf[0] = opAndFinOpts;
   hbuf[1] = 127;
-  hbuf[2] = (len >> 56) & 0xFF;
-  hbuf[3] = (len >> 48) & 0xFF;
-  hbuf[4] = (len >> 40) & 0xFF;
-  hbuf[5] = (len >> 32) & 0xFF;
-  hbuf[6] = (len >> 24) & 0xFF;
-  hbuf[7] = (len >> 16) & 0xFF;
-  hbuf[8] = (len >> 8) & 0xFF;
-  hbuf[9] = len & 0xFF;
+  hbuf[2] = (uint8_t)(len >> 56) & 0xFF;
+  hbuf[3] = (uint8_t)(len >> 48) & 0xFF;
+  hbuf[4] = (uint8_t)(len >> 40) & 0xFF;
+  hbuf[5] = (uint8_t)(len >> 32) & 0xFF;
+  hbuf[6] = (uint8_t)(len >> 24) & 0xFF;
+  hbuf[7] = (uint8_t)(len >> 16) & 0xFF;
+  hbuf[8] = (uint8_t)(len >> 8) & 0xFF;
+  hbuf[9] = (uint8_t)len & 0xFF;
 
   if (is_writeable(conn)) {
     ssize_t n;
@@ -2652,17 +2666,19 @@ static void server_check_pending_timers(ws_server_t *s) {
   static_assert(WS_ERR_READ_TIMEOUT == 994,
                 "WS_ERR_READ_TIMEOUT should be 994");
 
-  unsigned timeout_kind = 993;
+  unsigned int timeout_kind = 993;
   ws_on_timeout_t cb = s->on_ws_conn_timeout;
-  unsigned int now = (unsigned int)ws_server_time();
+  unsigned int now = ws_server_time();
 
   while (s->pending_timers.len) {
     size_t i = s->pending_timers.len;
     while (i--) {
       ws_conn_t *c = s->pending_timers.conns[i];
 
-      timeout_kind += c->read_timeout != 0 && c->read_timeout < now;
-      timeout_kind += ((c->write_timeout != 0 && c->write_timeout < now) * 2);
+      timeout_kind +=
+          (unsigned int)(c->read_timeout != 0 && c->read_timeout < now);
+      timeout_kind +=
+          (unsigned int)((c->write_timeout != 0 && c->write_timeout < now) * 2);
 
       if (timeout_kind != 993) {
         c->read_timeout = 0;

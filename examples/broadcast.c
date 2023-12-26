@@ -56,7 +56,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   appBroadcast(ws_server_ctx(ws_conn_server(conn)), msg, n);
 }
 
-void onDisconnect(ws_conn_t *conn, int err) {
+void onDisconnect(ws_conn_t *conn, unsigned long err) {
   // printf("on Disconnect\n");
   appDisconnect(ws_server_ctx(ws_conn_server(conn)), conn);
 }

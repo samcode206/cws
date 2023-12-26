@@ -24,7 +24,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   }
 }
 
-void onDisconnect(ws_conn_t *conn, int err) {}
+void onDisconnect(ws_conn_t *conn, unsigned long err) {}
 
 void *server_init(void *s) {
   printf("broadcast example starting on 9919\n");

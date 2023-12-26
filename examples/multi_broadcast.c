@@ -73,7 +73,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   }
 }
 
-void onDisconnect(ws_conn_t *conn, int err) {
+void onDisconnect(ws_conn_t *conn, unsigned long err) {
   ws_server_t *s = ws_conn_server(conn);
   Slice *ctx = ws_server_ctx(s);
   if (ctx->numConnections) {

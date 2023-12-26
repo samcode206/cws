@@ -33,7 +33,7 @@ void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
   }
 }
 
-void on_disconnect(ws_conn_t *ws_conn, int err) {
+void on_disconnect(ws_conn_t *ws_conn, unsigned long err) {
   // printf("on_disconnect: %s\n", ws_conn_strerror(ws_conn));
   if (ws_conn_ctx(ws_conn)) {
     free(ws_conn_ctx(ws_conn));

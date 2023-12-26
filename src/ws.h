@@ -673,7 +673,7 @@ typedef void (*ws_open_cb_t)(ws_conn_t *ws_conn);
  * @param ws_conn Pointer to the WebSocket connection (`ws_conn_t`).
  * @param err     Error code indicating the reason for disconnection, if any.
  */
-typedef void (*ws_disconnect_cb_t)(ws_conn_t *ws_conn, int err);
+typedef void (*ws_disconnect_cb_t)(ws_conn_t *ws_conn, unsigned long err);
 
 /**
  * Optional Callback invoked when the connection's send buffer is ready to accept more data.

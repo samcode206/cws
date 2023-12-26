@@ -15,7 +15,7 @@ void server_on_msg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_conn_send_msg(conn, msg, n, OP_BIN, 0);
 }
 
-void server_on_disconnect(ws_conn_t *conn, int err) {
+void server_on_disconnect(ws_conn_t *conn, unsigned long  err) {
   printf("%s\n", ws_conn_strerror(conn));
 }
 

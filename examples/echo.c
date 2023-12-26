@@ -17,7 +17,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   }
 }
 
-void onDisconnect(ws_conn_t *conn, int err) {}
+void onDisconnect(ws_conn_t *conn, unsigned long err) {}
 
 int main(void) {
   signal(SIGPIPE, SIG_IGN);

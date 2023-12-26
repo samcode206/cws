@@ -60,7 +60,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   fprintf(stdout, "got message: %.*s\n", (int)n, (char *)msg);
 }
 
-void onDisconnect(ws_conn_t *conn, int err) {
+void onDisconnect(ws_conn_t *conn, unsigned long err) {
   printf("on Disconnect\n");
   appStateDisconnect(ws_server_ctx(ws_conn_server(conn)), conn);
 }
