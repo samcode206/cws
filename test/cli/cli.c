@@ -4,13 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 #define PING "ping"
 #define PONG "pong"
 #define TXT "txt"
 #define BIN "bin"
 #define CLOSE "close"
-
 
 #define PORT 9919
 #define ADDR "::1"
@@ -78,6 +78,29 @@ size_t write_close_frame(char *dst, unsigned code) {
   return 8;
 }
 
+void read_line(int fd, char *buf, size_t len) {
+  ssize_t n = read(fd, buf, len - 1);
+  if (n == -1) {
+    perror("read");
+    exit(EXIT_FAILURE);
+  }
+
+  buf[n] = '\0';
+  strstr(buf, "\n")[0] = '\0';
+}
+
+void parse_line(char *buf, char *cmd, char *data) {
+  char *p = strstr(buf, " ");
+  if (p == NULL) {
+    printf("Expected format: <CMD> <DATA>\n");
+    exit(EXIT_FAILURE);
+  }
+
+  *p = '\0';
+  strcpy(cmd, buf);
+  strcpy(data, p + 1);
+}
+
 void handle_echo_cmd(int fd, char *in_data, char *out_data, unsigned op) {
   size_t len = strlen(in_data);
   size_t frame_sz = write_frame(out_data, in_data, len, op);
@@ -112,24 +135,21 @@ void handle_echo_cmd(int fd, char *in_data, char *out_data, unsigned op) {
   }
 }
 
-int main(void) {
-  char in_cmd[64];
-  char in_data[8192];
-  char out_data[12288];
+static char in_cmd[64];
+static char buf[12288];
+static char in_data[8192];
+static char out_data[12288];
 
+int main(void) {
 
   int fd = sock_new_connect(PORT, ADDR);
   sock_upgrade_ws(fd);
 
-
   const char delim[] = " ";
 
   for (;;) {
-    // scanf sucks change this later
-    int n = scanf("%s %s", in_cmd, in_data);
-    if (n != 2) {
-      printf("Expected format: <CMD> <DATA>\n");
-    }
+    read_line(0, buf, sizeof(buf));
+    parse_line(buf, in_cmd, in_data);
 
     if (!strcasecmp(in_cmd, TXT)) {
       handle_echo_cmd(fd, in_data, out_data, OP_TXT);
