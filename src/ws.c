@@ -1351,7 +1351,7 @@ static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
 
     if (!connection_header_found &&
         http_header_name_is(hs->headers + i, "Connection", 10) &&
-        http_header_val_is(hs->headers + i, "Upgrade", 7)) {
+        strcasestr(hs->headers[i].val, "upgrade")) {
 
       connection_header_found = true;
 
