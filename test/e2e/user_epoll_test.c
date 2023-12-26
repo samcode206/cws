@@ -9,7 +9,7 @@
 
 int myTimerFdPollCBMaxCalls = 5;
 
-void myTimerFdPollCB(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev) {
+void myTimerFdPollCB(ws_server_t *s, ws_poll_cb_ctx_t *ctx, unsigned int ev) {
   myTimerFdPollCBMaxCalls--;
 
   int *tfd = ctx->ctx;
