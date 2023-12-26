@@ -30,6 +30,7 @@
 #include <netinet/tcp.h>
 #include <openssl/sha.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
@@ -39,8 +40,6 @@
 #include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
-#include <stdio.h>
-
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
@@ -3499,10 +3498,17 @@ static struct ws_server_async_runner_buf *
 ws_server_async_runner_buf_create(size_t init_cap) {
   struct ws_server_async_runner_buf *arb;
   arb = calloc(1, sizeof *arb);
-  assert(arb != NULL);
+  if (arb == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
 
   arb->cbs = calloc(init_cap, sizeof arb->cbs);
-  assert(arb->cbs != NULL);
+  if (arb->cbs == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
+
   arb->cap = init_cap;
 
   return arb;
@@ -3799,7 +3805,6 @@ int ws_server_destroy(ws_server_t *s) {
   close(s->async_runner->chanfd);
   s->async_runner->chanfd = -1;
 
-
   if (s->user_epoll > 0) {
     epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &ev);
     close(s->user_epoll);
@@ -3817,9 +3822,6 @@ int ws_server_destroy(ws_server_t *s) {
     close(s->tfd);
     s->tfd = -1;
   }
-
-  
-
 
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
@@ -3856,7 +3858,10 @@ int ws_server_destroy(ws_server_t *s) {
 
 static z_stream *inflation_stream_init() {
   z_stream *istrm = calloc(1, sizeof(z_stream));
-  assert(istrm != NULL);
+  if (istrm == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
 
   inflateInit2(istrm, -15);
   return istrm;
@@ -3916,7 +3921,10 @@ static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
 
 static z_stream *deflation_stream_init() {
   z_stream *dstrm = calloc(1, sizeof(z_stream));
-  assert(dstrm != NULL);
+  if (dstrm == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
 
   deflateInit2(dstrm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8,
                Z_DEFAULT_STRATEGY);
