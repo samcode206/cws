@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-O3 -flto -march=native -mtune=native -Wall --pedantic -I./src
+CFLAGS=-O3 -flto -march=native -mtune=native -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
 LIB_NAME=ws
 SHARED_LIB=lib$(LIB_NAME).so
 STATIC_LIB=lib$(LIB_NAME).a

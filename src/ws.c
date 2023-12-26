@@ -55,10 +55,11 @@ typedef struct server {
   size_t max_per_read; // max bytes to read per read call
   ws_on_msg_cb_t on_ws_msg;
   struct mirrored_buf_pool *buffer_pool;
-  void *ctx;
+  unsigned int server_time;
   int active_events; // number of active events per epoll_wait call
   int fd;            // server file descriptor
   int epoll_fd;
+  void *ctx;
   ws_open_cb_t on_ws_open;
 
   unsigned open_conns; // open websocket connections
@@ -128,17 +129,8 @@ inline size_t ws_server_open_conns(ws_server_t *s) { return s->open_conns; }
 
 inline void ws_server_set_ctx(ws_server_t *s, void *ctx) { s->ctx = ctx; }
 
-static unsigned ws_server_time() {
-  ssize_t t = time(NULL);
-  if (likely((t > 0) & (t < 4294967296))) {
-    return (unsigned)t;
-  } else {
-    perror("time");
-    exit(EXIT_FAILURE);
-  }
-
-  return 0;
-}
+static void ws_server_time_update(ws_server_t *s);
+static unsigned ws_server_time(ws_server_t *s);
 
 static inline uint_fast8_t io_tmp_err(ssize_t n) {
 #if EAGAIN != EWOULDBLOCK
@@ -488,7 +480,7 @@ void ws_conn_resume_reads(ws_conn_t *c) {
 
 void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closed(c)) {
-    c->read_timeout = ws_server_time() + secs;
+    c->read_timeout = ws_server_time(c->base) + secs;
   } else {
     c->read_timeout = 0;
   }
@@ -496,7 +488,7 @@ void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
 
 void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closed(c)) {
-    c->write_timeout = ws_server_time() + secs;
+    c->write_timeout = ws_server_time(c->base) + secs;
   } else {
     c->write_timeout = 0;
   }
@@ -659,10 +651,6 @@ struct mirrored_buf_pool {
 static struct mirrored_buf_pool *
 mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   size_t page_size = get_pagesize();
-  if (page_size == -1) {
-    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
-    exit(1);
-  }
 
   if (buf_sz % page_size) {
     return NULL;
@@ -770,10 +758,6 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
 
 static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
   size_t page_size = get_pagesize();
-  if (page_size == -1) {
-    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
-    exit(1);
-  }
 
   size_t nmemb = s->buffer_pool->cap;
   size_t buf_sz = s->buffer_pool->buf_sz;
@@ -955,10 +939,7 @@ static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd,
                                   size_t const total) {
   ssize_t n = writev(fd, iovs, 2);
   // everything was written
-  if (n == total) {
-    return n;
-    // some error happened
-  } else if (n == 0 || n == -1) {
+  if (n == 0 || n == -1) {
     // if temporary error do a copy
     if (io_tmp_err(n)) {
       buf_put(r, iovs[0].iov_base, iovs[0].iov_len);
@@ -967,7 +948,10 @@ static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd,
 
     return n;
     // less than the header was written
-  } else if (n < iovs[0].iov_len) {
+  } else if ((size_t)n == total) {
+    return n;
+    // some error happened
+  } else if ((size_t)n < iovs[0].iov_len) {
     buf_put(r, (uint8_t *)iovs[0].iov_base + n, iovs[0].iov_len - (size_t)n);
     buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
     return n;
@@ -994,12 +978,7 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
 
   ssize_t n = writev(fd, iovs, 3);
   // everything was written
-  if (n == total) {
-    // consume what we drained from the buffer
-    buf_consume(r, iovs[0].iov_len);
-    return n;
-    // some error happened
-  } else if (n == 0 || n == -1) {
+  if (n == 0 || n < 0) {
     // if temporary error do a copy
     if (io_tmp_err(n)) {
       // copy both header and payload first iov already in the buffer
@@ -1007,8 +986,13 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
       buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
     }
     return n;
-    // couldn't drain the buffer copy the header and payload
-  } else if (n < iovs[0].iov_len) {
+
+  } else if ((size_t)n == total) {
+    // consume what we drained from the buffer
+    buf_consume(r, iovs[0].iov_len);
+    return n;
+    // some error happened
+  } else if ((size_t)n < iovs[0].iov_len) {
     buf_consume(r, (size_t)n);
     if (rem_dst) {
       buf_move(r, dst, buf_len(r));
@@ -1018,7 +1002,7 @@ static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
     buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
   }
   // drained the buffer but only wrote parts of the new frame
-  else if (n > iovs[0].iov_len) {
+  else if ((size_t)n > iovs[0].iov_len) {
     size_t wrote = (size_t)n - iovs[0].iov_len;
     buf_consume(r, iovs[0].iov_len);
 
@@ -1152,7 +1136,8 @@ static int conn_drain_write_buf(ws_conn_t *conn) {
     return -1;
   }
 
-  if (to_write == n) {
+  // we checked for -1 so it's safe to cast to size_t
+  if (to_write == (size_t)n) {
     mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
     conn->send_buf = NULL;
     set_writeable(conn);
@@ -1280,7 +1265,8 @@ ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
     return -1;
   }
 
-  for (size_t i = 0; i < remaining; i++) {
+  
+  for (size_t i = 0; i < (size_t)remaining; i++) {
     // look for any ! or less (ctl chars) in the path and stop there
     if ((unsigned char)path[i] < 0x21) {
       // if valid expect this to just be a space followed by protocol version
@@ -1679,7 +1665,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
 #endif /* WITH_COMPRESSION */
 
     conn->needed_bytes = 2;
-    conn->read_timeout = ws_server_time() + READ_TIMEOUT;
+    conn->read_timeout = ws_server_time(s) + READ_TIMEOUT;
     mirrored_buf_put(s->buffer_pool, conn->recv_buf);
     conn->recv_buf = NULL;
     if (s->on_ws_handshake) {
@@ -1920,7 +1906,7 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
-  unsigned int next_read_timeout = ws_server_time() + READ_TIMEOUT;
+  unsigned int next_read_timeout = ws_server_time(s) + READ_TIMEOUT;
 
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
@@ -1963,7 +1949,8 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
             }
           }
 
-          if (rn != remaining) {
+          // we made sure it's not -1 so it's safe to cast
+          if ((size_t)rn != remaining) {
             // wait for atleast remaining of the header
             conn->needed_bytes = missing_header_len;
             goto clean_up_buffer;
@@ -1996,8 +1983,8 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
               return;
             }
           }
-
-          if (rn != remaining) {
+          // we made sure it's not -1 so it's safe to cast
+          if ((size_t)rn != remaining) {
             conn->needed_bytes = full_frame_len;
             goto clean_up_buffer;
           } else {
@@ -2050,7 +2037,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
             ws_conn_destroy(conn, WS_CLOSE_PROTOCOL);
             return;
           }
-
+        // fall through
         case OP_CONT:
           // accumulate bytes and increase fragments_len
 
@@ -2254,12 +2241,12 @@ static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
       n = buf_drain_write2v(conn->send_buf, vecs, total_write, NULL, conn->fd);
     }
 
-    if (n >= total_write) {
+    if (n == 0 || ((n == -1) & ((errno != EAGAIN) & (errno != EINTR)))) {
+      return WS_SEND_FAILED;
+    } else if ((size_t)n >= total_write) {
       mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
       conn->send_buf = NULL;
       return WS_SEND_OK;
-    } else if (n == 0 || ((n == -1) & ((errno != EAGAIN) & (errno != EINTR)))) {
-      return WS_SEND_FAILED;
     } else {
       ws_conn_notify_on_writeable(conn);
       return WS_SEND_OK_BACKPRESSURE;
@@ -2402,6 +2389,11 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 
 static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
                                  bool compress) {
+
+#ifndef WITH_COMPRESSION
+  (void)compress; // suppress unused warning
+#endif            /* WITH_COMPRESSION */
+
   if (is_sending_fragments(c)) {
     return WS_SEND_DROPPED_NOT_ALLOWED;
   }
@@ -2596,6 +2588,18 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
 
 /****************** Server **********************/
 
+static void ws_server_time_update(ws_server_t *s) {
+  long t = time(NULL);
+  if (likely((t > 0) & (t < 4294967296))) {
+    s->server_time = (unsigned int)t;
+  } else {
+    perror("time");
+    exit(EXIT_FAILURE);
+  }
+}
+
+static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
+
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
   if (cl->len + 1 <= cl->cap) {
     cl->conns[cl->len++] = conn;
@@ -2668,7 +2672,7 @@ static void server_check_pending_timers(ws_server_t *s) {
 
   unsigned int timeout_kind = 993;
   ws_on_timeout_t cb = s->on_ws_conn_timeout;
-  unsigned int now = ws_server_time();
+  unsigned int now = ws_server_time(s);
 
   while (s->pending_timers.len) {
     size_t i = s->pending_timers.len;
@@ -3214,7 +3218,7 @@ static bool ws_server_accept_err_recoverable(int err) {
 
 static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
-  unsigned int now = (unsigned int)ws_server_time();
+  unsigned int now = ws_server_time(s);
   // how many conns should we try to accept in total
   size_t accepts = 1024; // we do a batch of 1024 accepts at a time
 
@@ -3375,6 +3379,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   int tfd = s->tfd;
 
   ws_server_register_timer(s, &tfd);
+  ws_server_time_update(s);
 
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
@@ -3404,6 +3409,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
         if (s->events[i].data.ptr == &tfd) {
           uint64_t _;
           read(tfd, &_, 8);
+
+          // we update the time every time tfd is readable (every second)
+          ws_server_time_update(s);
 
           (void)_;
 
@@ -3442,7 +3450,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                   if (!is_upgraded(c)) {
                     set_upgraded(c);
                     c->needed_bytes = 2;
-                    c->read_timeout = ws_server_time() + READ_TIMEOUT;
+                    c->read_timeout = ws_server_time(s) + READ_TIMEOUT;
                     s->on_ws_open(c);
                   }
                 } else {
@@ -3996,7 +4004,6 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
   } else {
     return err;
   }
-
 }
 
 static z_stream *inflation_stream_init();
