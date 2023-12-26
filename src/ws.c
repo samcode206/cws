@@ -1316,10 +1316,7 @@ static inline bool http_header_name_is(const struct http_header *hdr,
   return strncasecmp(hdr->name, name, n) == 0;
 }
 
-static inline bool http_header_val_is(const struct http_header *hdr,
-                                      const char *val, size_t n) {
-  return strncasecmp(hdr->val, val, n) == 0;
-}
+
 
 static ssize_t base64_encode(char *encoded, const char *string, ssize_t len);
 
