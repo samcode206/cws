@@ -128,6 +128,24 @@ inline size_t ws_server_open_conns(ws_server_t *s) { return s->open_conns; }
 
 inline void ws_server_set_ctx(ws_server_t *s, void *ctx) { s->ctx = ctx; }
 
+static unsigned ws_server_time() {
+  ssize_t t = time(NULL);
+  if (likely((t > 0) & (t < 4294967296))) {
+    return (unsigned)t;
+  }
+  return 0;
+}
+
+static size_t get_pagesize() {
+  long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size <= 0) {
+    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+    exit(EXIT_FAILURE);
+  }
+
+  return (size_t)page_size;
+}
+
 /************** connection ***************/
 
 #define CONN_UPGRADED (1u << 1)
@@ -329,7 +347,7 @@ struct ws_conn_pool {
 };
 
 static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
-  long page_size = sysconf(_SC_PAGESIZE);
+  size_t page_size = get_pagesize();
 
   size_t pool_sz = align_to(sizeof(struct ws_conn_pool), 64);
 
@@ -372,7 +390,7 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
 
 static void server_ws_conn_pool_destroy(ws_server_t *s) {
   size_t nmemb = s->conn_pool->cap;
-  long page_size = sysconf(_SC_PAGESIZE);
+  size_t page_size = get_pagesize();
 
   size_t pool_sz = align_to(sizeof(struct ws_conn_pool), 64);
 
@@ -457,7 +475,7 @@ void ws_conn_resume_reads(ws_conn_t *c) {
 
 void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closed(c)) {
-    c->read_timeout = time(NULL) + secs;
+    c->read_timeout = ws_server_time() + secs;
   } else {
     c->read_timeout = 0;
   }
@@ -465,7 +483,7 @@ void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
 
 void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closed(c)) {
-    c->write_timeout = time(NULL) + secs;
+    c->write_timeout = ws_server_time() + secs;
   } else {
     c->write_timeout = 0;
   }
@@ -627,7 +645,7 @@ struct mirrored_buf_pool {
 
 static struct mirrored_buf_pool *
 mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
-  long page_size = sysconf(_SC_PAGESIZE);
+  size_t page_size = get_pagesize();
   if (page_size == -1) {
     fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
     exit(1);
@@ -685,7 +703,7 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   pool->buf_sz = buf_sz;
   pool->base = ((uint8_t *)pool_mem) + pool_sz;
 
-  if (ftruncate(pool->fd, buf_sz * nmemb) == -1) {
+  if (ftruncate(pool->fd, (off_t)buf_sz * nmemb) == -1) {
     perror("ftruncate");
     exit(EXIT_FAILURE);
     return NULL;
@@ -702,7 +720,7 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   for (i = 0; i < nmemb; ++i) {
     if (!defer_bufs_mmap) {
       if (mmap(pos, buf_sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
-               pool->fd, offset) == MAP_FAILED) {
+               pool->fd, (off_t)offset) == MAP_FAILED) {
         perror("mmap");
         close(pool->fd);
         exit(EXIT_FAILURE);
@@ -710,7 +728,7 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
       };
 
       if (mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
-               MAP_SHARED | MAP_FIXED, pool->fd, offset) == MAP_FAILED) {
+               MAP_SHARED | MAP_FIXED, pool->fd, (off_t)offset) == MAP_FAILED) {
         perror("mmap");
         close(pool->fd);
         exit(EXIT_FAILURE);
@@ -738,7 +756,7 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
 }
 
 static void server_mirrored_buf_pool_destroy(ws_server_t *s) {
-  long page_size = sysconf(_SC_PAGESIZE);
+  size_t page_size = get_pagesize();
   if (page_size == -1) {
     fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
     exit(1);
@@ -786,7 +804,7 @@ static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
       size_t buf_sz = bp->buf_sz;
 
       void *mem = mmap(pos, buf_sz, PROT_READ | PROT_WRITE,
-                       MAP_SHARED | MAP_FIXED, bp->fd, offset);
+                       MAP_SHARED | MAP_FIXED, bp->fd, (off_t)offset);
       // like we warned this usually fails due to mmap count limit and we have
       // to exit
       if (unlikely(mem == MAP_FAILED)) {
@@ -797,7 +815,7 @@ static mirrored_buf_t *mirrored_buf_get(struct mirrored_buf_pool *bp) {
       };
 
       mem = mmap(pos + buf_sz, buf_sz, PROT_READ | PROT_WRITE,
-                 MAP_SHARED | MAP_FIXED, bp->fd, offset);
+                 MAP_SHARED | MAP_FIXED, bp->fd, (off_t)offset);
 
       if (unlikely(mem == MAP_FAILED)) {
         perror("mmap");
@@ -874,12 +892,12 @@ static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n) {
 
 static inline ssize_t buf_send(mirrored_buf_t *r, int fd, int flags) {
   ssize_t n = send(fd, r->buf + r->rpos, buf_len(r), flags);
-  r->rpos += (n > 0) * n;
+  r->rpos += (size_t)((n > 0) * n);
 
   if (r->rpos == r->wpos) {
     buf_reset(r);
   } else {
-    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    size_t ovf = (r->rpos > r->buf_sz) * r->buf_sz;
     r->rpos -= ovf;
     r->wpos -= ovf;
   }
@@ -897,7 +915,7 @@ static inline int buf_consume(mirrored_buf_t *r, size_t n) {
   if (r->rpos == r->wpos) {
     buf_reset(r);
   } else {
-    int ovf = (r->rpos > r->buf_sz) * r->buf_sz;
+    size_t ovf = (r->rpos > r->buf_sz) * r->buf_sz;
     r->rpos -= ovf;
     r->wpos -= ovf;
   }
@@ -1011,7 +1029,7 @@ static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
                                int flags) {
   ssize_t n = recv(fd, r->buf + r->wpos, len, flags);
 
-  r->wpos += (n > 0) * n;
+  r->wpos += (size_t)((n > 0) * n);
   return n;
 }
 
@@ -1315,14 +1333,9 @@ static inline bool http_header_name_is(const struct http_header *hdr,
   return strncasecmp(hdr->name, name, n) == 0;
 }
 
-
-
 static ssize_t base64_encode(char *encoded, const char *string, ssize_t len);
 
-void SHA1(
-    char *hash_out,
-    const char *str,
-    uint32_t len);
+void SHA1(char *hash_out, const char *str, uint32_t len);
 
 static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -1331,11 +1344,11 @@ static const char magic_str[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
                                    size_t max_headers) {
   ssize_t n = ws_conn_handshake_parse_request_ln(raw_req, hs);
-  if (n == -1) {
+  if (n < 0) {
     return -1;
   }
 
-  size_t offset = n + 2; // skip CRLF
+  size_t offset = (size_t)n + 2; // skip CRLF
   bool done = false;
   bool sec_websocket_key_found = false;
   bool connection_header_found = false;
@@ -1653,7 +1666,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
 #endif /* WITH_COMPRESSION */
 
     conn->needed_bytes = 2;
-    conn->read_timeout = time(NULL) + READ_TIMEOUT;
+    conn->read_timeout = ws_server_time() + READ_TIMEOUT;
     mirrored_buf_put(s->buffer_pool, conn->recv_buf);
     conn->recv_buf = NULL;
     if (s->on_ws_handshake) {
@@ -1824,7 +1837,7 @@ static inline uint32_t frame_is_masked(const unsigned char *buf) {
 }
 
 static inline size_t frame_get_header_len(size_t const n) {
-  return 2 + ((n > 125) * 2) + ((n > 0xFFFF) * 6);
+  return 2 + ((n > (size_t)125) * 2) + ((n > (size_t)0xFFFF) * 6);
 }
 
 static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
@@ -1893,7 +1906,7 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
-  unsigned int next_read_timeout = time(NULL) + READ_TIMEOUT;
+  unsigned int next_read_timeout = ws_server_time() + READ_TIMEOUT;
 
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
@@ -1927,7 +1940,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
             frame_decode_payload_len(frame, frame_buf_len, &payload_len);
         if (missing_header_len) {
           size_t remaining = missing_header_len - frame_buf_len;
-          size_t rn = 0;
+          ssize_t rn = 0;
 
           if (!is_fragmented(conn)) {
             rn = conn_readn(conn, remaining);
@@ -1961,7 +1974,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
         // set needed_bytes and exit waiting for more reads from the socket
         if (frame_buf_len < full_frame_len) {
           size_t remaining = full_frame_len - frame_buf_len;
-          size_t rn = 0;
+          ssize_t rn = 0;
 
           if (!is_fragmented(conn)) {
             rn = conn_readn(conn, remaining);
@@ -2557,9 +2570,9 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
   uint8_t *buf = buf_peek(conn->send_buf);
 
   buf[0] = FIN | OP_CLOSE;
-  buf[1] = 2 + len;
-  buf[2] = (code >> 8) & 0xFF;
-  buf[3] = code & 0xFF;
+  buf[1] = 2 + (uint8_t)len;
+  buf[2] = (uint8_t)(code >> 8) & 0xFF;
+  buf[3] = (uint8_t)code & 0xFF;
   conn->send_buf->wpos += 4;
   buf_put(conn->send_buf, msg, len);
 
@@ -2641,7 +2654,7 @@ static void server_check_pending_timers(ws_server_t *s) {
 
   unsigned timeout_kind = 993;
   ws_on_timeout_t cb = s->on_ws_conn_timeout;
-  unsigned int now = (unsigned int)time(NULL);
+  unsigned int now = (unsigned int)ws_server_time();
 
   while (s->pending_timers.len) {
     size_t i = s->pending_timers.len;
@@ -2898,7 +2911,7 @@ static void ws_server_register_buffers(ws_server_t *s,
                                        struct ws_server_params *params) {
   size_t max_backpressure =
       params->max_buffered_bytes ? params->max_buffered_bytes : 16000;
-  size_t page_size = getpagesize();
+  size_t page_size = get_pagesize();
 
   // account for an interleaved control msg during fragmentation
   // since we never dynamically allocate more buffers
@@ -2969,10 +2982,7 @@ static void ws_server_register_buffers(ws_server_t *s,
 
   s->conn_pool = ws_conn_pool_create(s->max_conns);
 
-
   s->max_msg_len = max_backpressure;
-
-
 
   // allocate the list (dynamic array of pointers to ws_conn_t) to track
   // writeable connections
@@ -3187,7 +3197,7 @@ static bool ws_server_accept_err_recoverable(int err) {
 
 static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
-  unsigned int now = (unsigned int)time(NULL);
+  unsigned int now = (unsigned int)ws_server_time();
   // how many conns should we try to accept in total
   size_t accepts = 1024; // we do a batch of 1024 accepts at a time
 
@@ -3415,7 +3425,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                   if (!is_upgraded(c)) {
                     set_upgraded(c);
                     c->needed_bytes = 2;
-                    c->read_timeout = time(NULL) + READ_TIMEOUT;
+                    c->read_timeout = ws_server_time() + READ_TIMEOUT;
                     s->on_ws_open(c);
                   }
                 } else {
@@ -3755,7 +3765,7 @@ int ws_epoll_create1(ws_server_t *s) {
 }
 
 int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                     int events) {
+                     unsigned int events) {
   if (!s->user_epoll || !cb_ctx) {
     return -1;
   }
@@ -3781,7 +3791,7 @@ int ws_epoll_ctl_del(ws_server_t *s, int fd) {
 }
 
 int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                     int events) {
+                     unsigned int events) {
   if (!s->user_epoll || !cb_ctx) {
     return -1;
   }
@@ -3979,7 +3989,7 @@ static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
                         (c->base->buffer_pool->buf_sz * 2) + 16);
     c->pmd_buf->len = 0;
     c->pmd_buf->cap = (c->base->buffer_pool->buf_sz * 2) + 16;
-    if (c->pmd_buf == NULL){
+    if (c->pmd_buf == NULL) {
       perror("malloc");
       exit(EXIT_FAILURE);
     }
@@ -4056,8 +4066,6 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 
 #endif /* WITH_COMPRESSION */
 
-
-
 /*
 SHA-1 in C
 By Steve Reid <steve@edmweb.com>
@@ -4075,11 +4083,10 @@ A million repetitions of "a"
 /* #define LITTLE_ENDIAN * This should be #define'd already, if true. */
 /* #define SHA1HANDSOFF * Copies data before messing with it. */
 
-typedef struct
-{
-    uint32_t state[5];
-    uint32_t count[2];
-    unsigned char buffer[64];
+typedef struct {
+  uint32_t state[5];
+  uint32_t count[2];
+  unsigned char buffer[64];
 } SHA1_CTX;
 
 #define SHA1HANDSOFF
@@ -4090,223 +4097,209 @@ typedef struct
 /* for uint32_t */
 #include <stdint.h>
 
-
-
-
 #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
 
 /* blk0() and blk() perform the initial expand. */
 /* I got the idea of expanding during the round function from SSLeay */
 #if BYTE_ORDER == LITTLE_ENDIAN
-#define blk0(i) (block->l[i] = (rol(block->l[i],24)&0xFF00FF00) \
-    |(rol(block->l[i],8)&0x00FF00FF))
+#define blk0(i)                                                                \
+  (block->l[i] = (rol(block->l[i], 24) & 0xFF00FF00) |                         \
+                 (rol(block->l[i], 8) & 0x00FF00FF))
 #elif BYTE_ORDER == BIG_ENDIAN
 #define blk0(i) block->l[i]
 #else
 #error "Endianness not defined!"
 #endif
-#define blk(i) (block->l[i&15] = rol(block->l[(i+13)&15]^block->l[(i+8)&15] \
-    ^block->l[(i+2)&15]^block->l[i&15],1))
+#define blk(i)                                                                 \
+  (block->l[i & 15] = rol(block->l[(i + 13) & 15] ^ block->l[(i + 8) & 15] ^   \
+                              block->l[(i + 2) & 15] ^ block->l[i & 15],       \
+                          1))
 
 /* (R0+R1), R2, R3, R4 are the different operations used in SHA1 */
-#define R0(v,w,x,y,z,i) z+=((w&(x^y))^y)+blk0(i)+0x5A827999+rol(v,5);w=rol(w,30);
-#define R1(v,w,x,y,z,i) z+=((w&(x^y))^y)+blk(i)+0x5A827999+rol(v,5);w=rol(w,30);
-#define R2(v,w,x,y,z,i) z+=(w^x^y)+blk(i)+0x6ED9EBA1+rol(v,5);w=rol(w,30);
-#define R3(v,w,x,y,z,i) z+=(((w|x)&y)|(w&x))+blk(i)+0x8F1BBCDC+rol(v,5);w=rol(w,30);
-#define R4(v,w,x,y,z,i) z+=(w^x^y)+blk(i)+0xCA62C1D6+rol(v,5);w=rol(w,30);
-
+#define R0(v, w, x, y, z, i)                                                   \
+  z += ((w & (x ^ y)) ^ y) + blk0(i) + 0x5A827999 + rol(v, 5);                 \
+  w = rol(w, 30);
+#define R1(v, w, x, y, z, i)                                                   \
+  z += ((w & (x ^ y)) ^ y) + blk(i) + 0x5A827999 + rol(v, 5);                  \
+  w = rol(w, 30);
+#define R2(v, w, x, y, z, i)                                                   \
+  z += (w ^ x ^ y) + blk(i) + 0x6ED9EBA1 + rol(v, 5);                          \
+  w = rol(w, 30);
+#define R3(v, w, x, y, z, i)                                                   \
+  z += (((w | x) & y) | (w & x)) + blk(i) + 0x8F1BBCDC + rol(v, 5);            \
+  w = rol(w, 30);
+#define R4(v, w, x, y, z, i)                                                   \
+  z += (w ^ x ^ y) + blk(i) + 0xCA62C1D6 + rol(v, 5);                          \
+  w = rol(w, 30);
 
 /* Hash a single 512-bit block. This is the core of the algorithm. */
 
-void SHA1Transform(
-    uint32_t state[5],
-    const unsigned char buffer[64]
-)
-{
-    uint32_t a, b, c, d, e;
+void SHA1Transform(uint32_t state[5], const unsigned char buffer[64]) {
+  uint32_t a, b, c, d, e;
 
-    typedef union
-    {
-        unsigned char c[64];
-        uint32_t l[16];
-    } CHAR64LONG16;
+  typedef union {
+    unsigned char c[64];
+    uint32_t l[16];
+  } CHAR64LONG16;
 
 #ifdef SHA1HANDSOFF
-    CHAR64LONG16 block[1];      /* use array to appear as a pointer */
+  CHAR64LONG16 block[1]; /* use array to appear as a pointer */
 
-    memcpy(block, buffer, 64);
+  memcpy(block, buffer, 64);
 #else
-    /* The following had better never be used because it causes the
-     * pointer-to-const buffer to be cast into a pointer to non-const.
-     * And the result is written through.  I threw a "const" in, hoping
-     * this will cause a diagnostic.
-     */
-    CHAR64LONG16 *block = (const CHAR64LONG16 *) buffer;
+  /* The following had better never be used because it causes the
+   * pointer-to-const buffer to be cast into a pointer to non-const.
+   * And the result is written through.  I threw a "const" in, hoping
+   * this will cause a diagnostic.
+   */
+  CHAR64LONG16 *block = (const CHAR64LONG16 *)buffer;
 #endif
-    /* Copy context->state[] to working vars */
-    a = state[0];
-    b = state[1];
-    c = state[2];
-    d = state[3];
-    e = state[4];
-    /* 4 rounds of 20 operations each. Loop unrolled. */
-    R0(a, b, c, d, e, 0);
-    R0(e, a, b, c, d, 1);
-    R0(d, e, a, b, c, 2);
-    R0(c, d, e, a, b, 3);
-    R0(b, c, d, e, a, 4);
-    R0(a, b, c, d, e, 5);
-    R0(e, a, b, c, d, 6);
-    R0(d, e, a, b, c, 7);
-    R0(c, d, e, a, b, 8);
-    R0(b, c, d, e, a, 9);
-    R0(a, b, c, d, e, 10);
-    R0(e, a, b, c, d, 11);
-    R0(d, e, a, b, c, 12);
-    R0(c, d, e, a, b, 13);
-    R0(b, c, d, e, a, 14);
-    R0(a, b, c, d, e, 15);
-    R1(e, a, b, c, d, 16);
-    R1(d, e, a, b, c, 17);
-    R1(c, d, e, a, b, 18);
-    R1(b, c, d, e, a, 19);
-    R2(a, b, c, d, e, 20);
-    R2(e, a, b, c, d, 21);
-    R2(d, e, a, b, c, 22);
-    R2(c, d, e, a, b, 23);
-    R2(b, c, d, e, a, 24);
-    R2(a, b, c, d, e, 25);
-    R2(e, a, b, c, d, 26);
-    R2(d, e, a, b, c, 27);
-    R2(c, d, e, a, b, 28);
-    R2(b, c, d, e, a, 29);
-    R2(a, b, c, d, e, 30);
-    R2(e, a, b, c, d, 31);
-    R2(d, e, a, b, c, 32);
-    R2(c, d, e, a, b, 33);
-    R2(b, c, d, e, a, 34);
-    R2(a, b, c, d, e, 35);
-    R2(e, a, b, c, d, 36);
-    R2(d, e, a, b, c, 37);
-    R2(c, d, e, a, b, 38);
-    R2(b, c, d, e, a, 39);
-    R3(a, b, c, d, e, 40);
-    R3(e, a, b, c, d, 41);
-    R3(d, e, a, b, c, 42);
-    R3(c, d, e, a, b, 43);
-    R3(b, c, d, e, a, 44);
-    R3(a, b, c, d, e, 45);
-    R3(e, a, b, c, d, 46);
-    R3(d, e, a, b, c, 47);
-    R3(c, d, e, a, b, 48);
-    R3(b, c, d, e, a, 49);
-    R3(a, b, c, d, e, 50);
-    R3(e, a, b, c, d, 51);
-    R3(d, e, a, b, c, 52);
-    R3(c, d, e, a, b, 53);
-    R3(b, c, d, e, a, 54);
-    R3(a, b, c, d, e, 55);
-    R3(e, a, b, c, d, 56);
-    R3(d, e, a, b, c, 57);
-    R3(c, d, e, a, b, 58);
-    R3(b, c, d, e, a, 59);
-    R4(a, b, c, d, e, 60);
-    R4(e, a, b, c, d, 61);
-    R4(d, e, a, b, c, 62);
-    R4(c, d, e, a, b, 63);
-    R4(b, c, d, e, a, 64);
-    R4(a, b, c, d, e, 65);
-    R4(e, a, b, c, d, 66);
-    R4(d, e, a, b, c, 67);
-    R4(c, d, e, a, b, 68);
-    R4(b, c, d, e, a, 69);
-    R4(a, b, c, d, e, 70);
-    R4(e, a, b, c, d, 71);
-    R4(d, e, a, b, c, 72);
-    R4(c, d, e, a, b, 73);
-    R4(b, c, d, e, a, 74);
-    R4(a, b, c, d, e, 75);
-    R4(e, a, b, c, d, 76);
-    R4(d, e, a, b, c, 77);
-    R4(c, d, e, a, b, 78);
-    R4(b, c, d, e, a, 79);
-    /* Add the working vars back into context.state[] */
-    state[0] += a;
-    state[1] += b;
-    state[2] += c;
-    state[3] += d;
-    state[4] += e;
-    /* Wipe variables */
-    a = b = c = d = e = 0;
+  /* Copy context->state[] to working vars */
+  a = state[0];
+  b = state[1];
+  c = state[2];
+  d = state[3];
+  e = state[4];
+  /* 4 rounds of 20 operations each. Loop unrolled. */
+  R0(a, b, c, d, e, 0);
+  R0(e, a, b, c, d, 1);
+  R0(d, e, a, b, c, 2);
+  R0(c, d, e, a, b, 3);
+  R0(b, c, d, e, a, 4);
+  R0(a, b, c, d, e, 5);
+  R0(e, a, b, c, d, 6);
+  R0(d, e, a, b, c, 7);
+  R0(c, d, e, a, b, 8);
+  R0(b, c, d, e, a, 9);
+  R0(a, b, c, d, e, 10);
+  R0(e, a, b, c, d, 11);
+  R0(d, e, a, b, c, 12);
+  R0(c, d, e, a, b, 13);
+  R0(b, c, d, e, a, 14);
+  R0(a, b, c, d, e, 15);
+  R1(e, a, b, c, d, 16);
+  R1(d, e, a, b, c, 17);
+  R1(c, d, e, a, b, 18);
+  R1(b, c, d, e, a, 19);
+  R2(a, b, c, d, e, 20);
+  R2(e, a, b, c, d, 21);
+  R2(d, e, a, b, c, 22);
+  R2(c, d, e, a, b, 23);
+  R2(b, c, d, e, a, 24);
+  R2(a, b, c, d, e, 25);
+  R2(e, a, b, c, d, 26);
+  R2(d, e, a, b, c, 27);
+  R2(c, d, e, a, b, 28);
+  R2(b, c, d, e, a, 29);
+  R2(a, b, c, d, e, 30);
+  R2(e, a, b, c, d, 31);
+  R2(d, e, a, b, c, 32);
+  R2(c, d, e, a, b, 33);
+  R2(b, c, d, e, a, 34);
+  R2(a, b, c, d, e, 35);
+  R2(e, a, b, c, d, 36);
+  R2(d, e, a, b, c, 37);
+  R2(c, d, e, a, b, 38);
+  R2(b, c, d, e, a, 39);
+  R3(a, b, c, d, e, 40);
+  R3(e, a, b, c, d, 41);
+  R3(d, e, a, b, c, 42);
+  R3(c, d, e, a, b, 43);
+  R3(b, c, d, e, a, 44);
+  R3(a, b, c, d, e, 45);
+  R3(e, a, b, c, d, 46);
+  R3(d, e, a, b, c, 47);
+  R3(c, d, e, a, b, 48);
+  R3(b, c, d, e, a, 49);
+  R3(a, b, c, d, e, 50);
+  R3(e, a, b, c, d, 51);
+  R3(d, e, a, b, c, 52);
+  R3(c, d, e, a, b, 53);
+  R3(b, c, d, e, a, 54);
+  R3(a, b, c, d, e, 55);
+  R3(e, a, b, c, d, 56);
+  R3(d, e, a, b, c, 57);
+  R3(c, d, e, a, b, 58);
+  R3(b, c, d, e, a, 59);
+  R4(a, b, c, d, e, 60);
+  R4(e, a, b, c, d, 61);
+  R4(d, e, a, b, c, 62);
+  R4(c, d, e, a, b, 63);
+  R4(b, c, d, e, a, 64);
+  R4(a, b, c, d, e, 65);
+  R4(e, a, b, c, d, 66);
+  R4(d, e, a, b, c, 67);
+  R4(c, d, e, a, b, 68);
+  R4(b, c, d, e, a, 69);
+  R4(a, b, c, d, e, 70);
+  R4(e, a, b, c, d, 71);
+  R4(d, e, a, b, c, 72);
+  R4(c, d, e, a, b, 73);
+  R4(b, c, d, e, a, 74);
+  R4(a, b, c, d, e, 75);
+  R4(e, a, b, c, d, 76);
+  R4(d, e, a, b, c, 77);
+  R4(c, d, e, a, b, 78);
+  R4(b, c, d, e, a, 79);
+  /* Add the working vars back into context.state[] */
+  state[0] += a;
+  state[1] += b;
+  state[2] += c;
+  state[3] += d;
+  state[4] += e;
+  /* Wipe variables */
+  a = b = c = d = e = 0;
 #ifdef SHA1HANDSOFF
-    memset(block, '\0', sizeof(block));
+  memset(block, '\0', sizeof(block));
 #endif
 }
-
 
 /* SHA1Init - Initialize new context */
 
-void SHA1Init(
-    SHA1_CTX * context
-)
-{
-    /* SHA1 initialization constants */
-    context->state[0] = 0x67452301;
-    context->state[1] = 0xEFCDAB89;
-    context->state[2] = 0x98BADCFE;
-    context->state[3] = 0x10325476;
-    context->state[4] = 0xC3D2E1F0;
-    context->count[0] = context->count[1] = 0;
+void SHA1Init(SHA1_CTX *context) {
+  /* SHA1 initialization constants */
+  context->state[0] = 0x67452301;
+  context->state[1] = 0xEFCDAB89;
+  context->state[2] = 0x98BADCFE;
+  context->state[3] = 0x10325476;
+  context->state[4] = 0xC3D2E1F0;
+  context->count[0] = context->count[1] = 0;
 }
-
 
 /* Run your data through this. */
 
-void SHA1Update(
-    SHA1_CTX * context,
-    const unsigned char *data,
-    uint32_t len
-)
-{
-    uint32_t i;
+void SHA1Update(SHA1_CTX *context, const unsigned char *data, uint32_t len) {
+  uint32_t i;
 
-    uint32_t j;
+  uint32_t j;
 
-    j = context->count[0];
-    if ((context->count[0] += len << 3) < j)
-        context->count[1]++;
-    context->count[1] += (len >> 29);
-    j = (j >> 3) & 63;
-    if ((j + len) > 63)
-    {
-        memcpy(&context->buffer[j], data, (i = 64 - j));
-        SHA1Transform(context->state, context->buffer);
-        for (; i + 63 < len; i += 64)
-        {
-            SHA1Transform(context->state, &data[i]);
-        }
-        j = 0;
+  j = context->count[0];
+  if ((context->count[0] += len << 3) < j)
+    context->count[1]++;
+  context->count[1] += (len >> 29);
+  j = (j >> 3) & 63;
+  if ((j + len) > 63) {
+    memcpy(&context->buffer[j], data, (i = 64 - j));
+    SHA1Transform(context->state, context->buffer);
+    for (; i + 63 < len; i += 64) {
+      SHA1Transform(context->state, &data[i]);
     }
-    else
-        i = 0;
-    memcpy(&context->buffer[j], &data[i], len - i);
+    j = 0;
+  } else
+    i = 0;
+  memcpy(&context->buffer[j], &data[i], len - i);
 }
-
 
 /* Add padding and return the message digest. */
 
-void SHA1Final(
-    unsigned char digest[20],
-    SHA1_CTX * context
-)
-{
-    unsigned i;
+void SHA1Final(unsigned char digest[20], SHA1_CTX *context) {
+  unsigned i;
 
-    unsigned char finalcount[8];
+  unsigned char finalcount[8];
 
-    unsigned char c;
+  unsigned char c;
 
-#if 0    /* untested "improvement" by DHR */
+#if 0 /* untested "improvement" by DHR */
     /* Convert context->count to a sequence of bytes
      * in finalcount.  Second element first, but
      * big-endian order within element.
@@ -4323,39 +4316,34 @@ void SHA1Final(
         for (j = 0; j < 4; t >>= 8, j++)
             *--fcp = (unsigned char) t}
 #else
-    for (i = 0; i < 8; i++)
-    {
-        finalcount[i] = (unsigned char) ((context->count[(i >= 4 ? 0 : 1)] >> ((3 - (i & 3)) * 8)) & 255);      /* Endian independent */
-    }
+  for (i = 0; i < 8; i++) {
+    finalcount[i] = (unsigned char)((context->count[(i >= 4 ? 0 : 1)] >>
+                                     ((3 - (i & 3)) * 8)) &
+                                    255); /* Endian independent */
+  }
 #endif
-    c = 0200;
+  c = 0200;
+  SHA1Update(context, &c, 1);
+  while ((context->count[0] & 504) != 448) {
+    c = 0000;
     SHA1Update(context, &c, 1);
-    while ((context->count[0] & 504) != 448)
-    {
-        c = 0000;
-        SHA1Update(context, &c, 1);
-    }
-    SHA1Update(context, finalcount, 8); /* Should cause a SHA1Transform() */
-    for (i = 0; i < 20; i++)
-    {
-        digest[i] = (unsigned char)
-            ((context->state[i >> 2] >> ((3 - (i & 3)) * 8)) & 255);
-    }
-    /* Wipe variables */
-    memset(context, '\0', sizeof(*context));
-    memset(&finalcount, '\0', sizeof(finalcount));
+  }
+  SHA1Update(context, finalcount, 8); /* Should cause a SHA1Transform() */
+  for (i = 0; i < 20; i++) {
+    digest[i] =
+        (unsigned char)((context->state[i >> 2] >> ((3 - (i & 3)) * 8)) & 255);
+  }
+  /* Wipe variables */
+  memset(context, '\0', sizeof(*context));
+  memset(&finalcount, '\0', sizeof(finalcount));
 }
 
-void SHA1(
-    char *hash_out,
-    const char *str,
-    uint32_t len)
-{
-    SHA1_CTX ctx;
-    unsigned int ii;
+void SHA1(char *hash_out, const char *str, uint32_t len) {
+  SHA1_CTX ctx;
+  unsigned int ii;
 
-    SHA1Init(&ctx);
-    for (ii=0; ii<len; ii+=1)
-        SHA1Update(&ctx, (const unsigned char*)str + ii, 1);
-    SHA1Final((unsigned char *)hash_out, &ctx);
+  SHA1Init(&ctx);
+  for (ii = 0; ii < len; ii += 1)
+    SHA1Update(&ctx, (const unsigned char *)str + ii, 1);
+  SHA1Final((unsigned char *)hash_out, &ctx);
 }

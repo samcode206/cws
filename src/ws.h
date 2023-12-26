@@ -436,7 +436,7 @@ int ws_server_destroy(ws_server_t *s);
 typedef struct ws_poll_cb_ctx_t ws_poll_cb_ctx_t;
 
 
-typedef void (*poll_ev_cb_t)(ws_server_t *s, ws_poll_cb_ctx_t *ctx, int ev);
+typedef void (*poll_ev_cb_t)(ws_server_t *s, ws_poll_cb_ctx_t *ctx, unsigned int ev);
 
 /**
  * Structure representing the context for polling callbacks.
@@ -463,7 +463,7 @@ int ws_epoll_create1(ws_server_t *s);
  * @param events  Epoll events to monitor (e.g., EPOLLIN, EPOLLOUT).
  * @return        Non-zero on failure.
  */
-int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, int events);
+int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, unsigned int events);
 
 /**
  * Removes a file descriptor from the epoll instance.
@@ -483,7 +483,7 @@ int ws_epoll_ctl_del(ws_server_t *s, int fd);
  * @param events  New set of epoll events to monitor for the file descriptor.
  * @return        Non-zero on failure.
  */
-int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, int events);
+int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, unsigned int events);
 
 
 /**
