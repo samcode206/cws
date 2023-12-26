@@ -1783,7 +1783,7 @@ static inline uint_fast8_t frame_opcode(const unsigned char *buf) {
 
 static unsigned frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
                                          size_t *res) {
-  size_t raw_len = buf[1] & 0X7F;
+  uint8_t raw_len = buf[1] & 0X7F;
   *res = raw_len;
 
   switch (raw_len) {
