@@ -2968,12 +2968,10 @@ static void ws_server_register_buffers(ws_server_t *s,
 
   s->conn_pool = ws_conn_pool_create(s->max_conns);
 
-  assert(s->conn_pool != NULL);
-  assert(s->buffer_pool != NULL);
 
   s->max_msg_len = max_backpressure;
 
-  assert(s->buffer_pool != NULL);
+
 
   // allocate the list (dynamic array of pointers to ws_conn_t) to track
   // writeable connections
