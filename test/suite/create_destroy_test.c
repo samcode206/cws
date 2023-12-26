@@ -9,7 +9,7 @@ void onOpen(ws_conn_t *conn) {}
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {}
 
-void onDisconnect(ws_conn_t *conn, int err) {}
+void onDisconnect(ws_conn_t *conn, unsigned long err) {}
 
 int TEST_WS_CREATE_BAD_ARGS(const char *name) {
   struct ws_server_params p = {0};
@@ -35,6 +35,7 @@ int TEST_WS_CREATE_MISSING_CBS(const char *name) {
       .on_ws_disconnect = NULL,
       .max_conns = 1,
       .max_buffered_bytes = 1,
+      .silent = 1,
   };
 
   ws_server_t *s;
@@ -91,6 +92,7 @@ int TEST_WS_CREATE_IPV4_IPV6(const char *name) {
       .on_ws_disconnect = onDisconnect,
       .max_conns = 1,
       .max_buffered_bytes = 1,
+      .silent = 1,
   };
 
   ws_server_t *s;
@@ -130,6 +132,7 @@ int TEST_WS_CREATE_MAX_BUFFERED_BYTES(const char *name) {
       .on_ws_disconnect = onDisconnect,
       .max_conns = 1,
       .max_buffered_bytes = 1,
+      .silent = 1,
   };
 
   ws_server_t *s = ws_server_create(&p);

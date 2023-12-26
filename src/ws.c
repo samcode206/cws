@@ -61,8 +61,8 @@ typedef struct server {
   int epoll_fd;
   ws_open_cb_t on_ws_open;
 
-  size_t open_conns; // open websocket connections
-  size_t max_conns;  // max connections allowed
+  unsigned open_conns; // open websocket connections
+  unsigned max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
   struct ws_conn_pool *conn_pool;
   ws_drain_cb_t on_ws_drain;
@@ -2395,8 +2395,8 @@ static inline int ws_conn_do_send(ws_conn_t *c, int stat) {
 #ifdef WITH_COMPRESSION
 
 static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
-                                        size_t in_len, char *out,
-                                        size_t out_len, bool no_ctx_takeover);
+                                        unsigned in_len, char *out,
+                                        unsigned out_len, bool no_ctx_takeover);
 
 #endif /* WITH_COMPRESSION */
 
@@ -2414,11 +2414,11 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
     struct dyn_buf *deflate_buf = conn_dyn_buf_get(c);
 
     ssize_t compressed_len = deflation_stream_deflate(
-        c->base->dstrm, msg, n, deflate_buf->data + deflate_buf->len,
-        deflate_buf->cap - deflate_buf->len, true);
+        c->base->dstrm, msg, (unsigned)n, deflate_buf->data + deflate_buf->len,
+        (unsigned)deflate_buf->cap - (unsigned)deflate_buf->len, true);
     if (compressed_len > 0) {
       stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
-                              compressed_len, op | 0x40);
+                              (size_t)compressed_len, op | 0x40);
 
       if (!deflate_buf->len) {
         conn_dyn_buf_dispose(c);
@@ -2937,31 +2937,33 @@ static void ws_server_register_buffers(ws_server_t *s,
   struct rlimit rlim = {0};
   getrlimit(RLIMIT_NOFILE, &rlim);
 
-  unsigned long max_map_count;
+  unsigned max_map_count;
 
   FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
   if (f == NULL) {
     perror("Error Opening /proc/sys/vm/max_map_count");
   } else {
-    if (fscanf(f, "%zu", &max_map_count) != 1) {
+    if (fscanf(f, "%u", &max_map_count) != 1) {
       perror("Error Reading /proc/sys/vm/max_map_count");
     }
 
     fclose(f);
   }
 
+  size_t lim = rlim.rlim_cur > 16 ? rlim.rlim_cur - 16 : rlim.rlim_cur;
   max_map_count = max_map_count ? max_map_count : 65530;
 
   if (!params->max_conns) {
     // account for already open files
-    s->max_conns = rlim.rlim_cur - 16;
+    s->max_conns = (unsigned)(lim < 4294967296 ? lim : 4294967295);
+
   } else if (params->max_conns <= rlim.rlim_cur) {
     s->max_conns = params->max_conns;
     if (!params->silent && rlim.rlim_cur > 8) {
       if (s->max_conns > rlim.rlim_cur - 8) {
         fprintf(
             stderr,
-            "[WARN] params->max_conns %zu may be too high. RLIMIT_NOFILE=%zu "
+            "[WARN] params->max_conns %u may be too high. RLIMIT_NOFILE=%zu "
             "only %zu can be opened for other tasks when running at "
             "max_conns\n",
             s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
@@ -2969,17 +2971,16 @@ static void ws_server_register_buffers(ws_server_t *s,
     }
 
   } else if (params->max_conns > rlim.rlim_cur) {
-    s->max_conns = rlim.rlim_cur;
+    s->max_conns = (unsigned)(lim < 4294967296 ? lim : 4294967295);
     if (!params->silent) {
-      fprintf(stderr,
-              "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
+      fprintf(stderr, "[WARN] params->max_conns %u exceeds RLIMIT_NOFILE %zu\n",
               params->max_conns, rlim.rlim_cur);
     }
   }
 
   if (s->max_conns * 4 > max_map_count) {
     fprintf(stderr,
-            "[WARN] max_map_count %zu is too low and may cause non recoverable "
+            "[WARN] max_map_count %u is too low and may cause non recoverable "
             "mmap "
             "failures. "
             "Consider increasing it to %zu or higher # sudo sysctl -w "
@@ -2988,8 +2989,8 @@ static void ws_server_register_buffers(ws_server_t *s,
             align_to((s->max_conns * 4) + 64, 2));
 
     // leave off 64 mappings
-    size_t new_max_conns = (max_map_count / 4) > 64 ? (max_map_count / 4) - 64
-                                                    : (max_map_count / 4);
+    unsigned new_max_conns = (max_map_count / 4) > 64 ? (max_map_count / 4) - 64
+                                                      : (max_map_count / 4);
     s->max_conns = new_max_conns;
   }
 
@@ -3118,7 +3119,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
     printf("- buffer_size: %zu\n", s->buffer_pool->buf_sz);
     printf("- max_msg_len: %zu\n",
            params->max_buffered_bytes ? params->max_buffered_bytes : 16000);
-    printf("- max_conns:   %zu\n", s->max_conns);
+    printf("- max_conns:   %u\n", s->max_conns);
     printf("- compression: %s\n", compression_enabled);
     printf("- debug:       %s\n", debug_enabled);
     printf("- max_headers: %zu\n", params->max_header_count);
@@ -3893,8 +3894,9 @@ static z_stream *inflation_stream_init() {
 }
 
 static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
-                                        size_t in_len, char *out,
-                                        size_t out_len, bool no_ctx_takeover) {
+                                        unsigned in_len, char *out,
+                                        unsigned out_len,
+                                        bool no_ctx_takeover) {
   // Save off the bytes we're about to overwrite
   char *tail_addr = input + in_len;
   char pre_tail[4];
@@ -3909,7 +3911,7 @@ static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
   istrm->avail_in = (unsigned int)in_len;
 
   int err;
-  ssize_t total = 0;
+  unsigned total = 0;
   do {
     // printf("inflating...\n");
     istrm->next_out = (Bytef *)out + total;
@@ -3935,8 +3937,8 @@ static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
   memcpy(tail_addr, pre_tail, 4);
 
   if ((err < 0) || total > out_len) {
-    fprintf(stderr, "Decompression error or payload too large %d %zu %zu\n",
-            err, total, out_len);
+    fprintf(stderr, "Decompression error or payload too large %d %u %u\n", err,
+            total, out_len);
 
     return err < 0 ? err : -1;
   }
@@ -3957,18 +3959,19 @@ static z_stream *deflation_stream_init() {
 }
 
 static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
-                                        size_t in_len, char *out,
-                                        size_t out_len, bool no_ctx_takeover) {
+                                        unsigned in_len, char *out,
+                                        unsigned out_len,
+                                        bool no_ctx_takeover) {
 
   dstrm->next_in = (Bytef *)input;
   dstrm->avail_in = (unsigned int)in_len;
 
   int err;
-  ssize_t total = 0;
+  unsigned total = 0;
 
   do {
     // printf("deflating...\n");
-    assert(out_len - total >= 6);
+    assert((ssize_t)out_len - total >= 6);
     dstrm->next_out = (Bytef *)out + total;
     dstrm->avail_out = out_len - total;
 
@@ -3988,14 +3991,19 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
     deflateReset(dstrm);
   }
 
-  return err == Z_OK ? total - 4 : err;
+  if (err == Z_OK) {
+    return total > (unsigned)4 ? total - (unsigned)4 : 0;
+  } else {
+    return err;
+  }
+
 }
 
 static z_stream *inflation_stream_init();
 
 static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
-                                        size_t in_len, char *out,
-                                        size_t out_len, bool no_ctx_takeover);
+                                        unsigned in_len, char *out,
+                                        unsigned out_len, bool no_ctx_takeover);
 
 static z_stream *deflation_stream_init();
 
@@ -4035,24 +4043,24 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
   char *msg = was_fragmented ? (char *)buf_peek(conn->recv_buf) : (char *)data;
   payload_len = was_fragmented ? conn->fragments_len : payload_len;
 
-  size_t inflated_sz =
-      inflation_stream_inflate(s->istrm, (char *)msg, payload_len,
-                               inflated_buf->data, inflated_buf->cap, true);
+  ssize_t inflated_sz = inflation_stream_inflate(
+      s->istrm, (char *)msg, (unsigned)payload_len, inflated_buf->data,
+      (unsigned)inflated_buf->cap, true);
   if (unlikely(inflated_sz <= 0)) {
     printf("inflate error\n");
     ws_conn_destroy(conn, WS_ERR_INFLATE);
     return -1;
   }
-  inflated_buf->len += inflated_sz;
+  inflated_buf->len += (size_t)inflated_sz;
 
   // non fragmented frame
   if (!was_fragmented) {
     // don't call buf_consume it's already done
-    s->on_ws_msg(conn, inflated_buf->data, inflated_sz,
+    s->on_ws_msg(conn, inflated_buf->data, (size_t)inflated_sz,
                  is_bin(conn) ? OP_BIN : OP_TXT);
     conn->needed_bytes = 2;
     clear_bin(conn);
-    inflated_buf->len -= inflated_sz;
+    inflated_buf->len -= (size_t)inflated_sz;
 
     if (!inflated_buf->len)
       conn_dyn_buf_dispose(conn);
@@ -4063,10 +4071,10 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 
     buf_consume(conn->recv_buf, conn->fragments_len);
 
-    s->on_ws_msg(conn, inflated_buf->data, inflated_sz,
+    s->on_ws_msg(conn, inflated_buf->data, (size_t)inflated_sz,
                  is_bin(conn) ? OP_BIN : OP_TXT);
 
-    inflated_buf->len -= inflated_sz;
+    inflated_buf->len -= (size_t)inflated_sz;
 
     if (!inflated_buf->len)
       conn_dyn_buf_dispose(conn);
