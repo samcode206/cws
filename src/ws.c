@@ -1357,7 +1357,7 @@ static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
 
     } else if (!upgrade_header_found &&
                http_header_name_is(hs->headers + i, "Upgrade", 7) &&
-               http_header_val_is(hs->headers + i, "websocket", 9)) {
+               strcasestr(hs->headers[i].val, "websocket")) {
 
       upgrade_header_found = true;
 
