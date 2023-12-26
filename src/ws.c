@@ -4134,7 +4134,7 @@ typedef struct {
 
 /* Hash a single 512-bit block. This is the core of the algorithm. */
 
-void SHA1Transform(uint32_t state[5], const unsigned char buffer[64]) {
+void SHA1Transform(uint32_t state[5], const unsigned char *buffer) {
   uint32_t a, b, c, d, e;
 
   typedef union {
