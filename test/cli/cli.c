@@ -104,14 +104,11 @@ void parse_line(char *buf, char *cmd, char *data) {
 void handle_echo_cmd(int fd, char *in_data, char *out_data, unsigned op) {
   size_t len = strlen(in_data);
   size_t frame_sz = write_frame(out_data, in_data, len, op);
-  printf("frame_sz = %zu\n", frame_sz);
   ssize_t sent = sock_sendall(fd, out_data, frame_sz);
-  printf("%zu\n", sent);
 
   // wait for frame_sz -4 bytes because server won't include the 4 byte mask
   ssize_t read = sock_recvall(fd, out_data, frame_sz - 4);
 
-  printf("received ");
 
   unsigned opcode = frame_get_opcode((uint8_t *)out_data);
   if (opcode == OP_TXT) {
