@@ -115,6 +115,7 @@ int main(void) {
         .on_ws_disconnect = onDisconnect,
         .max_buffered_bytes = 1024 * 512,
         .max_conns = MAX_CONNS,
+        .silent = 1,
         .ctx = slc,
     };
 

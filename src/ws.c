@@ -2928,7 +2928,7 @@ static void ws_server_register_buffers(ws_server_t *s,
     s->max_conns = rlim.rlim_cur - 16;
   } else if (params->max_conns <= rlim.rlim_cur) {
     s->max_conns = params->max_conns;
-    if (params->verbose && rlim.rlim_cur > 8) {
+    if (!params->silent && rlim.rlim_cur > 8) {
       if (s->max_conns > rlim.rlim_cur - 8) {
         fprintf(
             stderr,
@@ -2941,7 +2941,7 @@ static void ws_server_register_buffers(ws_server_t *s,
 
   } else if (params->max_conns > rlim.rlim_cur) {
     s->max_conns = rlim.rlim_cur;
-    if (params->verbose) {
+    if (!params->silent) {
       fprintf(stderr,
               "[WARN] params->max_conns %zu exceeds RLIMIT_NOFILE %zu\n",
               params->max_conns, rlim.rlim_cur);
@@ -3089,7 +3089,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
 
   ws_server_async_runner_create(s, 2);
 
-  if (params->verbose) {
+  if (!params->silent) {
     printf("- listening:   %s:%d\n", params->addr, params->port);
     printf("- buffer_size: %zu\n", s->buffer_pool->buf_sz);
     printf("- max_msg_len: %zu\n",

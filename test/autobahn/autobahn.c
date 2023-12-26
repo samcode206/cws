@@ -114,7 +114,7 @@ void *start_server() {
       .on_ws_accept_err = on_accept_err,
       .on_ws_conn_timeout = on_timeout,
       .max_conns = 1000,
-      .verbose = 1,
+      .silent = 0,
   };
 
   s = ws_server_create(&sp);
