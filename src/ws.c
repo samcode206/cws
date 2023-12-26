@@ -3978,7 +3978,11 @@ static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
                         (c->base->buffer_pool->buf_sz * 2) + 16);
     c->pmd_buf->len = 0;
     c->pmd_buf->cap = (c->base->buffer_pool->buf_sz * 2) + 16;
-    assert(c->pmd_buf != NULL);
+    if (c->pmd_buf == NULL){
+      perror("malloc");
+      exit(EXIT_FAILURE);
+    }
+
     return c->pmd_buf;
   } else {
     return c->pmd_buf;
