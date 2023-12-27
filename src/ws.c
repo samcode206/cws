@@ -1265,7 +1265,6 @@ ws_conn_handshake_parse_request_ln(char *line, struct ws_conn_handshake *hs) {
     return -1;
   }
 
-  
   for (size_t i = 0; i < (size_t)remaining; i++) {
     // look for any ! or less (ctl chars) in the path and stop there
     if ((unsigned char)path[i] < 0x21) {
@@ -1840,7 +1839,8 @@ static inline size_t frame_get_header_len(size_t const n) {
          ((n > (size_t)0xFFFF) * (size_t)6);
 }
 
-static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
+static void msg_unmask(uint8_t *restrict src, uint8_t const *restrict mask,
+                       size_t const n) {
 
   size_t i = 0;
   size_t uneven = n & 7;
@@ -1857,12 +1857,14 @@ static void msg_unmask(uint8_t *src, uint8_t const *mask, size_t const n) {
   uint64_t chunk;
 
   memcpy(&mask64, tmp, 8);
+  size_t count = n >> 3;
 
-  while (i < n) {
+  while (count) {
     memcpy(&chunk, src + i, 8);
     chunk ^= mask64;
     memcpy(src + i, &chunk, 8);
     i += 8;
+    count--;
   }
 }
 
