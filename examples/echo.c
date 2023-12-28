@@ -1,13 +1,8 @@
 #include "ws.h"
-#include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/epoll.h>
 #include <sys/signal.h>
-#include <sys/timerfd.h>
+
 
 #define MAX_CONNS 1024
-#define WRITE_WATERMARK 16000
 
 void onOpen(ws_conn_t *conn) {}
 
