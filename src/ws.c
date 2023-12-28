@@ -3762,7 +3762,7 @@ inline bool ws_server_shutting_down(ws_server_t *s) {
 }
 
 inline void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read) {
-  if (max_per_read) {
+  if (max_per_read && s->buffer_pool->buf_sz >= max_per_read) {
     s->max_per_read = max_per_read;
   } else {
     s->max_per_read = s->buffer_pool->buf_sz;
