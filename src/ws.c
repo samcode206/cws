@@ -3956,7 +3956,7 @@ static struct timer_queue *timer_queue_init(struct timer_queue *tq) {
 
   tq->next_id = 0;
 
-  tq->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+  tq->timer_fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
   if (tq->timer_fd == -1) {
     pqu_timer_queue_free(tq->pqu_tq);
     free(p);
@@ -3987,7 +3987,7 @@ static void timer_queue_destroy(struct timer_queue *tq) {
 
 static inline void timer_queue_update_time(struct timer_queue *tq) {
   struct timespec tp;
-  int _ = clock_gettime(CLOCK_MONOTONIC, &tp);
+  int _ = clock_gettime(CLOCK_BOOTTIME, &tp);
   assert(_ == 0);
   (void)_;
 
