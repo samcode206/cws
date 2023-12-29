@@ -4038,7 +4038,6 @@ static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
                                               ws_server_t *s) {
 
   printf("expired callbacks ---------------------------\n");
-  time_t soonest = timer_queue_get_soonest_expiration(tq);
   time_t now_ms = tq->cur_time;
   while (!pqu_timer_queue_empty(tq->pqu_tq)) {
     ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
