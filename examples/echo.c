@@ -44,7 +44,7 @@ int main(void) {
   ws_server_t *s = ws_server_create(&p);
 
   ws_timer_t *t = malloc(sizeof(ws_timer_t));
-  t->timeout_ms = 250;
+  t->timeout_ms = 10;
   t->cb = on_timeout;
 
   ws_server_set_timeout(s, t);
