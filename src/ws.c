@@ -50,6 +50,19 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
+typedef ws_timer_t *timer_queue;
+
+#define P
+#define T timer_queue
+#include "./lib/pqu.h"
+
+struct timer_queue {
+  uint64_t next_id;        // next timer id when adding a new timer
+  int timer_fd;            // timer fd for epoll
+  time_t cur_time;         // current time (only updated when we need it!)
+  pqu_timer_queue *pqu_tq; // min heap of soonest expiring timers
+};
+
 typedef struct server {
   size_t max_msg_len;  // max allowed msg length
   size_t max_per_read; // max bytes to read per read call
@@ -80,8 +93,9 @@ typedef struct server {
   z_stream *dstrm;
 #endif /* WITH_COMPRESSION */
 
-  int tfd;               // timer fd
-  size_t internal_polls; // number of internal fds being watched by epoll
+  int tfd;                // timer fd
+  struct timer_queue *tq; // High resolution timer queue
+  size_t internal_polls;  // number of internal fds being watched by epoll
   int user_epoll;
   struct epoll_event events[1024];
   struct conn_list pending_timers;
@@ -2590,6 +2604,13 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
 
 /****************** Server **********************/
 
+static struct timer_queue *timer_queue_init(struct timer_queue *tq);
+
+static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
+                                              ws_server_t *s);
+
+static void timer_queue_destroy(struct timer_queue *tq);
+
 static void ws_server_time_update(ws_server_t *s) {
   long t = time(NULL);
   if (likely((t > 0) & (t < 4294967296))) {
@@ -2601,6 +2622,17 @@ static void ws_server_time_update(ws_server_t *s) {
 }
 
 static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
+
+static void ws_server_register_timer_queue(ws_server_t *s, int *tfd) {
+  assert(s->tq->timer_fd > 0);
+
+  struct epoll_event ev = {
+      .events = EPOLLIN,
+      .data = {.ptr = tfd},
+  };
+
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->tq->timer_fd, &ev);
+}
 
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
   if (cl->len + 1 <= cl->cap) {
@@ -3041,6 +3073,14 @@ static void ws_server_register_buffers(ws_server_t *s,
     perror("calloc");
     exit(EXIT_FAILURE);
   };
+
+  s->tq = calloc(1, sizeof *s->tq);
+  if (s->tq == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
+
+  s->tq = timer_queue_init(s->tq);
 }
 
 #ifdef WITH_COMPRESSION
@@ -3368,6 +3408,14 @@ static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
 static void ws_server_async_runner_run_pending_callbacks(
     ws_server_t *s, struct ws_server_async_runner *arptr);
 
+static inline void timer_consume(int tfd) {
+  uint64_t _;
+  read(tfd, &_, 8);
+  (void)_;
+};
+
+static inline void timer_queue_update_time(struct timer_queue *tq);
+
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = ws_server_listen_and_serve(s, backlog);
   if (ret < 0) {
@@ -3380,7 +3428,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
   int epfd = s->epoll_fd;
   int tfd = s->tfd;
 
-  ws_server_register_timer(s, &tfd);
+  int tqfd = s->tq->timer_fd;
+
+  ws_server_register_timer_queue(s, &tqfd); // High-Res Timer
+  ws_server_register_timer(s, &tfd);        // io Timer
   ws_server_time_update(s);
 
   struct sockaddr_storage client_sockaddr;
@@ -3406,16 +3457,18 @@ int ws_server_start(ws_server_t *s, int backlog) {
     for (int i = 0; i < n_evs; ++i) {
       if ((s->events[i].data.ptr == &tfd) |
           (s->events[i].data.ptr == user_epoll_ptr) |
-          (s->events[i].data.ptr == arptr)) {
+          (s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
 
-        if (s->events[i].data.ptr == &tfd) {
-          uint64_t _;
-          read(tfd, &_, 8);
+        if (s->events[i].data.ptr == &tqfd) {
+          timer_consume(tqfd);
+          timer_queue_update_time(s->tq);
+          timer_queue_run_expired_callbacks(s->tq, s);
+
+        } else if (s->events[i].data.ptr == &tfd) {
+          timer_consume(tfd);
 
           // we update the time every time tfd is readable (every second)
           ws_server_time_update(s);
-
-          (void)_;
 
           timer_check_counter--;
           if (!timer_check_counter) {
@@ -3886,6 +3939,155 @@ int ws_server_destroy(ws_server_t *s) {
   free(s);
 
   return 0;
+}
+
+/************** High Resolution Timers **************/
+
+static int timer_queue_cmp(timer_queue *a, timer_queue *b) {
+  return (*a)->timeout_ms < (*b)->timeout_ms;
+}
+
+static struct timer_queue *timer_queue_init(struct timer_queue *tq) {
+  pqu_timer_queue timer_queue = pqu_timer_queue_init(timer_queue_cmp);
+  pqu_timer_queue *p = calloc(1, sizeof(timer_queue));
+  memcpy(p, &timer_queue, sizeof(timer_queue));
+  tq->pqu_tq = p;
+
+  tq->next_id = 0;
+
+  tq->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+  if (tq->timer_fd == -1) {
+    pqu_timer_queue_free(tq->pqu_tq);
+    free(p);
+    tq->pqu_tq = NULL;
+    perror("timerfd_create");
+    exit(EXIT_FAILURE);
+  }
+
+  printf("tfd = %d\n", tq->timer_fd);
+
+  return tq;
+}
+
+static void timer_queue_destroy(struct timer_queue *tq) {
+
+  while (!pqu_timer_queue_empty(tq->pqu_tq)) {
+    ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
+    ws_timer_t *t = *p;
+    pqu_timer_queue_pop(tq->pqu_tq);
+    free(t);
+  }
+
+  pqu_timer_queue_free(tq->pqu_tq);
+  free(tq->pqu_tq);
+  close(tq->timer_fd);
+  memset(tq, 0, sizeof(*tq));
+}
+
+static inline void timer_queue_update_time(struct timer_queue *tq) {
+  struct timespec tp;
+  int _ = clock_gettime(CLOCK_MONOTONIC, &tp);
+  assert(_ == 0);
+  (void)_;
+
+  tq->cur_time = (tp.tv_sec * 1000) + (tp.tv_nsec ? tp.tv_nsec / 1000000 : 0);
+};
+
+static time_t timer_queue_get_soonest_expiration(struct timer_queue *tq) {
+  if (!pqu_timer_queue_empty(tq->pqu_tq)) {
+    ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
+    return (*p)->timeout_ms;
+  } else {
+    return 0;
+  }
+}
+
+static void timer_queue_set_soonest_expiration(struct timer_queue *tq,
+                                               time_t soonest) {
+
+  if (soonest > 0) {
+    printf("now soonest %zu\n", soonest);
+    struct itimerspec utmr = {.it_value =
+                                  {
+                                      soonest / 1000,
+                                      (soonest % 1000) * 1000000,
+                                  },
+                              .it_interval = {
+                                  0,
+                                  0,
+                              }};
+
+    // printf("secs = %ld, nsecs = %ld\n", utmr.it_value.tv_sec,
+    //        utmr.it_value.tv_nsec);
+
+    int _ = timerfd_settime(tq->timer_fd, 0, &utmr, NULL);
+    if (_ == -1) {
+      perror("timerfd_settime");
+      exit(EXIT_FAILURE);
+    }
+    (void)_;
+  } else {
+    printf("timer queue drained\n");
+  }
+}
+
+static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
+                                              ws_server_t *s) {
+
+  printf("expired callbacks ---------------------------\n");                                                
+  time_t soonest = timer_queue_get_soonest_expiration(tq);
+  time_t now_ms = tq->cur_time;
+  while (!pqu_timer_queue_empty(tq->pqu_tq)) {
+    ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
+    
+    if ((*p)->_expiry < now_ms) {
+      printf("expired by %zums\n", now_ms - (*p)->_expiry);
+      ws_timer_t *t = *p;
+      pqu_timer_queue_pop(tq->pqu_tq);
+      t->cb(s, t);
+    } else {
+      break;
+    }
+  }
+
+  // update timer with new soonest expiration
+  time_t new_soonest = timer_queue_get_soonest_expiration(tq);
+  if (soonest > new_soonest) {
+    printf("prev soonest = %zu new soonest = %zu\n", soonest, new_soonest);
+    timer_queue_set_soonest_expiration(tq, new_soonest);
+  }
+
+    printf("expired callbacks end---------------------------\n");    
+}
+
+static uint64_t timer_queue_add(struct timer_queue *tq, ws_timer_t *t) {
+  if (t->timeout_ms == 0) {
+    // zero does nothing
+    return 0;
+  }
+
+  // get soonest expiration
+  time_t soonest = timer_queue_get_soonest_expiration(tq);
+
+  uint64_t id = tq->next_id++;
+  t->id = id;
+
+  timer_queue_update_time(tq);               // update time
+  t->_expiry = tq->cur_time + t->timeout_ms - 1; // set expiration time
+
+  printf("now: %zu expiry %zu soonest %zu  timeout %zu\n", tq->cur_time, t->_expiry, soonest, t->timeout_ms);
+  pqu_timer_queue_push(tq->pqu_tq, t); // add to priority queue
+
+  if ((soonest == 0) | (t->timeout_ms < soonest)) {
+    // if we need to adjust the underlying timer (this needs a call to timerfd_settime))
+    timer_queue_set_soonest_expiration(tq, t->timeout_ms);
+  }
+
+  return id;
+}
+
+void ws_server_set_timeout(ws_server_t *s, ws_timer_t *t) {
+  timer_queue_add(s->tq, t);
 }
 
 /*************** Per Message Deflate *************/

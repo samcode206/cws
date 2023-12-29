@@ -533,6 +533,20 @@ typedef struct async_cb_ctx {
 } async_cb_ctx;
 
 
+typedef struct ws_timer_t ws_timer_t;
+typedef void (*timeout_cb_t)(ws_server_t *s, ws_timer_t *ctx);
+
+typedef struct ws_timer_t {
+  uint64_t id;
+  time_t timeout_ms;
+  time_t _expiry;
+  void *ctx;
+  timeout_cb_t cb;
+} ws_timer_t;
+
+
+void ws_server_set_timeout(ws_server_t *s, ws_timer_t *t);
+
 
 /**
  * Schedules an asynchronous callback to be executed in the server's thread.
