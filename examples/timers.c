@@ -1,5 +1,7 @@
 #include "ws.h"
+#include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/signal.h>
 #include <time.h>
 
@@ -14,35 +16,79 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_conn_put_msg(conn, msg, n, opcode, 0);
 }
 
+uint64_t get_ns_time() {
+  struct timespec now = {
+      .tv_sec = 0,
+      .tv_nsec = 0,
+  };
+
+  clock_gettime(CLOCK_BOOTTIME, &now);
+  uint64_t n = now.tv_nsec + (now.tv_sec * 1000000000);
+  assert(n != 0);
+  return n;
+}
+
+uint64_t gid = 0;
+uint64_t pending_timeouts = 0;
+
 struct timer_metrics {
-  uint64_t counter;
-  clock_t start;
+  uint64_t expected_timeout;
+  uint64_t scheduled_at;
+  uint64_t id;
+  uint64_t timeout_ms;
 };
 
-void on_timeout(ws_server_t *s, void *ctx) {
+struct timer_metrics *new_timer_metrics(uint64_t t) {
+  struct timer_metrics *metrics = malloc(sizeof(struct timer_metrics));
+  metrics->scheduled_at = get_ns_time();
+  metrics->expected_timeout = metrics->scheduled_at + t;
+  metrics->id = gid++;
+  metrics->timeout_ms = t / 1000000;
+
+  return metrics;
+}
+
+void timer_metrics_free(void *ctx) {
   struct timer_metrics *metrics = (struct timer_metrics *)ctx;
-  metrics->counter++;
+  free(metrics);
+}
 
-  if (metrics->counter < 1000) {
-    struct timespec timeout = {
-        .tv_sec = 0,
-        .tv_nsec = 1 MS,
-    };
+void set_metric_timer(ws_server_t *s, uint64_t d, timeout_cb_t cb) {
 
-    ws_server_set_timeout(s, &timeout, metrics, on_timeout);
-    // printf("ret: %d\n", ret);
-  } else {
-    struct timespec t = {
-        .tv_sec = 0,
-        .tv_nsec = 0,
-    };
+  struct timespec timeout = {
+      .tv_sec = 0,
+      .tv_nsec = (d)MS,
+  };
+  struct timer_metrics *metrics = new_timer_metrics((d) MS);
+  pending_timeouts++;
+  int ret = ws_server_set_timeout(s, &timeout, metrics, cb);
+  printf("[TIMER_INFO] SCHED id: %zu scheduled: %zu expires: %zu duration: %zu ms now %zu\n", metrics->id,
+         metrics->scheduled_at, metrics->expected_timeout, metrics->timeout_ms, metrics->scheduled_at);
+}
 
-    clock_gettime(CLOCK_BOOTTIME, &t);
-    uint64_t end = t.tv_nsec + (t.tv_sec * 1000000000);
+void on_timeout(ws_server_t *s, void *ctx) {
+  struct timer_metrics *m = (struct timer_metrics *)ctx;
+  uint64_t now = get_ns_time();
+  uint64_t diff = now - m->expected_timeout;
+  pending_timeouts--;
+
+  assert(now > m->expected_timeout);
 
 
-    printf("time taken: %zu ms callback called %zu times\n", (end - metrics->start )/ 1000000, metrics->counter);
-    free(metrics);
+  printf("[TIMER_INFO] EXPIR id: %zu scheduled: %zu expires: %zu late: %zuus duration: %zu ms now: %zu\n", m->id,
+         m->scheduled_at, m->expected_timeout, (now - m->expected_timeout) / 1000, m->timeout_ms, now);
+
+
+  timer_metrics_free(ctx);
+
+  if (gid < 1000) {
+    set_metric_timer(s, 1, on_timeout);
+
+  }
+
+  if (pending_timeouts == 0) {
+    printf("done\n");
+    exit(EXIT_SUCCESS);
   }
 }
 
@@ -64,23 +110,9 @@ int main(void) {
 
   ws_server_t *s = ws_server_create(&p);
 
-  struct timespec timeout = {
-      .tv_sec = 0,
-      .tv_nsec = 1 MS,
-  };
+  set_metric_timer(s, 1, on_timeout);
 
-  struct timer_metrics *metrics = malloc(sizeof(struct timer_metrics));
-  metrics->counter = 0;
-
-  struct timespec start = {
-      .tv_sec = 0,
-      .tv_nsec = 0,
-  };
-
-  clock_gettime(CLOCK_BOOTTIME, &start);
-  metrics->start = start.tv_nsec + (start.tv_sec * 1000000000);
-  ws_server_set_timeout(s, &timeout, metrics, on_timeout);
-
+  set_metric_timer(s, 999, on_timeout);
   ws_server_start(s, 1024);
 
   return 0;
