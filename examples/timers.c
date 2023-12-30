@@ -38,10 +38,7 @@ struct timer_metrics {
   uint64_t timeout_ms;
 };
 
-
-static inline uint64_t get_random_duration(){
-  return (rand() % 10) + 1;
-}
+static inline uint64_t get_random_duration() { return (rand() % 10) + 1; }
 
 struct timer_metrics *new_timer_metrics(uint64_t t) {
   struct timer_metrics *metrics = malloc(sizeof(struct timer_metrics));
@@ -53,9 +50,6 @@ struct timer_metrics *new_timer_metrics(uint64_t t) {
   return metrics;
 }
 
-
-
-
 void timer_metrics_free(void *ctx) {
   struct timer_metrics *metrics = (struct timer_metrics *)ctx;
   free(metrics);
@@ -65,13 +59,15 @@ void set_metric_timer(ws_server_t *s, uint64_t d, timeout_cb_t cb) {
 
   struct timespec timeout = {
       .tv_sec = d > 1000 ? d / 1000 : 0,
-      .tv_nsec = d > 1000 ? ((d  % 1000) MS): (d) MS,
+      .tv_nsec = d > 1000 ? ((d % 1000) MS) : (d)MS,
   };
-  struct timer_metrics *metrics = new_timer_metrics((d) MS);
+  struct timer_metrics *metrics = new_timer_metrics((d)MS);
   pending_timeouts++;
   int ret = ws_server_set_timeout(s, &timeout, metrics, cb);
-  printf("[TIMER_INFO] SCHED id: %zu scheduled: %zu expires: %zu duration: %zu ms now %zu\n", metrics->id,
-         metrics->scheduled_at, metrics->expected_timeout, metrics->timeout_ms, metrics->scheduled_at);
+  printf("[TIMER_INFO] SCHED id: %zu scheduled: %zu expires: %zu duration: %zu "
+         "ms now %zu\n",
+         metrics->id, metrics->scheduled_at, metrics->expected_timeout,
+         metrics->timeout_ms, metrics->scheduled_at);
 }
 
 void on_timeout(ws_server_t *s, void *ctx) {
@@ -82,21 +78,20 @@ void on_timeout(ws_server_t *s, void *ctx) {
 
   assert(now > m->expected_timeout);
 
-
-  printf("[TIMER_INFO] EXPIR id: %zu scheduled: %zu expires: %zu late: %zuus duration: %zu ms now: %zu\n", m->id,
-         m->scheduled_at, m->expected_timeout, (now - m->expected_timeout) / 1000, m->timeout_ms, now);
-
+  printf("[TIMER_INFO] EXPIR id: %zu scheduled: %zu expires: %zu late: %zuus "
+         "duration: %zu ms now: %zu\n",
+         m->id, m->scheduled_at, m->expected_timeout,
+         (now - m->expected_timeout) / 1000, m->timeout_ms, now);
 
   timer_metrics_free(ctx);
 
-  if (gid < 1000) {
+  if (gid < 100) {
     set_metric_timer(s, get_random_duration(), on_timeout);
-
   }
 
   if (pending_timeouts == 0) {
     printf("done\n");
-    exit(EXIT_SUCCESS);
+    ws_server_shutdown(s);
   }
 }
 
@@ -122,6 +117,8 @@ int main(void) {
 
   set_metric_timer(s, 999, on_timeout);
   ws_server_start(s, 1024);
+
+  ws_server_destroy(s);
 
   return 0;
 }

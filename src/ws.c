@@ -3090,6 +3090,7 @@ static void ws_server_register_buffers(ws_server_t *s,
   }
 
   s->tq = timer_queue_init(s->tq);
+  s->internal_polls++;
 }
 
 #ifdef WITH_COMPRESSION
@@ -3813,6 +3814,13 @@ int ws_server_shutdown(ws_server_t *s) {
     s->internal_polls--;
   }
 
+  if (s->tq) {
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &ev);
+    close(s->tq->timer_fd);
+    s->tq->timer_fd = -1;
+    s->internal_polls--;
+  }
+
   return 0;
 }
 
@@ -3921,6 +3929,9 @@ int ws_server_destroy(ws_server_t *s) {
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
   ws_server_async_runner_destroy(s);
+  timer_queue_destroy(s->tq);
+  free(s->tq);
+  s->tq = NULL;
 
   close(s->epoll_fd);
   s->epoll_fd = -1;
@@ -4015,7 +4026,11 @@ static void timer_queue_destroy(struct timer_queue *tq) {
 
   pqu_timer_queue_free(tq->pqu_tq);
   free(tq->pqu_tq);
-  close(tq->timer_fd);
+  tq->pqu_tq = NULL;
+  if (tq->timer_fd > 0) {
+    close(tq->timer_fd);
+  }
+
   memset(tq, 0, sizeof(*tq));
 }
 
@@ -4106,7 +4121,8 @@ static uint64_t timer_queue_add(struct timer_queue *tq, ws_timer_t *t) {
 int ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
                           timeout_cb_t cb) {
 
-  if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999) || (tp->tv_nsec == 0 && tp->tv_sec == 0)) {
+  if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999) ||
+      (tp->tv_nsec == 0 && tp->tv_sec == 0)) {
     return -1;
   }
   // TODO (sah): use a pool and recycle these instead of malloc
