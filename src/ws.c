@@ -54,9 +54,13 @@ typedef struct ws_timer_t ws_timer_t;
 
 typedef ws_timer_t *timer_queue;
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 #define P
 #define T timer_queue
 #include "./lib/pqu.h"
+
+#pragma GCC diagnostic pop
 
 typedef struct ws_timer_t {
   uint64_t expiry_ns;
@@ -3422,7 +3426,7 @@ static inline void timer_consume(int tfd) {
   uint64_t _;
   read(tfd, &_, 8);
   (void)_;
-};
+}
 
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = ws_server_listen_and_serve(s, backlog);
@@ -3965,7 +3969,7 @@ static int timer_queue_cmp(timer_queue *a, timer_queue *b) {
 }
 
 static inline uint64_t timespec_ns(struct timespec *tp) {
-  return (tp->tv_sec * 1000000000) + tp->tv_nsec;
+  return ((uint64_t)tp->tv_sec * 1000000000) + (uint64_t)tp->tv_nsec;
 }
 
 // updates the current time of the timer queue
@@ -4062,8 +4066,8 @@ static void timer_queue_tfd_set_soonest_expiration(struct timer_queue *tq,
     struct itimerspec timeout = {
         .it_value =
             {
-                .tv_nsec = ns % 1000000000,
-                .tv_sec = ns / 1000000000,
+                .tv_nsec = (long)ns % 1000000000,
+                .tv_sec = (long)ns / 1000000000,
             },
         .it_interval =
             {
