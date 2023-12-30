@@ -56,8 +56,8 @@ void timer_metrics_free(void *ctx) {
 void set_metric_timer(ws_server_t *s, uint64_t d, timeout_cb_t cb) {
 
   struct timespec timeout = {
-      .tv_sec = 0,
-      .tv_nsec = (d)MS,
+      .tv_sec = d > 1000 ? d / 1000 : 0,
+      .tv_nsec = d > 1000 ? ((d  % 1000) MS): (d) MS,
   };
   struct timer_metrics *metrics = new_timer_metrics((d) MS);
   pending_timeouts++;
