@@ -38,6 +38,11 @@ struct timer_metrics {
   uint64_t timeout_ms;
 };
 
+
+static inline uint64_t get_random_duration(){
+  return (rand() % 10) + 1;
+}
+
 struct timer_metrics *new_timer_metrics(uint64_t t) {
   struct timer_metrics *metrics = malloc(sizeof(struct timer_metrics));
   metrics->scheduled_at = get_ns_time();
@@ -47,6 +52,9 @@ struct timer_metrics *new_timer_metrics(uint64_t t) {
 
   return metrics;
 }
+
+
+
 
 void timer_metrics_free(void *ctx) {
   struct timer_metrics *metrics = (struct timer_metrics *)ctx;
@@ -82,7 +90,7 @@ void on_timeout(ws_server_t *s, void *ctx) {
   timer_metrics_free(ctx);
 
   if (gid < 1000) {
-    set_metric_timer(s, 1, on_timeout);
+    set_metric_timer(s, get_random_duration(), on_timeout);
 
   }
 

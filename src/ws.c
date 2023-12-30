@@ -4106,7 +4106,7 @@ static uint64_t timer_queue_add(struct timer_queue *tq, ws_timer_t *t) {
 int ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
                           timeout_cb_t cb) {
 
-  if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999)) {
+  if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999) || (tp->tv_nsec == 0 && tp->tv_sec == 0)) {
     return -1;
   }
   // TODO (sah): use a pool and recycle these instead of malloc
