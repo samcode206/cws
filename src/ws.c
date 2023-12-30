@@ -4081,6 +4081,24 @@ static void timer_queue_tfd_set_soonest_expiration(struct timer_queue *tq,
   }
 }
 
+static int eq(timer_queue *a, timer_queue *b) {
+  printf("looking a %zu b %zu\n", (*a)->expiry_ns, (*b)->expiry_ns);
+   int x = (*a)->expiry_ns == (*b)->expiry_ns;
+  printf("found %d\n", x);
+  return x;
+}
+
+static void timer_queue_cancel(struct timer_queue *tq, uint64_t exp_id) {
+  ws_timer_t t = {.expiry_ns = exp_id};
+  ws_timer_t **f = pqu_timer_queue_find(tq->pqu_tq, &t, eq);
+
+  if (f != NULL) {
+    (*f)->cancelled = 1;
+  } else {
+    printf("not found\n");
+  }
+}
+
 static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
                                               ws_server_t *s) {
   timer_queue_get_expiration(tq, NULL); // used to update the time
@@ -4094,6 +4112,11 @@ static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
       if ((t->cancelled == 0) & (t->cb != NULL)) {
         t->cb(s, t->ctx);
       }
+
+      if (t->cancelled ){
+        printf("timeout was canceled: id %zu\n", t->expiry_ns);
+      }
+
       free(t);
     } else {
       printf("breaking at next expire %zu current %zu\n", (*p)->expiry_ns,
@@ -4118,12 +4141,12 @@ static uint64_t timer_queue_add(struct timer_queue *tq, ws_timer_t *t) {
   return t->expiry_ns;
 }
 
-int ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
+uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
                           timeout_cb_t cb) {
 
   if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999) ||
       (tp->tv_nsec == 0 && tp->tv_sec == 0)) {
-    return -1;
+    return 0;
   }
   // TODO (sah): use a pool and recycle these instead of malloc
   ws_timer_t *timeout = malloc(sizeof(ws_timer_t));
@@ -4131,10 +4154,17 @@ int ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
   timeout->ctx = ctx;
   timeout->cb = cb;
   timeout->expiry_ns = timer_queue_get_expiration(s->tq, tp);
-  timer_queue_add(s->tq, timeout);
-
-  return 0;
+  return timer_queue_add(s->tq, timeout);
 }
+
+
+void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle){
+  timer_queue_cancel(s->tq, timer_handle);
+}
+
+
+
+
 
 /*************** Per Message Deflate *************/
 

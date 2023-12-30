@@ -537,8 +537,10 @@ typedef struct async_cb_ctx {
 typedef void (*timeout_cb_t)(ws_server_t *s, void *ctx);
 
 
-int ws_server_set_timeout(ws_server_t *s, struct timespec *tp,
+uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp,
                             void *ctx, timeout_cb_t cb);
+
+void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle);
 
 
 /**
