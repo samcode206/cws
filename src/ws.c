@@ -3957,20 +3957,18 @@ static inline uint64_t timespec_ns(struct timespec *tp) {
   return (tp->tv_sec * 1000000000) + tp->tv_nsec;
 }
 
-
 // updates the current time of the timer queue
-// if timeout_after is not NULL it will return 
+// if timeout_after is not NULL it will return
 // the expiration time of the timeout in relation to the current time
 // if timeout_after is NULL it will return 0
 static uint64_t timer_queue_get_expiration(struct timer_queue *tq,
-                                       struct timespec *timeout_after) {
+                                           struct timespec *timeout_after) {
   struct timespec tp;
   int ret = clock_gettime(CLOCK_BOOTTIME, &tp);
   assert(ret == 0);
   (void)ret;
 
   tq->cur_time = timespec_ns(&tp);
-
 
   if (timeout_after != NULL) {
     // add the timeout to the current time
@@ -4061,9 +4059,11 @@ static void timer_queue_tfd_set_soonest_expiration(struct timer_queue *tq,
 
     tq->next_expiration = maybe_soonest;
     printf("[WS_INFO] next expiration in = %zuus\n", ns / 1000);
+
     int ret = timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
+
     assert(ret == 0);
-  } 
+  }
 }
 
 static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
@@ -4081,21 +4081,20 @@ static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
       }
       free(t);
     } else {
-      printf("breaking at next expire %zu current %zu\n", (*p)->expiry_ns, tq->cur_time);
+      printf("breaking at next expire %zu current %zu\n", (*p)->expiry_ns,
+             tq->cur_time);
       break;
     }
   }
 
-
   uint64_t soonest = timer_queue_get_soonest_expiration(tq);
-  if (soonest != 0 && soonest != tq->next_expiration){
+  if (soonest != 0 && soonest != tq->next_expiration) {
     printf("[WS_INFO] new soonest = %zuus\n", (soonest - tq->cur_time) / 1000);
     timer_queue_tfd_set_soonest_expiration(tq, soonest);
   }
 
   printf("---------------------- \n");
 }
-
 
 static uint64_t timer_queue_add(struct timer_queue *tq, ws_timer_t *t) {
   pqu_timer_queue_push(tq->pqu_tq, t);
