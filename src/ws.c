@@ -25,6 +25,7 @@
 #include "ws.h"
 #include <arpa/inet.h>
 #include <assert.h>
+#include <bits/types/struct_timespec.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
@@ -50,18 +51,26 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
+typedef struct ws_timer_t ws_timer_t;
+
 typedef ws_timer_t *timer_queue;
 
 #define P
 #define T timer_queue
 #include "./lib/pqu.h"
 
+typedef struct ws_timer_t {
+  uint64_t expiry_ns;
+  void *ctx;
+  timeout_cb_t cb;
+  bool cancelled;
+} ws_timer_t;
+
 struct timer_queue {
-  uint64_t next_id;        // next timer id when adding a new timer
-  int timer_fd;            // timer fd for epoll
-  time_t next_timeout;     // next timeout when adding a new timer
-  time_t cur_time;         // current time (only updated when we need it!)
-  pqu_timer_queue *pqu_tq; // min heap of soonest expiring timers
+  uint64_t cur_time;        // current time (only updated when we need it!)
+  uint64_t next_expiration; // next expiry in nano seconds (since cur_time)
+  int timer_fd;             // timer fd for epoll
+  pqu_timer_queue *pqu_tq;  // min heap of soonest expiring timers
 };
 
 typedef struct server {
@@ -3945,7 +3954,25 @@ int ws_server_destroy(ws_server_t *s) {
 /************** High Resolution Timers **************/
 
 static int timer_queue_cmp(timer_queue *a, timer_queue *b) {
-  return (*a)->timeout_ms < (*b)->timeout_ms;
+  return (*a)->expiry_ns < (*b)->expiry_ns;
+}
+
+static inline uint64_t timespec_ns(struct timespec *tp) {
+  return (tp->tv_sec * 1000000000) + tp->tv_nsec;
+}
+
+static uint64_t timer_queue_get_expiry(struct timespec *timeout_after) {
+  struct timespec tp;
+  int ret = clock_gettime(CLOCK_BOOTTIME, &tp);
+  assert(ret == 0);
+  (void)ret;
+
+  // add the timeout to the current time
+  tp.tv_sec += timeout_after->tv_sec;
+  tp.tv_nsec += timeout_after->tv_nsec;
+
+  // calculate the total time in nano seconds
+  return timespec_ns(&tp);
 }
 
 static struct timer_queue *timer_queue_init(struct timer_queue *tq) {
@@ -3954,7 +3981,7 @@ static struct timer_queue *timer_queue_init(struct timer_queue *tq) {
   memcpy(p, &timer_queue, sizeof(timer_queue));
   tq->pqu_tq = p;
 
-  tq->next_id = 0;
+  tq->next_expiration = 0;
 
   tq->timer_fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
   if (tq->timer_fd == -1) {
@@ -3964,8 +3991,6 @@ static struct timer_queue *timer_queue_init(struct timer_queue *tq) {
     perror("timerfd_create");
     exit(EXIT_FAILURE);
   }
-
-  printf("tfd = %d\n", tq->timer_fd);
 
   return tq;
 }
@@ -3986,67 +4011,80 @@ static void timer_queue_destroy(struct timer_queue *tq) {
 }
 
 static inline void timer_queue_update_time(struct timer_queue *tq) {
-  struct timespec tp;
-  int _ = clock_gettime(CLOCK_BOOTTIME, &tp);
-  assert(_ == 0);
-  (void)_;
-
-  tq->cur_time = (tp.tv_sec * 1000) + (tp.tv_nsec ? tp.tv_nsec / 1000000 : 0);
+  struct timespec tp = {0, 0};
+  tq->cur_time = timer_queue_get_expiry(&tp);
 };
 
-static time_t timer_queue_get_soonest_expiration(struct timer_queue *tq) {
+static uint64_t timer_queue_get_soonest_expiration(struct timer_queue *tq) {
   if (!pqu_timer_queue_empty(tq->pqu_tq)) {
     ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
-    return (*p)->timeout_ms;
+    return (*p)->expiry_ns;
   } else {
     return 0;
   }
 }
 
-static void timer_queue_set_soonest_expiration(struct timer_queue *tq,
-                                               time_t soonest) {
+static inline uint64_t
+timer_queue_should_update_expiration(struct timer_queue *tq,
+                                     uint64_t maybe_soonest) {
+  // if we don't have a next expiration or the new expiration is sooner than the
+  // current one by more than 500ms
 
-  if (soonest > 0 && (soonest < tq->next_timeout || tq->next_timeout == 0)) {
-    printf("[INFO] timerfd_settime new soonest %zu prev soonest %zu\n", soonest,
-           tq->next_timeout);
-    struct itimerspec utmr = {.it_value =
-                                  {
-                                      soonest / 1000,
-                                      (soonest % 1000) * 1000000,
-                                  },
-                              .it_interval = {
-                                  0,
-                                  0,
-                              }};
 
-    // printf("secs = %ld, nsecs = %ld\n", utmr.it_value.tv_sec,
-    //        utmr.it_value.tv_nsec);
-    tq->next_timeout = soonest;
-    int _ = timerfd_settime(tq->timer_fd, 0, &utmr, NULL);
-    if (_ == -1) {
-      perror("timerfd_settime");
-      exit(EXIT_FAILURE);
-    }
-    (void)_;
-  } else {
-    if (soonest == 0)
-      printf("timer queue drained\n");
+  if ((tq->next_expiration == 0 || tq->next_expiration < tq->cur_time) ||
+      (tq->next_expiration > maybe_soonest &&
+       tq->next_expiration - maybe_soonest > 500000)) {
+    return maybe_soonest != 0;
+  }
+
+  return 0;
+}
+
+static void timer_queue_tfd_set_soonest_expiration(struct timer_queue *tq,
+                                                   uint64_t maybe_soonest) {
+  if (timer_queue_should_update_expiration(tq, maybe_soonest)) {
+    uint64_t ns = maybe_soonest - tq->cur_time;
+    struct itimerspec timeout = {
+        .it_value =
+            {
+                .tv_nsec = ns % 1000000000,
+                .tv_sec = ns / 1000000000,
+            },
+        .it_interval =
+            {
+                .tv_nsec = 0,
+                .tv_sec = 0,
+            },
+    };
+
+    tq->next_expiration = maybe_soonest;
+    printf("[INFO] setting timer to expire in %zums\n", ns / 1000000);
+    int ret = timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
+    assert(ret == 0);
   }
 }
+
+
+
 
 static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
                                               ws_server_t *s) {
 
   printf("expired callbacks ---------------------------\n");
-  time_t now_ms = tq->cur_time;
+  time_t now_ns = tq->cur_time;
+  
+
   while (!pqu_timer_queue_empty(tq->pqu_tq)) {
     ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
 
-    if ((*p)->_expiry < now_ms) {
-      printf("expired by %zums\n", now_ms - (*p)->_expiry);
+    if ((*p)->expiry_ns < now_ns) {
+      printf("expired by %zu ns\n", now_ns - (*p)->expiry_ns);
       ws_timer_t *t = *p;
       pqu_timer_queue_pop(tq->pqu_tq);
-      t->cb(s, t);
+      tq->next_expiration = 0;
+      if ((t->cancelled == 0) & (t->cb != NULL))
+        t->cb(s, t->ctx);
+
     } else {
       break;
     }
@@ -4054,33 +4092,39 @@ static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
 
   // update timer with new soonest expiration
   time_t new_soonest = timer_queue_get_soonest_expiration(tq);
-
-  timer_queue_set_soonest_expiration(tq, new_soonest);
+  if (new_soonest == 0) {
+    printf("timer queue drained\n");
+    tq->next_expiration = 0;
+  } else {
+    timer_queue_tfd_set_soonest_expiration(tq, new_soonest);
+  }
 
   printf("expired callbacks end---------------------------\n");
 }
 
 static uint64_t timer_queue_add(struct timer_queue *tq, ws_timer_t *t) {
-  if (t->timeout_ms == 0) {
-    // zero does nothing
-    return 0;
-  }
-
-  uint64_t id = tq->next_id++;
-  t->id = id;
-
-  timer_queue_update_time(tq);                   // update time
-  t->_expiry = tq->cur_time + t->timeout_ms - 1; // set expiration time
-
-  pqu_timer_queue_push(tq->pqu_tq, t); // add to priority queue
-
-  timer_queue_set_soonest_expiration(tq, t->timeout_ms);
-
-  return id;
+  timer_queue_update_time(tq);
+  pqu_timer_queue_push(tq->pqu_tq, t);
+  timer_queue_tfd_set_soonest_expiration(tq, t->expiry_ns);
+  return t->expiry_ns;
 }
 
-void ws_server_set_timeout(ws_server_t *s, ws_timer_t *t) {
-  timer_queue_add(s->tq, t);
+int ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
+                          timeout_cb_t cb) {
+
+  if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999)) {
+    return -1;
+  }
+
+  // TODO (sah): use a pool and recycle these instead of malloc
+  ws_timer_t *timeout = malloc(sizeof(ws_timer_t));
+  timeout->cancelled = 0;
+  timeout->ctx = ctx;
+  timeout->cb = cb;
+  timeout->expiry_ns = timer_queue_get_expiry(tp);
+  timer_queue_add(s->tq, timeout);
+
+  return 0;
 }
 
 /*************** Per Message Deflate *************/

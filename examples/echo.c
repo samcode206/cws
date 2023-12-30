@@ -1,5 +1,4 @@
 #include "ws.h"
-#include <stdio.h>
 #include <sys/signal.h>
 
 
@@ -9,20 +8,6 @@ void onOpen(ws_conn_t *conn) {}
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_conn_put_msg(conn, msg, n, opcode, 0);
-}
-
-
-void on_timeout(ws_server_t *s, ws_timer_t *ctx){
-  printf("on timeout\n");
-
-  if (ctx->timeout_ms > 1){
-    ctx->timeout_ms -= 1;
-    ws_server_set_timeout(s, ctx);
-    return;
-  }
-
-  // ws_server_set_timeout(s, ctx);
-  free(ctx);
 }
 
 void onDisconnect(ws_conn_t *conn, unsigned long err) {}
@@ -43,15 +28,6 @@ int main(void) {
 
   ws_server_t *s = ws_server_create(&p);
 
-  ws_timer_t *t = malloc(sizeof(ws_timer_t));
-  t->timeout_ms = 250;
-  t->cb = on_timeout;
-
-  ws_server_set_timeout(s, t);
-
   ws_server_start(s, 1024);
-  
-
-  
   return 0;
 }
