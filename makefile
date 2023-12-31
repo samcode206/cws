@@ -80,15 +80,6 @@ broadcast: install
 autobahn: install
 	gcc ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
-timers: install
-	gcc ./examples/timers.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
-
-timers2: install
-	gcc ./examples/timers2.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
-
-timers3: install
-	gcc ./examples/timer3.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
-
 async_task:
 	gcc ./src/*.c ./test/e2e/async_task.c -lz O3 -march=native -mtune=native -Wall --pedantic -o server
 

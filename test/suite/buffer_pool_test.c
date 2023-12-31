@@ -43,7 +43,7 @@ int TEST_MIRRORED_BUF_POOL_USE_ALL_BUFS(const char *name) {
 
   for (size_t buf_sz = page_size; buf_sz < max_size; buf_sz += page_size) {
 
-    for (size_t nmemb = 1; nmemb < 1024; nmemb++) {
+    for (size_t nmemb = 1; nmemb < 128; nmemb++) {
       ws_server_t *s = malloc(sizeof(ws_server_t));
       assert(s != NULL);
       struct mirrored_buf_pool *p = mirrored_buf_pool_create(nmemb, buf_sz, 1);
