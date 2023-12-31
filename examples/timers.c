@@ -63,7 +63,7 @@ void set_metric_timer(ws_server_t *s, uint64_t d, timeout_cb_t cb) {
   };
   struct timer_metrics *metrics = new_timer_metrics((d)MS);
   pending_timeouts++;
-  int ret = ws_server_set_timeout(s, &timeout, metrics, cb);
+  ws_server_set_timeout(s, &timeout, metrics, cb);
   printf("[TIMER_INFO] SCHED id: %zu scheduled: %zu expires: %zu duration: %zu "
          "ms now %zu\n",
          metrics->id, metrics->scheduled_at, metrics->expected_timeout,
@@ -73,7 +73,7 @@ void set_metric_timer(ws_server_t *s, uint64_t d, timeout_cb_t cb) {
 void on_timeout(ws_server_t *s, void *ctx) {
   struct timer_metrics *m = (struct timer_metrics *)ctx;
   uint64_t now = get_ns_time();
-  uint64_t diff = now - m->expected_timeout;
+
   pending_timeouts--;
 
   assert(now > m->expected_timeout);

@@ -3972,7 +3972,6 @@ static int ws_timer_min_heap_insert(ws_timer_min_heap_t *q, ws_timer_t *d);
 
 static ws_timer_t *ws_timer_min_heap_pop(ws_timer_min_heap_t *q);
 
-static int ws_timer_min_heap_rm(ws_timer_min_heap_t *q, ws_timer_t *d);
 
 static ws_timer_t *ws_timer_min_heap_peek(ws_timer_min_heap_t *q);
 
@@ -4303,19 +4302,19 @@ static ws_timer_t *ws_timer_min_heap_pop(ws_timer_min_heap_t *q) {
   return head;
 }
 
-static int ws_timer_min_heap_rm(ws_timer_min_heap_t *q, ws_timer_t *d) {
-  size_t posn = ws_timer_min_heap_get_timer_pos(d);
-  q->timers[posn] = q->timers[--q->size];
+// static int ws_timer_min_heap_rm(ws_timer_min_heap_t *q, ws_timer_t *d) {
+//   size_t posn = ws_timer_min_heap_get_timer_pos(d);
+//   q->timers[posn] = q->timers[--q->size];
 
-  if (ws_timer_min_heap_cmp_pri(
-          ws_timer_min_heap_get_timer_pri(d),
-          ws_timer_min_heap_get_timer_pri(q->timers[posn])))
-    bubble_up(q, posn);
-  else
-    bubble_down(q, posn);
+//   if (ws_timer_min_heap_cmp_pri(
+//           ws_timer_min_heap_get_timer_pri(d),
+//           ws_timer_min_heap_get_timer_pri(q->timers[posn])))
+//     bubble_up(q, posn);
+//   else
+//     bubble_down(q, posn);
 
-  return 0;
-}
+//   return 0;
+// }
 
 static ws_timer_t *ws_timer_min_heap_peek(ws_timer_min_heap_t *q) {
   ws_timer_t *d;
