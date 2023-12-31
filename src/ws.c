@@ -3471,8 +3471,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
           (s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
 
         if (s->events[i].data.ptr == &tqfd) {
-          ws_timer_queue_run_expired_callbacks(s->tq, s);
           timer_consume(tqfd);
+          ws_timer_queue_run_expired_callbacks(s->tq, s);
         } else if (s->events[i].data.ptr == &tfd) {
           timer_consume(tfd);
 
@@ -3972,7 +3972,6 @@ static int ws_timer_min_heap_insert(ws_timer_min_heap_t *q, ws_timer_t *d);
 
 static ws_timer_t *ws_timer_min_heap_pop(ws_timer_min_heap_t *q);
 
-
 static ws_timer_t *ws_timer_min_heap_peek(ws_timer_min_heap_t *q);
 
 static inline uint64_t timespec_ns(struct timespec *tp) {
@@ -3984,7 +3983,7 @@ static inline uint64_t timespec_ns(struct timespec *tp) {
 // the expiration time of the timeout in relation to the current time
 // if timeout_after is NULL it will return 0
 static uint64_t ws_timer_queue_get_expiration(struct ws_timer_queue *tq,
-                                           struct timespec *timeout_after) {
+                                              struct timespec *timeout_after) {
   struct timespec tp;
   int ret = clock_gettime(CLOCK_BOOTTIME, &tp);
   assert(ret == 0);
@@ -4043,7 +4042,8 @@ static void ws_timer_queue_destroy(struct ws_timer_queue *tq) {
   memset(tq, 0, sizeof(*tq));
 }
 
-static uint64_t ws_timer_queue_get_soonest_expiration(struct ws_timer_queue *tq) {
+static uint64_t
+ws_timer_queue_get_soonest_expiration(struct ws_timer_queue *tq) {
   ws_timer_t *t = ws_timer_min_heap_peek(tq->pqu);
   if (t) {
     return t->expiry_ns;
@@ -4054,7 +4054,7 @@ static uint64_t ws_timer_queue_get_soonest_expiration(struct ws_timer_queue *tq)
 
 static inline uint64_t
 ws_timer_queue_should_update_expiration(struct ws_timer_queue *tq,
-                                     uint64_t maybe_soonest) {
+                                        uint64_t maybe_soonest) {
   // if we don't have a next expiration or the new expiration is sooner than the
   if ((tq->next_expiration == 0 || tq->next_expiration < tq->cur_time) ||
       (tq->next_expiration > maybe_soonest)) {
@@ -4065,7 +4065,7 @@ ws_timer_queue_should_update_expiration(struct ws_timer_queue *tq,
 }
 
 static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
-                                                   uint64_t maybe_soonest) {
+                                                      uint64_t maybe_soonest) {
   if (ws_timer_queue_should_update_expiration(tq, maybe_soonest)) {
     uint64_t ns = maybe_soonest - tq->cur_time;
     struct itimerspec timeout = {
@@ -4113,7 +4113,7 @@ static void ws_timer_queue_cancel(struct ws_timer_queue *tq, uint64_t exp_id) {
 }
 
 static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
-                                              ws_server_t *s) {
+                                                 ws_server_t *s) {
   ws_timer_queue_get_expiration(tq, NULL); // used to update the time
   printf("---------------------- timer_queue_run_expired_callbacks\n");
 
