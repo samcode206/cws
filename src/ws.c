@@ -174,11 +174,17 @@ static inline uint_fast8_t io_tmp_err(ssize_t n) {
 #endif
 }
 
+static unsigned long page_size = 0;
 static size_t get_pagesize() {
-  long page_size = sysconf(_SC_PAGESIZE);
-  if (page_size <= 0) {
-    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
-    exit(EXIT_FAILURE);
+  if (!page_size) {
+    long ret = sysconf(_SC_PAGESIZE);
+    if (ret <= 0) {
+      fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+      exit(EXIT_FAILURE);
+    }
+
+    page_size = (unsigned long)ret;
+    return (size_t)page_size;
   }
 
   return (size_t)page_size;
