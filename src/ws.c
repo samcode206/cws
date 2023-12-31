@@ -4094,22 +4094,41 @@ static void ws_timer_queue_cancel(struct ws_timer_queue *tq, uint64_t exp_id) {
   size_t len = ws_timer_min_heap_size(tq->pqu);
 
   if (len) {
+    ws_timer_t *t;
+
+    // fast path for soonest timer cancel
+    if ((t = ws_timer_min_heap_peek(tq->pqu))->expiry_ns == exp_id) {
+      t->cb = NULL;
+      ws_timer_min_heap_pop(tq->pqu);
+      free(t);
+
+      uint64_t soonest = ws_timer_queue_get_soonest_expiration(tq);
+      if (soonest) {
+        ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
+      } else {
+        // if this was the last timer to be canceled reset the tfd timer
+        struct itimerspec tp;
+        memset(&tp, 0, sizeof(tp));
+        timerfd_settime(tq->timer_fd, 0, &tp, NULL);
+      }
+
+      return;
+    }
+
+    // scan for the timer
     while (len) {
-      if (exp_id == tq->pqu->timers[len]->expiry_ns) {
-        tq->pqu->timers[len]->cb = NULL;
-        printf("Canceled\n");
+      t = tq->pqu->timers[len];
+      if (exp_id == t->expiry_ns) {
+        t->cb = NULL;
         return;
       }
 
       if (!len--) {
         // index zero isn't valid
-        printf("done %zu\n", len);
         break;
       }
     }
   }
-
-  printf("not found\n");
 }
 
 static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
