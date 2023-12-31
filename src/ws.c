@@ -4297,7 +4297,6 @@ uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
       (tp->tv_nsec == 0 && tp->tv_sec == 0)) {
     return 0;
   }
-  // TODO (sah): use a pool and recycle these instead of malloc
 
   ws_timer_t *t = ws_timer_queue_pool_new_timer(s->tq);
   if (t == NULL)
