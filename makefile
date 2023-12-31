@@ -22,6 +22,12 @@ ifdef NO_DEBUG
 CFLAGS += -DNDEBUG
 endif
 
+
+ifdef WS_TIMER_SLACK_NS
+CFLAGS += -DWS_TIMER_SLACK_NS=$(WS_TIMER_SLACK_NS)
+endif
+
+
 all: $(SHARED_LIB) $(STATIC_LIB)
 
 

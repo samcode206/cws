@@ -44,6 +44,13 @@
 #include <zlib.h>
 #endif /* WITH_COMPRESSION */
 
+#ifndef WS_TIMER_SLACK_NS
+#define WS_TIMER_SLACK_NS 50000
+#endif /* WS_TIMER_SLACK_NS */
+
+static_assert(WS_TIMER_SLACK_NS >= 0 && WS_TIMER_SLACK_NS <= 4000000000,
+              "WS_TIMER_SLACK_NS must be between 0 and 4,000,000,000");
+
 struct conn_list {
   size_t len;
   size_t cap;
@@ -3978,6 +3985,12 @@ static inline uint64_t timespec_ns(struct timespec *tp) {
   return ((uint64_t)tp->tv_sec * 1000000000) + (uint64_t)tp->tv_nsec;
 }
 
+static inline bool
+ws_timer_queue_is_timer_expired(struct ws_timer_queue *restrict tq,
+                                ws_timer_t *restrict t) {
+  return t->expiry_ns <= tq->cur_time;
+}
+
 // updates the current time of the timer queue
 // if timeout_after is not NULL it will return
 // the expiration time of the timeout in relation to the current time
@@ -4066,8 +4079,10 @@ ws_timer_queue_should_update_expiration(struct ws_timer_queue *tq,
 
 static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
                                                       uint64_t maybe_soonest) {
+
   if (ws_timer_queue_should_update_expiration(tq, maybe_soonest)) {
-    uint64_t ns = maybe_soonest - tq->cur_time;
+    uint64_t ns = maybe_soonest - tq->cur_time + WS_TIMER_SLACK_NS;
+
     struct itimerspec timeout = {
         .it_value =
             {
@@ -4138,15 +4153,14 @@ static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
 
   ws_timer_t *t;
   while ((t = ws_timer_min_heap_peek(tq->pqu)) != NULL) {
-    if (t->expiry_ns < tq->cur_time) {
+    if (ws_timer_queue_is_timer_expired(tq, t)) {
+      ws_timer_min_heap_pop(tq->pqu);
+
       tq->next_expiration = 0;
       if ((t->cb != NULL)) {
         t->cb(s, t->ctx);
-      } else {
-        printf("timer id %zu was canceled\n", t->expiry_ns);
       }
 
-      ws_timer_min_heap_pop(tq->pqu);
       free(t);
     } else {
       break;
