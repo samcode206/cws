@@ -61,14 +61,14 @@ typedef struct ws_timer_t {
 } ws_timer_t;
 
 /** the priority queue handle */
-typedef struct ws_timer_min_heap_t {
+typedef struct {
   size_t size;
   size_t avb;
   size_t step;
   ws_timer_t **timers;
 } ws_timer_min_heap_t;
 
-struct timer_queue {
+struct ws_timer_queue {
   uint64_t cur_time;        // current time (only updated when we need it!)
   uint64_t next_expiration; // next expiry in nano seconds (since cur_time)
   int timer_fd;             // timer fd for epoll
@@ -105,9 +105,9 @@ typedef struct server {
   z_stream *dstrm;
 #endif /* WITH_COMPRESSION */
 
-  int tfd;                // timer fd
-  struct timer_queue *tq; // High resolution timer queue
-  size_t internal_polls;  // number of internal fds being watched by epoll
+  int tfd;                   // timer fd
+  struct ws_timer_queue *tq; // High resolution timer queue
+  size_t internal_polls;     // number of internal fds being watched by epoll
   int user_epoll;
   struct epoll_event events[1024];
   struct conn_list pending_timers;
@@ -2616,12 +2616,12 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
 
 /****************** Server **********************/
 
-static struct timer_queue *timer_queue_init(struct timer_queue *tq);
+static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq);
 
-static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
-                                              ws_server_t *s);
+static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
+                                                 ws_server_t *s);
 
-static void timer_queue_destroy(struct timer_queue *tq);
+static void ws_timer_queue_destroy(struct ws_timer_queue *tq);
 
 static void ws_server_time_update(ws_server_t *s) {
   long t = time(NULL);
@@ -3092,7 +3092,7 @@ static void ws_server_register_buffers(ws_server_t *s,
     exit(EXIT_FAILURE);
   }
 
-  s->tq = timer_queue_init(s->tq);
+  s->tq = ws_timer_queue_init(s->tq);
   s->internal_polls++;
 }
 
@@ -3471,9 +3471,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
           (s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
 
         if (s->events[i].data.ptr == &tqfd) {
+          ws_timer_queue_run_expired_callbacks(s->tq, s);
           timer_consume(tqfd);
-          timer_queue_run_expired_callbacks(s->tq, s);
-
         } else if (s->events[i].data.ptr == &tfd) {
           timer_consume(tfd);
 
@@ -3932,7 +3931,7 @@ int ws_server_destroy(ws_server_t *s) {
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
   ws_server_async_runner_destroy(s);
-  timer_queue_destroy(s->tq);
+  ws_timer_queue_destroy(s->tq);
   free(s->tq);
   s->tq = NULL;
 
@@ -3977,7 +3976,6 @@ static int ws_timer_min_heap_rm(ws_timer_min_heap_t *q, ws_timer_t *d);
 
 static ws_timer_t *ws_timer_min_heap_peek(ws_timer_min_heap_t *q);
 
-
 static inline uint64_t timespec_ns(struct timespec *tp) {
   return ((uint64_t)tp->tv_sec * 1000000000) + (uint64_t)tp->tv_nsec;
 }
@@ -3986,7 +3984,7 @@ static inline uint64_t timespec_ns(struct timespec *tp) {
 // if timeout_after is not NULL it will return
 // the expiration time of the timeout in relation to the current time
 // if timeout_after is NULL it will return 0
-static uint64_t timer_queue_get_expiration(struct timer_queue *tq,
+static uint64_t ws_timer_queue_get_expiration(struct ws_timer_queue *tq,
                                            struct timespec *timeout_after) {
   struct timespec tp;
   int ret = clock_gettime(CLOCK_BOOTTIME, &tp);
@@ -4009,7 +4007,7 @@ static uint64_t timer_queue_get_expiration(struct timer_queue *tq,
   }
 }
 
-static struct timer_queue *timer_queue_init(struct timer_queue *tq) {
+static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq) {
   tq->next_expiration = 0;
 
   tq->timer_fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
@@ -4029,7 +4027,7 @@ static struct timer_queue *timer_queue_init(struct timer_queue *tq) {
   return tq;
 }
 
-static void timer_queue_destroy(struct timer_queue *tq) {
+static void ws_timer_queue_destroy(struct ws_timer_queue *tq) {
   ws_timer_t *t;
   while ((t = ws_timer_min_heap_peek(tq->pqu)) != NULL) {
     t->cb = NULL;
@@ -4046,7 +4044,7 @@ static void timer_queue_destroy(struct timer_queue *tq) {
   memset(tq, 0, sizeof(*tq));
 }
 
-static uint64_t timer_queue_get_soonest_expiration(struct timer_queue *tq) {
+static uint64_t ws_timer_queue_get_soonest_expiration(struct ws_timer_queue *tq) {
   ws_timer_t *t = ws_timer_min_heap_peek(tq->pqu);
   if (t) {
     return t->expiry_ns;
@@ -4056,7 +4054,7 @@ static uint64_t timer_queue_get_soonest_expiration(struct timer_queue *tq) {
 }
 
 static inline uint64_t
-timer_queue_should_update_expiration(struct timer_queue *tq,
+ws_timer_queue_should_update_expiration(struct ws_timer_queue *tq,
                                      uint64_t maybe_soonest) {
   // if we don't have a next expiration or the new expiration is sooner than the
   if ((tq->next_expiration == 0 || tq->next_expiration < tq->cur_time) ||
@@ -4067,9 +4065,9 @@ timer_queue_should_update_expiration(struct timer_queue *tq,
   return 0;
 }
 
-static void timer_queue_tfd_set_soonest_expiration(struct timer_queue *tq,
+static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
                                                    uint64_t maybe_soonest) {
-  if (timer_queue_should_update_expiration(tq, maybe_soonest)) {
+  if (ws_timer_queue_should_update_expiration(tq, maybe_soonest)) {
     uint64_t ns = maybe_soonest - tq->cur_time;
     struct itimerspec timeout = {
         .it_value =
@@ -4093,9 +4091,8 @@ static void timer_queue_tfd_set_soonest_expiration(struct timer_queue *tq,
   }
 }
 
-static void timer_queue_cancel(struct timer_queue *tq, uint64_t exp_id) {
+static void ws_timer_queue_cancel(struct ws_timer_queue *tq, uint64_t exp_id) {
   size_t len = ws_timer_min_heap_size(tq->pqu);
-
 
   if (len) {
     while (len) {
@@ -4105,7 +4102,7 @@ static void timer_queue_cancel(struct timer_queue *tq, uint64_t exp_id) {
         return;
       }
 
-      if (!len--){
+      if (!len--) {
         // index zero isn't valid
         printf("done %zu\n", len);
         break;
@@ -4116,9 +4113,9 @@ static void timer_queue_cancel(struct timer_queue *tq, uint64_t exp_id) {
   printf("not found\n");
 }
 
-static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
+static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
                                               ws_server_t *s) {
-  timer_queue_get_expiration(tq, NULL); // used to update the time
+  ws_timer_queue_get_expiration(tq, NULL); // used to update the time
   printf("---------------------- timer_queue_run_expired_callbacks\n");
 
   ws_timer_t *t;
@@ -4138,23 +4135,23 @@ static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
     }
   }
 
-  uint64_t soonest = timer_queue_get_soonest_expiration(tq);
+  uint64_t soonest = ws_timer_queue_get_soonest_expiration(tq);
   if (soonest != 0 && soonest != tq->next_expiration) {
     printf("[WS_INFO] new soonest = %zuus\n", (soonest - tq->cur_time) / 1000);
-    timer_queue_tfd_set_soonest_expiration(tq, soonest);
+    ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
   }
 
   printf("---------------------- \n");
 }
 
-static uint64_t timer_queue_add(struct timer_queue *tq, ws_timer_t *t) {
+static uint64_t timer_queue_add(struct ws_timer_queue *tq, ws_timer_t *t) {
   int ret = ws_timer_min_heap_insert(tq->pqu, t);
   if (ret != 0) {
     return 0;
   }
 
   assert(tq->cur_time < t->expiry_ns);
-  timer_queue_tfd_set_soonest_expiration(tq, t->expiry_ns);
+  ws_timer_queue_tfd_set_soonest_expiration(tq, t->expiry_ns);
   return t->expiry_ns;
 }
 
@@ -4169,14 +4166,13 @@ uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
   ws_timer_t *timeout = malloc(sizeof(ws_timer_t));
   timeout->ctx = ctx;
   timeout->cb = cb;
-  timeout->expiry_ns = timer_queue_get_expiration(s->tq, tp);
+  timeout->expiry_ns = ws_timer_queue_get_expiration(s->tq, tp);
   return timer_queue_add(s->tq, timeout);
 }
 
 void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle) {
-  timer_queue_cancel(s->tq, timer_handle);
+  ws_timer_queue_cancel(s->tq, timer_handle);
 }
-
 
 static inline int ws_timer_min_heap_cmp_pri(uint64_t next, uint64_t curr) {
   return (next > curr);
@@ -4193,7 +4189,6 @@ static inline size_t ws_timer_min_heap_get_timer_pos(ws_timer_t *t) {
 static inline void ws_timer_min_heap_set_timer_pos(ws_timer_t *t, size_t pos) {
   t->pos = pos;
 }
-
 
 #define left(i) ((i) << 1)
 #define right(i) (((i) << 1) + 1)

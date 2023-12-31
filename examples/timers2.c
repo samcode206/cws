@@ -83,7 +83,7 @@ void on_timeout(ws_server_t *s, void *ctx) {
 
   if (pending_timeouts == 0) {
     printf("done\n");
-    exit(EXIT_SUCCESS);
+    ws_server_shutdown(s);
   }
 }
 
@@ -114,6 +114,6 @@ int main(void) {
   }
 
   ws_server_start(s, 1024);
-
+  ws_server_destroy(s);
   return 0;
 }
