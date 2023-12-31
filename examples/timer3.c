@@ -39,11 +39,19 @@ int main(void) {
 
   ws_server_t *s = ws_server_create(&p);
 
-  struct timespec timeout = {.tv_sec = 3, .tv_nsec = 0};
+  struct timespec timeout1 = {.tv_sec = 3, .tv_nsec = 0};
 
-  uint64_t tid = ws_server_set_timeout(s, &timeout, NULL, on_timeout);
+  uint64_t tid1 = ws_server_set_timeout(s, &timeout1, NULL, on_timeout);
   
-  ws_server_cancel_timeout(s, tid);
+  struct timespec timeout2 = {.tv_sec = 10, .tv_nsec = 0};
+
+  uint64_t tid2 = ws_server_set_timeout(s, &timeout2, NULL, on_timeout);
+
+  ws_server_cancel_timeout(s, tid1);
+  ws_server_cancel_timeout(s, tid2);
+
+
+    ws_server_cancel_timeout(s, 321412412); // invalid tid
 
   ws_server_start(s, 1024);
 

@@ -52,28 +52,27 @@ struct conn_list {
 
 typedef struct ws_timer_t ws_timer_t;
 
-typedef ws_timer_t *timer_queue;
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#define P
-#define T timer_queue
-#include "./lib/pqu.h"
-
-#pragma GCC diagnostic pop
-
 typedef struct ws_timer_t {
-  uint64_t expiry_ns;
-  void *ctx;
-  timeout_cb_t cb;
-  bool cancelled;
+  uint64_t expiry_ns; /* expiry in nanoseconds, doubles as the priority and the
+                         id of a timer */
+  timeout_cb_t cb;    /* callback function, called on expiration of the timer */
+  void *ctx;          /* ctx pointer given to the callback */
+  size_t pos;         /* position in the priority queue */
 } ws_timer_t;
+
+/** the priority queue handle */
+typedef struct ws_timer_min_heap_t {
+  size_t size;
+  size_t avb;
+  size_t step;
+  ws_timer_t **timers;
+} ws_timer_min_heap_t;
 
 struct timer_queue {
   uint64_t cur_time;        // current time (only updated when we need it!)
   uint64_t next_expiration; // next expiry in nano seconds (since cur_time)
   int timer_fd;             // timer fd for epoll
-  pqu_timer_queue *pqu_tq;  // min heap of soonest expiring timers
+  ws_timer_min_heap_t *pqu; // min heap of soonest expiring timers
 };
 
 typedef struct server {
@@ -3964,9 +3963,20 @@ int ws_server_destroy(ws_server_t *s) {
 
 /************** High Resolution Timers **************/
 
-static int timer_queue_cmp(timer_queue *a, timer_queue *b) {
-  return (*a)->expiry_ns < (*b)->expiry_ns;
-}
+static ws_timer_min_heap_t *ws_timer_min_heap_init(size_t n);
+
+static void ws_timer_min_heap_destroy(ws_timer_min_heap_t *q);
+
+static size_t ws_timer_min_heap_size(ws_timer_min_heap_t *q);
+
+static int ws_timer_min_heap_insert(ws_timer_min_heap_t *q, ws_timer_t *d);
+
+static ws_timer_t *ws_timer_min_heap_pop(ws_timer_min_heap_t *q);
+
+static int ws_timer_min_heap_rm(ws_timer_min_heap_t *q, ws_timer_t *d);
+
+static ws_timer_t *ws_timer_min_heap_peek(ws_timer_min_heap_t *q);
+
 
 static inline uint64_t timespec_ns(struct timespec *tp) {
   return ((uint64_t)tp->tv_sec * 1000000000) + (uint64_t)tp->tv_nsec;
@@ -4000,37 +4010,35 @@ static uint64_t timer_queue_get_expiration(struct timer_queue *tq,
 }
 
 static struct timer_queue *timer_queue_init(struct timer_queue *tq) {
-  pqu_timer_queue timer_queue = pqu_timer_queue_init(timer_queue_cmp);
-  pqu_timer_queue *p = calloc(1, sizeof(timer_queue));
-  memcpy(p, &timer_queue, sizeof(timer_queue));
-  tq->pqu_tq = p;
-
   tq->next_expiration = 0;
 
   tq->timer_fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
   if (tq->timer_fd == -1) {
-    pqu_timer_queue_free(tq->pqu_tq);
-    free(p);
-    tq->pqu_tq = NULL;
     perror("timerfd_create");
     exit(EXIT_FAILURE);
   }
+
+  ws_timer_min_heap_t *tmh = ws_timer_min_heap_init(8);
+  if (tmh == NULL) {
+    perror("malloc");
+    exit(EXIT_FAILURE);
+  }
+
+  tq->pqu = tmh;
 
   return tq;
 }
 
 static void timer_queue_destroy(struct timer_queue *tq) {
-
-  while (!pqu_timer_queue_empty(tq->pqu_tq)) {
-    ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
-    ws_timer_t *t = *p;
-    pqu_timer_queue_pop(tq->pqu_tq);
+  ws_timer_t *t;
+  while ((t = ws_timer_min_heap_peek(tq->pqu)) != NULL) {
+    t->cb = NULL;
+    ws_timer_min_heap_pop(tq->pqu);
     free(t);
   }
 
-  pqu_timer_queue_free(tq->pqu_tq);
-  free(tq->pqu_tq);
-  tq->pqu_tq = NULL;
+  ws_timer_min_heap_destroy(tq->pqu);
+
   if (tq->timer_fd > 0) {
     close(tq->timer_fd);
   }
@@ -4039,9 +4047,9 @@ static void timer_queue_destroy(struct timer_queue *tq) {
 }
 
 static uint64_t timer_queue_get_soonest_expiration(struct timer_queue *tq) {
-  if (!pqu_timer_queue_empty(tq->pqu_tq)) {
-    ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
-    return (*p)->expiry_ns;
+  ws_timer_t *t = ws_timer_min_heap_peek(tq->pqu);
+  if (t) {
+    return t->expiry_ns;
   } else {
     return 0;
   }
@@ -4085,46 +4093,47 @@ static void timer_queue_tfd_set_soonest_expiration(struct timer_queue *tq,
   }
 }
 
-static int eq(timer_queue *a, timer_queue *b) {
-  printf("looking a %zu b %zu\n", (*a)->expiry_ns, (*b)->expiry_ns);
-   int x = (*a)->expiry_ns == (*b)->expiry_ns;
-  printf("found %d\n", x);
-  return x;
-}
-
 static void timer_queue_cancel(struct timer_queue *tq, uint64_t exp_id) {
-  ws_timer_t t = {.expiry_ns = exp_id};
-  ws_timer_t **f = pqu_timer_queue_find(tq->pqu_tq, &t, eq);
+  size_t len = ws_timer_min_heap_size(tq->pqu);
 
-  if (f != NULL) {
-    (*f)->cancelled = 1;
-  } else {
-    printf("not found\n");
+
+  if (len) {
+    while (len) {
+      if (exp_id == tq->pqu->timers[len]->expiry_ns) {
+        tq->pqu->timers[len]->cb = NULL;
+        printf("Canceled\n");
+        return;
+      }
+
+      if (!len--){
+        // index zero isn't valid
+        printf("done %zu\n", len);
+        break;
+      }
+    }
   }
+
+  printf("not found\n");
 }
 
 static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
                                               ws_server_t *s) {
   timer_queue_get_expiration(tq, NULL); // used to update the time
   printf("---------------------- timer_queue_run_expired_callbacks\n");
-  while (!pqu_timer_queue_empty(tq->pqu_tq)) {
-    ws_timer_t **p = pqu_timer_queue_top(tq->pqu_tq);
-    if ((*p)->expiry_ns < tq->cur_time) {
+
+  ws_timer_t *t;
+  while ((t = ws_timer_min_heap_peek(tq->pqu)) != NULL) {
+    if (t->expiry_ns < tq->cur_time) {
       tq->next_expiration = 0;
-      ws_timer_t *t = *p;
-      pqu_timer_queue_pop(tq->pqu_tq);
-      if ((t->cancelled == 0) & (t->cb != NULL)) {
+      if ((t->cb != NULL)) {
         t->cb(s, t->ctx);
+      } else {
+        printf("timer id %zu was canceled\n", t->expiry_ns);
       }
 
-      if (t->cancelled ){
-        printf("timeout was canceled: id %zu\n", t->expiry_ns);
-      }
-
+      ws_timer_min_heap_pop(tq->pqu);
       free(t);
     } else {
-      printf("breaking at next expire %zu current %zu\n", (*p)->expiry_ns,
-             tq->cur_time);
       break;
     }
   }
@@ -4139,14 +4148,18 @@ static void timer_queue_run_expired_callbacks(struct timer_queue *tq,
 }
 
 static uint64_t timer_queue_add(struct timer_queue *tq, ws_timer_t *t) {
-  pqu_timer_queue_push(tq->pqu_tq, t);
+  int ret = ws_timer_min_heap_insert(tq->pqu, t);
+  if (ret != 0) {
+    return 0;
+  }
+
   assert(tq->cur_time < t->expiry_ns);
   timer_queue_tfd_set_soonest_expiration(tq, t->expiry_ns);
   return t->expiry_ns;
 }
 
 uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
-                          timeout_cb_t cb) {
+                               timeout_cb_t cb) {
 
   if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999) ||
       (tp->tv_nsec == 0 && tp->tv_sec == 0)) {
@@ -4154,21 +4167,172 @@ uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
   }
   // TODO (sah): use a pool and recycle these instead of malloc
   ws_timer_t *timeout = malloc(sizeof(ws_timer_t));
-  timeout->cancelled = 0;
   timeout->ctx = ctx;
   timeout->cb = cb;
   timeout->expiry_ns = timer_queue_get_expiration(s->tq, tp);
   return timer_queue_add(s->tq, timeout);
 }
 
-
-void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle){
+void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle) {
   timer_queue_cancel(s->tq, timer_handle);
 }
 
 
+static inline int ws_timer_min_heap_cmp_pri(uint64_t next, uint64_t curr) {
+  return (next > curr);
+}
+
+static inline uint64_t ws_timer_min_heap_get_timer_pri(ws_timer_t *t) {
+  return t->expiry_ns;
+}
+
+static inline size_t ws_timer_min_heap_get_timer_pos(ws_timer_t *t) {
+  return t->pos;
+}
+
+static inline void ws_timer_min_heap_set_timer_pos(ws_timer_t *t, size_t pos) {
+  t->pos = pos;
+}
 
 
+#define left(i) ((i) << 1)
+#define right(i) (((i) << 1) + 1)
+#define parent(i) ((i) >> 1)
+
+static ws_timer_min_heap_t *ws_timer_min_heap_init(size_t n) {
+  ws_timer_min_heap_t *q;
+
+  if (!(q = malloc(sizeof(ws_timer_min_heap_t))))
+    return NULL;
+
+  if (!(q->timers = malloc((n + 1) * sizeof(ws_timer_t *)))) {
+    free(q);
+    return NULL;
+  }
+
+  q->size = 1;
+  q->avb = q->step = (n + 1);
+
+  return q;
+}
+
+static void ws_timer_min_heap_destroy(ws_timer_min_heap_t *q) {
+  free(q->timers);
+  free(q);
+}
+
+static void bubble_up(ws_timer_min_heap_t *q, size_t i) {
+  size_t parent_node;
+  ws_timer_t *moving_node = q->timers[i];
+  uint64_t moving_pri = ws_timer_min_heap_get_timer_pri(moving_node);
+
+  for (parent_node = parent(i);
+       ((i > 1) && ws_timer_min_heap_cmp_pri(
+                       ws_timer_min_heap_get_timer_pri(q->timers[parent_node]),
+                       moving_pri));
+       i = parent_node, parent_node = parent(i)) {
+    q->timers[i] = q->timers[parent_node];
+
+    ws_timer_min_heap_set_timer_pos(q->timers[i], i);
+  }
+
+  q->timers[i] = moving_node;
+  ws_timer_min_heap_set_timer_pos(moving_node, i);
+}
+
+static size_t maxchild(ws_timer_min_heap_t *q, size_t i) {
+  size_t child_node = left(i);
+
+  if (child_node >= q->size)
+    return 0;
+
+  if ((child_node + 1) < q->size &&
+      ws_timer_min_heap_cmp_pri(
+          ws_timer_min_heap_get_timer_pri(q->timers[child_node]),
+          ws_timer_min_heap_get_timer_pri(q->timers[child_node + 1])))
+    child_node++; /* right child is greater */
+
+  return child_node;
+}
+
+static void bubble_down(ws_timer_min_heap_t *q, size_t i) {
+  size_t child_node;
+  void *moving_node = q->timers[i];
+  uint64_t moving_pri = ws_timer_min_heap_get_timer_pri(moving_node);
+
+  while ((child_node = maxchild(q, i)) &&
+         ws_timer_min_heap_cmp_pri(moving_pri, ws_timer_min_heap_get_timer_pri(
+                                                   q->timers[child_node]))) {
+    q->timers[i] = q->timers[child_node];
+    ws_timer_min_heap_set_timer_pos(q->timers[i], i);
+    i = child_node;
+  }
+
+  q->timers[i] = moving_node;
+  ws_timer_min_heap_set_timer_pos(moving_node, i);
+}
+
+static int ws_timer_min_heap_insert(ws_timer_min_heap_t *q, ws_timer_t *d) {
+  void *tmp;
+  size_t i;
+  size_t newsize;
+
+  if (!q)
+    return 1;
+
+  if (q->size >= q->avb) {
+    newsize = q->size + q->step;
+    if (!(tmp = realloc(q->timers, sizeof(void *) * newsize)))
+      return 1;
+    q->timers = tmp;
+    q->avb = newsize;
+  }
+
+  i = q->size++;
+  q->timers[i] = d;
+  bubble_up(q, i);
+
+  return 0;
+}
+
+static ws_timer_t *ws_timer_min_heap_pop(ws_timer_min_heap_t *q) {
+  ws_timer_t *head;
+
+  if (!q || q->size == 1)
+    return NULL;
+
+  head = q->timers[1];
+  q->timers[1] = q->timers[--q->size];
+  bubble_down(q, 1);
+
+  return head;
+}
+
+static int ws_timer_min_heap_rm(ws_timer_min_heap_t *q, ws_timer_t *d) {
+  size_t posn = ws_timer_min_heap_get_timer_pos(d);
+  q->timers[posn] = q->timers[--q->size];
+
+  if (ws_timer_min_heap_cmp_pri(
+          ws_timer_min_heap_get_timer_pri(d),
+          ws_timer_min_heap_get_timer_pri(q->timers[posn])))
+    bubble_up(q, posn);
+  else
+    bubble_down(q, posn);
+
+  return 0;
+}
+
+static ws_timer_t *ws_timer_min_heap_peek(ws_timer_min_heap_t *q) {
+  ws_timer_t *d;
+  if (!q || q->size == 1)
+    return NULL;
+  d = q->timers[1];
+  return d;
+}
+
+static size_t ws_timer_min_heap_size(ws_timer_min_heap_t *q) {
+  return (q->size - 1);
+}
 
 /*************** Per Message Deflate *************/
 
