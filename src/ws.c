@@ -48,8 +48,14 @@
 #define WS_TIMER_SLACK_NS 50000
 #endif /* WS_TIMER_SLACK_NS */
 
+#ifndef WS_TIMER_INIT_CAP
+#define WS_TIMER_INIT_CAP 8
+#endif /* WS_TIMER_INIT_CAP */
+
 static_assert(WS_TIMER_SLACK_NS >= 0 && WS_TIMER_SLACK_NS <= 4000000000,
               "WS_TIMER_SLACK_NS must be between 0 and 4,000,000,000");
+
+static_assert(WS_TIMER_INIT_CAP >= 1, "WS_TIMER_INIT_CAP must be >= 1");
 
 struct conn_list {
   size_t len;
@@ -75,11 +81,19 @@ typedef struct {
   ws_timer_t **timers;
 } ws_timer_min_heap_t;
 
+struct ws_timer_node {
+  ws_timer_t *timer;
+  struct ws_timer_node *next;
+};
+
 struct ws_timer_queue {
   uint64_t cur_time;        // current time (only updated when we need it!)
   uint64_t next_expiration; // next expiry in nano seconds (since cur_time)
   int timer_fd;             // timer fd for epoll
   ws_timer_min_heap_t *pqu; // min heap of soonest expiring timers
+
+  size_t avb_nodes;                      // timer nodes available for use
+  struct ws_timer_node *timer_pool_head; // head of the linked list of timers
 };
 
 typedef struct server {
@@ -4024,6 +4038,18 @@ static uint64_t ws_timer_queue_get_expiration(struct ws_timer_queue *tq,
   }
 }
 
+static struct ws_timer_node *ws_timer_node_new() {
+  void *mem = malloc(sizeof(struct ws_timer_node) + sizeof(ws_timer_t));
+  if (!mem)
+    return NULL;
+
+  struct ws_timer_node *tn = mem;
+  tn->timer = (ws_timer_t *)((uintptr_t)mem + sizeof(struct ws_timer_node));
+
+  tn->next = NULL;
+  return tn;
+}
+
 static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq) {
   tq->next_expiration = 0;
 
@@ -4033,15 +4059,43 @@ static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq) {
     exit(EXIT_FAILURE);
   }
 
-  ws_timer_min_heap_t *tmh = ws_timer_min_heap_init(8);
+  ws_timer_min_heap_t *tmh = ws_timer_min_heap_init(WS_TIMER_INIT_CAP);
   if (tmh == NULL) {
     perror("malloc");
     exit(EXIT_FAILURE);
   }
-
   tq->pqu = tmh;
 
+  tq->timer_pool_head = ws_timer_node_new();
+  if (tq->timer_pool_head == NULL) {
+    perror("malloc");
+    exit(EXIT_FAILURE);
+  }
+
+  struct ws_timer_node *tmp = tq->timer_pool_head;
+  for (size_t i = 1; i < WS_TIMER_INIT_CAP; i++) {
+    tmp->next = ws_timer_node_new();
+    if (tmp->next == NULL) {
+      perror("malloc");
+      exit(EXIT_FAILURE);
+    }
+    tmp = tmp->next;
+  }
+
+  tq->avb_nodes = WS_TIMER_INIT_CAP;
+
   return tq;
+}
+
+static void ws_timer_queue_pool_put_timer(struct ws_timer_queue *tq,
+                                          ws_timer_t *t) {
+  // the node and timner are allocated together
+  // so we can calculate the node pointer from the timer pointer
+  struct ws_timer_node *tn =
+      (struct ws_timer_node *)((uintptr_t)t - sizeof(struct ws_timer_node));
+  tn->next = tq->timer_pool_head;
+  tq->timer_pool_head = tn;
+  tq->avb_nodes++;
 }
 
 static void ws_timer_queue_destroy(struct ws_timer_queue *tq) {
@@ -4049,7 +4103,7 @@ static void ws_timer_queue_destroy(struct ws_timer_queue *tq) {
   while ((t = ws_timer_min_heap_peek(tq->pqu)) != NULL) {
     t->cb = NULL;
     ws_timer_min_heap_pop(tq->pqu);
-    free(t);
+    ws_timer_queue_pool_put_timer(tq, t);
   }
 
   ws_timer_min_heap_destroy(tq->pqu);
@@ -4058,7 +4112,35 @@ static void ws_timer_queue_destroy(struct ws_timer_queue *tq) {
     close(tq->timer_fd);
   }
 
+  struct ws_timer_node *tmp = tq->timer_pool_head;
+  while (tmp) {
+    struct ws_timer_node *next = tmp->next;
+    free(tmp);
+    tmp = next;
+    tq->avb_nodes--;
+  }
+
+  assert(tq->avb_nodes == 0);
   memset(tq, 0, sizeof(*tq));
+}
+
+static ws_timer_t *ws_timer_queue_pool_new_timer(struct ws_timer_queue *tq) {
+  if (tq->timer_pool_head) {
+    assert(tq->avb_nodes > 0);
+    struct ws_timer_node *tn = tq->timer_pool_head;
+    tq->timer_pool_head = tn->next;
+    tq->avb_nodes--;
+    return tn->timer;
+  } else {
+    assert(tq->avb_nodes == 0);
+    struct ws_timer_node *new_tn = ws_timer_node_new();
+    if (new_tn == NULL)
+      return NULL;
+
+    return new_tn->timer;
+  }
+
+  return NULL;
 }
 
 static uint64_t
@@ -4121,7 +4203,7 @@ static void ws_timer_queue_cancel(struct ws_timer_queue *tq, uint64_t exp_id) {
     if ((t = ws_timer_min_heap_peek(tq->pqu))->expiry_ns == exp_id) {
       t->cb = NULL;
       ws_timer_min_heap_pop(tq->pqu);
-      free(t);
+      ws_timer_queue_pool_put_timer(tq, t);
 
       uint64_t soonest = ws_timer_queue_get_soonest_expiration(tq);
       if (soonest) {
@@ -4167,17 +4249,32 @@ static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
         t->cb(s, t->ctx);
       }
 
-      free(t);
+      ws_timer_queue_pool_put_timer(tq, t);
     } else {
       break;
     }
   }
 
   uint64_t soonest = ws_timer_queue_get_soonest_expiration(tq);
-  if (soonest != 0 && soonest != tq->next_expiration) {
-    printf("[WS_INFO] new soonest = %zuus\n", (soonest - tq->cur_time) / 1000);
-    ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
+  if (!soonest) {
+    // garabage collect timers that are no longer needed
+    // keep at least WS_TIMER_INIT_CAP timers in the pool
+    struct ws_timer_node *tmp = tq->timer_pool_head;
+    while (tmp) {
+      if (tq->avb_nodes > WS_TIMER_INIT_CAP) {
+        struct ws_timer_node *next = tmp->next;
+        free(tmp);
+        tmp = next;
+        tq->avb_nodes--;
+      } else {
+        break;
+      }
+    }
+
+    tq->timer_pool_head = tmp;
   }
+
+  ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
 
   printf("---------------------- \n");
 }
@@ -4201,11 +4298,15 @@ uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
     return 0;
   }
   // TODO (sah): use a pool and recycle these instead of malloc
-  ws_timer_t *timeout = malloc(sizeof(ws_timer_t));
-  timeout->ctx = ctx;
-  timeout->cb = cb;
-  timeout->expiry_ns = ws_timer_queue_get_expiration(s->tq, tp);
-  return timer_queue_add(s->tq, timeout);
+
+  ws_timer_t *t = ws_timer_queue_pool_new_timer(s->tq);
+  if (t == NULL)
+    return 0;
+
+  t->ctx = ctx;
+  t->cb = cb;
+  t->expiry_ns = ws_timer_queue_get_expiration(s->tq, tp);
+  return timer_queue_add(s->tq, t);
 }
 
 void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle) {
