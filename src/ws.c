@@ -63,7 +63,6 @@ struct conn_list {
   ws_conn_t **conns;
 };
 
-
 struct ws_timer {
   uint64_t expiry_ns; /* expiry in nanoseconds, doubles as the priority and the
                          id of a timer */
@@ -4134,13 +4133,29 @@ ws_timer_queue_get_soonest_expiration(struct ws_timer_queue *tq) {
   }
 }
 
-static inline uint64_t
+static uint64_t
 ws_timer_queue_should_update_expiration(struct ws_timer_queue *tq,
                                         uint64_t maybe_soonest) {
-  // if we don't have a next expiration or the new expiration is sooner than the
-  if ((tq->next_expiration == 0 || tq->next_expiration < tq->cur_time) ||
-      (tq->next_expiration > maybe_soonest)) {
-    return maybe_soonest != 0;
+  // if we don't have a soonest expiration
+  if (!maybe_soonest) {
+    return 0;
+  }
+
+  // if we don't have a next expiration
+  if (!tq->next_expiration) {
+    return 1;
+  }
+
+  // out-dated expiration (do we need this check???)
+  if (tq->next_expiration < tq->cur_time) {
+    return 1;
+  }
+
+  // if the new expiration is sooner than the current one
+  if (tq->next_expiration > maybe_soonest) {
+    // check to see if the new expiration is within the slack
+    // if it is we don't need to update the timer (the below evaluates to 0)
+    return tq->next_expiration > maybe_soonest + WS_TIMER_SLACK_NS;
   }
 
   return 0;
@@ -4150,7 +4165,7 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
                                                       uint64_t maybe_soonest) {
 
   if (ws_timer_queue_should_update_expiration(tq, maybe_soonest)) {
-    uint64_t ns = maybe_soonest - tq->cur_time + WS_TIMER_SLACK_NS;
+    uint64_t ns = maybe_soonest - tq->cur_time;
 
     struct itimerspec timeout = {
         .it_value =

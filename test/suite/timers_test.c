@@ -166,8 +166,8 @@ static int TEST_TIMERS_CANCELLATION(const char *name) {
   return EXIT_SUCCESS;
 }
 
-void TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_ON_TIMEOUT(
-    ws_server_t *s, void *ctx) {
+void TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_ON_TIMEOUT(ws_server_t *s,
+                                                        void *ctx) {
   struct timer_metrics *m = (struct timer_metrics *)ctx;
   uint64_t now = get_ns_time();
   uint64_t diff = now - m->expected_timeout;
@@ -195,14 +195,13 @@ static int TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_1MS_APART(const char *name) {
   set_metric_timer(
       s, 3000,
       TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_ON_TIMEOUT); // one
-                                                                     // longer
-                                                                     // runnning
-                                                                     // timer
+                                                           // longer
+                                                           // runnning
+                                                           // timer
 
   // timers scheduled together spaced 1ms apart
   for (size_t i = 1; i < 1000; i++) {
-    set_metric_timer(
-        s, i, TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_ON_TIMEOUT);
+    set_metric_timer(s, i, TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_ON_TIMEOUT);
   }
 
   ws_server_start(s, 1024);
@@ -210,8 +209,6 @@ static int TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_1MS_APART(const char *name) {
 
   return EXIT_SUCCESS;
 }
-
-
 
 static int TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER(const char *name) {
 
@@ -220,14 +217,14 @@ static int TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER(const char *name) {
   set_metric_timer(
       s, 3000,
       TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_ON_TIMEOUT); // one
-                                                                     // longer
-                                                                     // runnning
-                                                                     // timer
+                                                           // longer
+                                                           // runnning
+                                                           // timer
 
-  // all timers expire in 100 ms 
+  // all timers expire in 100 ms
   for (size_t i = 1; i < 1000; i++) {
-    set_metric_timer(
-        s, 100, TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_ON_TIMEOUT);
+    set_metric_timer(s, 100,
+                     TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_ON_TIMEOUT);
   }
 
   ws_server_start(s, 1024);
@@ -236,7 +233,6 @@ static int TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER(const char *name) {
   return EXIT_SUCCESS;
 }
 
-
 #define NUM_TESTS 4
 
 struct test_table CONN_POOL_TESTSUITE[NUM_TESTS] = {
@@ -244,7 +240,8 @@ struct test_table CONN_POOL_TESTSUITE[NUM_TESTS] = {
     {"Time Cancellation", TEST_TIMERS_CANCELLATION},
     {"Batch of timers scheduled together 1ms apart",
      TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER_1MS_APART},
-     {"Batch of timers scheduled together", TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER},
+    {"Batch of timers scheduled together",
+     TEST_BATCH_OF_TIMERS_SCHEDULED_TOGETHER},
 };
 
 int main(void) { RUN_TESTS("timers", CONN_POOL_TESTSUITE, NUM_TESTS); }
