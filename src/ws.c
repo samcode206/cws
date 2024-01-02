@@ -3413,7 +3413,6 @@ static inline void timer_consume(int tfd) {
   (void)_;
 }
 
-// callback called on each TICK (1 second)
 static void ws_server_on_tick(ws_server_t *s, void *ctx) {
   (void)ctx;
   ws_server_time_update(s);
@@ -3423,7 +3422,6 @@ static void ws_server_on_tick(ws_server_t *s, void *ctx) {
   ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
 }
 
-// check low res timers every 5 ticks (5 seconds)
 static void ws_server_on_io_timers_need_check(ws_server_t *s, void *ctx) {
   (void)ctx;
   // printf("ws_server_on_io_timers_need_check\n");
@@ -3439,14 +3437,11 @@ int ws_server_start(ws_server_t *s, int backlog) {
   }
 
   struct ws_server_async_runner *arptr = s->async_runner;
-
   int epfd = s->epoll_fd;
-
   int tqfd = s->tq->timer_fd;
 
-  ws_server_register_timer_queue(s, &tqfd); // High-Res Timer
+  ws_server_register_timer_queue(s, &tqfd);
   ws_server_time_update(s);
-
   struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
   ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
   ts.tv_sec = TIMER_CHECK_TICKS;
@@ -4205,7 +4200,7 @@ static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
   }
 
   uint64_t soonest = ws_timer_queue_get_soonest_expiration(tq);
-  if (!soonest) {
+  if (!soonest || ws_timer_min_heap_size(tq->pqu) <= 2) {
     // garabage collect timers that are no longer needed
     // keep at least WS_TIMERS_DEFAULT_SZ timers in the pool
     struct ws_timer *tmp = tq->timer_pool_head;
