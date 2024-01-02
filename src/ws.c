@@ -120,7 +120,6 @@ typedef struct server {
   z_stream *dstrm;
 #endif /* WITH_COMPRESSION */
 
-  int tfd;                   // timer fd
   struct ws_timer_queue *tq; // High resolution timer queue
   size_t internal_polls;     // number of internal fds being watched by epoll
   int user_epoll;
@@ -2777,7 +2776,7 @@ static void server_check_pending_timers(ws_server_t *s) {
   }
 }
 
-static void server_do_mirrored_buf_pool_gc(ws_server_t *s) {
+static void server_maybe_do_mirrored_buf_pool_gc(ws_server_t *s) {
   struct mirrored_buf_pool *p = s->buffer_pool;
 
   // place the max depth reached for the tick in the avg_depths ring
@@ -3165,16 +3164,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
 
   ws_server_register_callbacks(s, params);
 
-  // register timer fd
-  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-  s->tfd = tfd;
-  if (s->tfd == -1) {
-    close(s->fd);
-    close(s->epoll_fd);
-    free(s);
-    return NULL;
-  }
-
   // this crashes on failure (fix?)
   ws_server_register_buffers(s, params);
 
@@ -3369,30 +3358,6 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
   }
 }
 
-static void ws_server_register_timer(ws_server_t *s, int *tfd) {
-  struct itimerspec timer = {.it_interval =
-                                 {
-                                     .tv_nsec = 0,
-                                     .tv_sec = SECONDS_PER_TICK,
-                                 },
-                             .it_value = {
-                                 .tv_nsec = 0,
-                                 .tv_sec = SECONDS_PER_TICK,
-                             }};
-
-  timerfd_settime(*tfd, 0, &timer, NULL);
-
-  (void)timer;
-
-  struct epoll_event ev = {
-      .events = EPOLLIN,
-      .data = {.ptr = tfd},
-  };
-
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, *tfd, &ev);
-  s->internal_polls++;
-}
-
 static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
   int ret = listen(s->fd, backlog);
   if (ret < 0) {
@@ -3448,23 +3413,44 @@ static inline void timer_consume(int tfd) {
   (void)_;
 }
 
+// callback called on each TICK (1 second)
+static void ws_server_on_tick(ws_server_t *s, void *ctx) {
+  (void)ctx;
+  ws_server_time_update(s);
+  // printf("ws_server_on_tick\n");
+  server_maybe_do_mirrored_buf_pool_gc(s);
+  struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
+  ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
+}
+
+// check low res timers every 5 ticks (5 seconds)
+static void ws_server_on_io_timers_need_check(ws_server_t *s, void *ctx) {
+  (void)ctx;
+  // printf("ws_server_on_io_timers_need_check\n");
+  server_check_pending_timers(s);
+  struct timespec ts = {.tv_sec = TIMER_CHECK_TICKS, .tv_nsec = 0};
+  ws_server_set_timeout(s, &ts, NULL, ws_server_on_io_timers_need_check);
+}
+
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = ws_server_listen_and_serve(s, backlog);
   if (ret < 0) {
     return ret;
   }
 
-  size_t timer_check_counter = TIMER_CHECK_TICKS;
   struct ws_server_async_runner *arptr = s->async_runner;
 
   int epfd = s->epoll_fd;
-  int tfd = s->tfd;
 
   int tqfd = s->tq->timer_fd;
 
   ws_server_register_timer_queue(s, &tqfd); // High-Res Timer
-  ws_server_register_timer(s, &tfd);        // io Timer
   ws_server_time_update(s);
+
+  struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
+  ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
+  ts.tv_sec = TIMER_CHECK_TICKS;
+  ws_server_set_timeout(s, &ts, NULL, ws_server_on_io_timers_need_check);
 
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
@@ -3487,27 +3473,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
     int *user_epoll_ptr = &s->user_epoll;
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if ((s->events[i].data.ptr == &tfd) |
-          (s->events[i].data.ptr == user_epoll_ptr) |
+      if ((s->events[i].data.ptr == user_epoll_ptr) |
           (s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
 
         if (s->events[i].data.ptr == &tqfd) {
           timer_consume(tqfd);
           ws_timer_queue_run_expired_callbacks(s->tq, s);
-        } else if (s->events[i].data.ptr == &tfd) {
-          timer_consume(tfd);
-
-          // we update the time every time tfd is readable (every second)
-          ws_server_time_update(s);
-
-          timer_check_counter--;
-          if (!timer_check_counter) {
-            server_check_pending_timers(s);
-            timer_check_counter = TIMER_CHECK_TICKS;
-          }
-
-          server_do_mirrored_buf_pool_gc(s);
-
         } else if (s->events[i].data.ptr == arptr) {
           ws_server_async_runner_run_pending_callbacks(s, arptr);
         } else {
@@ -3824,21 +3795,14 @@ int ws_server_shutdown(ws_server_t *s) {
     s->internal_polls--;
   }
 
-  // close timer fd
-  if (s->tfd) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &ev);
-    close(s->tfd);
-    s->tfd = -1;
-    s->internal_polls--;
-  }
-
   // close event fd
   if (s->async_runner->chanfd && s->internal_polls) {
     s->internal_polls--;
   }
 
+  // close timer fd
   if (s->tq) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &ev);
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tq->timer_fd, &ev);
     close(s->tq->timer_fd);
     s->tq->timer_fd = -1;
     s->internal_polls--;
@@ -3941,12 +3905,6 @@ int ws_server_destroy(ws_server_t *s) {
     epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
     close(s->fd);
     s->fd = -1;
-  }
-
-  if (s->tfd > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &ev);
-    close(s->tfd);
-    s->tfd = -1;
   }
 
   server_ws_conn_pool_destroy(s);
