@@ -4181,11 +4181,7 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
     };
 
     tq->next_expiration = maybe_soonest;
-    printf("[WS_INFO] next expiration in = %zuus\n", ns / 1000);
-
-    int ret = timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
-
-    assert(ret == 0);
+    timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
   }
 }
 
@@ -4233,7 +4229,6 @@ static void ws_timer_queue_cancel(struct ws_timer_queue *tq, uint64_t exp_id) {
 static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
                                                  ws_server_t *s) {
   ws_timer_queue_get_expiration(tq, NULL); // used to update the time
-  printf("---------------------- timer_queue_run_expired_callbacks\n");
 
   struct ws_timer *t;
   while ((t = ws_timer_min_heap_peek(tq->pqu)) != NULL) {
@@ -4271,8 +4266,6 @@ static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
   }
 
   ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
-
-  printf("---------------------- \n");
 }
 
 static uint64_t timer_queue_add(struct ws_timer_queue *tq, struct ws_timer *t) {
