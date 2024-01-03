@@ -44,10 +44,50 @@
 #include <zlib.h>
 #endif /* WITH_COMPRESSION */
 
+#ifndef WS_TIMER_SLACK_NS
+#define WS_TIMER_SLACK_NS 50000
+#endif /* WS_TIMER_SLACK_NS */
+
+#ifndef WS_TIMERS_DEFAULT_SZ
+#define WS_TIMERS_DEFAULT_SZ 8
+#endif /* WS_TIMERS_DEFAULT_SZ */
+
+static_assert(WS_TIMER_SLACK_NS >= 0 && WS_TIMER_SLACK_NS <= 4000000000,
+              "WS_TIMER_SLACK_NS must be between 0 and 4,000,000,000");
+
+static_assert(WS_TIMERS_DEFAULT_SZ >= 1, "WS_TIMERS_DEFAULT_SZ must be >= 1");
+
 struct conn_list {
   size_t len;
   size_t cap;
   ws_conn_t **conns;
+};
+
+struct ws_timer {
+  uint64_t expiry_ns; /* expiry in nanoseconds, doubles as the priority and the
+                         id of a timer */
+  timeout_cb_t cb;    /* callback function, called on expiration of the timer */
+  void *ctx;          /* ctx pointer given to the callback */
+  size_t pos;         /* position in the priority queue */
+  struct ws_timer *next; /* next timer */
+};
+
+/** the priority queue handle */
+typedef struct {
+  size_t size;
+  size_t avb;
+  size_t step;
+  struct ws_timer **timers;
+} ws_timer_min_heap_t;
+
+struct ws_timer_queue {
+  uint64_t cur_time;        // current time (only updated when we need it!)
+  uint64_t next_expiration; // next expiry in nano seconds (since cur_time)
+  int timer_fd;             // timer fd for epoll
+  ws_timer_min_heap_t *pqu; // min heap of soonest expiring timers
+
+  size_t avb_nodes;                 // timer nodes available for use
+  struct ws_timer *timer_pool_head; // head of the linked list of timers
 };
 
 typedef struct server {
@@ -56,12 +96,14 @@ typedef struct server {
   ws_on_msg_cb_t on_ws_msg;
   struct mirrored_buf_pool *buffer_pool;
   unsigned int server_time;
+  unsigned int next_io_timeout;
+  unsigned int next_io_timeout_set;
   int active_events; // number of active events per epoll_wait call
   int fd;            // server file descriptor
   int epoll_fd;
   void *ctx;
-  ws_open_cb_t on_ws_open;
 
+  ws_open_cb_t on_ws_open;
   unsigned open_conns; // open websocket connections
   unsigned max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
@@ -80,8 +122,8 @@ typedef struct server {
   z_stream *dstrm;
 #endif /* WITH_COMPRESSION */
 
-  int tfd;               // timer fd
-  size_t internal_polls; // number of internal fds being watched by epoll
+  struct ws_timer_queue *tq; // High resolution timer queue
+  size_t internal_polls;     // number of internal fds being watched by epoll
   int user_epoll;
   struct epoll_event events[1024];
   struct conn_list pending_timers;
@@ -89,7 +131,6 @@ typedef struct server {
 } ws_server_t;
 
 #define SECONDS_PER_TICK 1
-#define TIMER_CHECK_TICKS 5
 #define READ_TIMEOUT 60
 #define BUF_POOL_LONG_AVG_TICKS 256
 #define BUF_POOL_GC_TICKS 16
@@ -141,11 +182,17 @@ static inline uint_fast8_t io_tmp_err(ssize_t n) {
 #endif
 }
 
+static unsigned long page_size = 0;
 static size_t get_pagesize() {
-  long page_size = sysconf(_SC_PAGESIZE);
-  if (page_size <= 0) {
-    fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
-    exit(EXIT_FAILURE);
+  if (!page_size) {
+    long ret = sysconf(_SC_PAGESIZE);
+    if (ret <= 0) {
+      fprintf(stderr, "sysconf(_SC_PAGESIZE): failed to determine page size\n");
+      exit(EXIT_FAILURE);
+    }
+
+    page_size = (unsigned long)ret;
+    return (size_t)page_size;
   }
 
   return (size_t)page_size;
@@ -181,10 +228,6 @@ struct ws_conn_t {
   mirrored_buf_t *send_buf;
   ws_server_t *base; // server ptr
   void *ctx;         // user data pointer
-
-#ifdef WITH_COMPRESSION
-  struct dyn_buf *pmd_buf;
-#endif /* WITH_COMPRESSION */
 };
 
 static inline bool is_upgraded(ws_conn_t *c) {
@@ -478,9 +521,12 @@ void ws_conn_resume_reads(ws_conn_t *c) {
   }
 }
 
+static void ws_server_set_io_timeout(ws_server_t *s, unsigned int *restrict res,
+                                     unsigned int secs);
+
 void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closed(c)) {
-    c->read_timeout = ws_server_time(c->base) + secs;
+    ws_server_set_io_timeout(c->base, &c->read_timeout, secs);
   } else {
     c->read_timeout = 0;
   }
@@ -488,26 +534,13 @@ void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
 
 void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closed(c)) {
-    c->write_timeout = ws_server_time(c->base) + secs;
+    ws_server_set_io_timeout(c->base, &c->write_timeout, secs);
   } else {
     c->write_timeout = 0;
   }
 }
 
 static void mirrored_buf_put(struct mirrored_buf_pool *bp, mirrored_buf_t *buf);
-
-#ifdef WITH_COMPRESSION
-struct dyn_buf {
-  size_t len;
-  size_t cap;
-  char data[];
-};
-
-static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c);
-
-static void conn_dyn_buf_dispose(ws_conn_t *c);
-
-#endif /* WITH_COMPRESSION */
 
 void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
   if (is_closed(c)) {
@@ -525,10 +558,6 @@ void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
     c->send_buf = NULL;
   }
   server_pending_timers_remove(c);
-
-#ifdef WITH_COMPRESSION
-  conn_dyn_buf_dispose(c);
-#endif /* WITH_COMPRESSION */
 
   struct epoll_event ev = {
       0,
@@ -1664,7 +1693,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
 #endif /* WITH_COMPRESSION */
 
     conn->needed_bytes = 2;
-    conn->read_timeout = ws_server_time(s) + READ_TIMEOUT;
+    ws_conn_set_read_timeout(conn, READ_TIMEOUT);
     mirrored_buf_put(s->buffer_pool, conn->recv_buf);
     conn->recv_buf = NULL;
     if (s->on_ws_handshake) {
@@ -1908,8 +1937,6 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
-  unsigned int next_read_timeout = ws_server_time(s) + READ_TIMEOUT;
-
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
   size_t max_allowed_len = s->max_msg_len;
@@ -1998,7 +2025,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
 
         uint8_t *msg = frame + mask_offset + 4;
         msg_unmask(msg, frame + mask_offset, payload_len);
-        conn->read_timeout = next_read_timeout;
+        ws_conn_set_read_timeout(conn, READ_TIMEOUT);
         switch (opcode) {
         case OP_TXT:
         case OP_BIN:
@@ -2405,20 +2432,40 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
   if (!compress || !is_compression_allowed(c)) {
     stat = conn_write_frame(c, msg, n, op);
   } else {
-    struct dyn_buf *deflate_buf = conn_dyn_buf_get(c);
+    mirrored_buf_t *tmp_buf;
+    bool from_buf_pool = false;
+    if (c->base->buffer_pool->avb) {
+      tmp_buf = mirrored_buf_get(c->base->buffer_pool);
+      from_buf_pool = true;
+    }
+
+    char *deflate_buf;
+    if (from_buf_pool) {
+      deflate_buf = (char *)tmp_buf->buf;
+    } else {
+      deflate_buf = malloc(sizeof(char) * c->base->buffer_pool->buf_sz);
+      if (deflate_buf == NULL) {
+        return WS_SEND_FAILED;
+      }
+    }
 
     ssize_t compressed_len = deflation_stream_deflate(
-        c->base->dstrm, msg, (unsigned)n, deflate_buf->data + deflate_buf->len,
-        (unsigned)deflate_buf->cap - (unsigned)deflate_buf->len, true);
+        c->base->dstrm, msg, (unsigned)n, deflate_buf, (unsigned)c->base->buffer_pool->buf_sz, true);
     if (compressed_len > 0) {
-      stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
-                              (size_t)compressed_len, op | 0x40);
-
-      if (!deflate_buf->len) {
-        conn_dyn_buf_dispose(c);
+      stat =
+          conn_write_frame(c, deflate_buf, (size_t)compressed_len, op | 0x40);
+      if (from_buf_pool) {
+        mirrored_buf_put(c->base->buffer_pool, tmp_buf);
+      } else {
+        free(deflate_buf);
       }
 
     } else {
+      if (from_buf_pool) {
+        mirrored_buf_put(c->base->buffer_pool, tmp_buf);
+      } else {
+        free(deflate_buf);
+      }
       return WS_SEND_FAILED; // compression error
     }
   }
@@ -2590,6 +2637,13 @@ void ws_conn_close(ws_conn_t *conn, void *msg, size_t len, uint16_t code) {
 
 /****************** Server **********************/
 
+static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq);
+
+static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
+                                                 ws_server_t *s);
+
+static void ws_timer_queue_destroy(struct ws_timer_queue *tq);
+
 static void ws_server_time_update(ws_server_t *s) {
   long t = time(NULL);
   if (likely((t > 0) & (t < 4294967296))) {
@@ -2600,7 +2654,30 @@ static void ws_server_time_update(ws_server_t *s) {
   }
 }
 
+static void ws_server_set_io_timeout(ws_server_t *s, unsigned int *restrict res,
+                                     unsigned int secs) {
+  unsigned int timeout = ws_server_time(s) + secs;
+  if (!s->next_io_timeout) {
+    s->next_io_timeout = timeout;
+  } else if (timeout < s->next_io_timeout) {
+    s->next_io_timeout = timeout;
+  }
+
+  *res = timeout;
+}
+
 static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
+
+static void ws_server_register_timer_queue(ws_server_t *s, int *tfd) {
+  assert(s->tq->timer_fd > 0);
+
+  struct epoll_event ev = {
+      .events = EPOLLIN,
+      .data = {.ptr = tfd},
+  };
+
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->tq->timer_fd, &ev);
+}
 
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
   if (cl->len + 1 <= cl->cap) {
@@ -2668,51 +2745,7 @@ static size_t buf_pool_max_depth_running_avg(struct mirrored_buf_pool *p) {
   return 0;
 }
 
-static void server_check_pending_timers(ws_server_t *s) {
-  static_assert(WS_ERR_READ_TIMEOUT == 994,
-                "WS_ERR_READ_TIMEOUT should be 994");
-
-  unsigned int timeout_kind = 993;
-  ws_on_timeout_t cb = s->on_ws_conn_timeout;
-  unsigned int now = ws_server_time(s);
-
-  while (s->pending_timers.len) {
-    size_t i = s->pending_timers.len;
-    while (i--) {
-      ws_conn_t *c = s->pending_timers.conns[i];
-
-      timeout_kind +=
-          (unsigned int)(c->read_timeout != 0 && c->read_timeout < now);
-      timeout_kind +=
-          (unsigned int)((c->write_timeout != 0 && c->write_timeout < now) * 2);
-
-      if (timeout_kind != 993) {
-        c->read_timeout = 0;
-        c->write_timeout = 0;
-
-        if (cb) {
-          cb(c, timeout_kind);
-        } else {
-          ws_conn_destroy(c, timeout_kind);
-        }
-
-        timeout_kind = 993;
-      } else {
-        // ping the client if they are near read timeout
-        if (c->read_timeout != 0 &&
-            c->read_timeout < now + (TIMER_CHECK_TICKS + TIMER_CHECK_TICKS)) {
-          if (is_writeable(c) && is_upgraded(c)) {
-            ws_conn_send_msg(c, NULL, 0, OP_PING, 0);
-          }
-        }
-      }
-    }
-
-    break;
-  }
-}
-
-static void server_do_mirrored_buf_pool_gc(ws_server_t *s) {
+static void server_maybe_do_mirrored_buf_pool_gc(ws_server_t *s) {
   struct mirrored_buf_pool *p = s->buffer_pool;
 
   // place the max depth reached for the tick in the avg_depths ring
@@ -3041,6 +3074,15 @@ static void ws_server_register_buffers(ws_server_t *s,
     perror("calloc");
     exit(EXIT_FAILURE);
   };
+
+  s->tq = calloc(1, sizeof *s->tq);
+  if (s->tq == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
+
+  s->tq = ws_timer_queue_init(s->tq);
+  s->internal_polls++;
 }
 
 #ifdef WITH_COMPRESSION
@@ -3090,16 +3132,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
   }
 
   ws_server_register_callbacks(s, params);
-
-  // register timer fd
-  int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-  s->tfd = tfd;
-  if (s->tfd == -1) {
-    close(s->fd);
-    close(s->epoll_fd);
-    free(s);
-    return NULL;
-  }
 
   // this crashes on failure (fix?)
   ws_server_register_buffers(s, params);
@@ -3151,8 +3183,7 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
   };
 }
 
-static void ws_server_new_conn(ws_server_t *s, int client_fd,
-                               unsigned int now) {
+static void ws_server_new_conn(ws_server_t *s, int client_fd) {
   ws_conn_t *conn = ws_conn_get(s->conn_pool);
   if (unlikely(conn == NULL)) {
     // this would NEVER happen
@@ -3169,19 +3200,15 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd,
   conn->fd = client_fd;
   conn->flags = 0;
   conn->write_timeout = 0;
-  conn->read_timeout = now + READ_TIMEOUT;
+  conn->base = s;
+  ws_conn_set_read_timeout(conn, READ_TIMEOUT);
   conn->needed_bytes = 12;
   conn->fragments_len = 0;
-  conn->base = s;
   set_writeable(conn);
   conn->ctx = NULL;
 
   assert(conn->send_buf == NULL);
   assert(conn->recv_buf == NULL);
-
-#ifdef WITH_COMPRESSION
-  conn->pmd_buf = NULL;
-#endif /* WITH_COMPRESSION*/
 
   struct epoll_event ev = {
       .events = EPOLLIN | EPOLLRDHUP,
@@ -3220,7 +3247,6 @@ static bool ws_server_accept_err_recoverable(int err) {
 
 static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
-  unsigned int now = ws_server_time(s);
   // how many conns should we try to accept in total
   size_t accepts = 1024; // we do a batch of 1024 accepts at a time
 
@@ -3283,7 +3309,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
           return;
         }
 
-        ws_server_new_conn(s, fd, now);
+        ws_server_new_conn(s, fd);
       } else {
         if (s->on_ws_accept_err) {
           s->on_ws_accept_err(s, 0);
@@ -3293,30 +3319,6 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
       }
     }
   }
-}
-
-static void ws_server_register_timer(ws_server_t *s, int *tfd) {
-  struct itimerspec timer = {.it_interval =
-                                 {
-                                     .tv_nsec = 0,
-                                     .tv_sec = SECONDS_PER_TICK,
-                                 },
-                             .it_value = {
-                                 .tv_nsec = 0,
-                                 .tv_sec = SECONDS_PER_TICK,
-                             }};
-
-  timerfd_settime(*tfd, 0, &timer, NULL);
-
-  (void)timer;
-
-  struct epoll_event ev = {
-      .events = EPOLLIN,
-      .data = {.ptr = tfd},
-  };
-
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, *tfd, &ev);
-  s->internal_polls++;
 }
 
 static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
@@ -3368,20 +3370,110 @@ static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
 static void ws_server_async_runner_run_pending_callbacks(
     ws_server_t *s, struct ws_server_async_runner *arptr);
 
+static inline void timer_consume(int tfd) {
+  uint64_t _;
+  read(tfd, &_, 8);
+  (void)_;
+}
+
+static void ws_server_on_tick(ws_server_t *s, void *ctx) {
+  (void)ctx;
+  ws_server_time_update(s);
+  // printf("ws_server_on_tick\n");
+  server_maybe_do_mirrored_buf_pool_gc(s);
+  struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
+  ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
+}
+
+static void ws_server_schedule_next_io_timeout(ws_server_t *s);
+
+static void ws_server_on_io_timers_need_sweep(ws_server_t *s, void *ctx) {
+  (void)ctx;
+  ws_server_time_update(s);
+  static_assert(WS_ERR_READ_TIMEOUT == 994,
+                "WS_ERR_READ_TIMEOUT should be 994");
+
+  unsigned int timeout_kind = 993;
+  ws_on_timeout_t cb = s->on_ws_conn_timeout;
+  unsigned int now = ws_server_time(s);
+
+  // reset the next_io_timeout (we no longer have one scheduled once this is
+  // called)
+  s->next_io_timeout = 0;
+  s->next_io_timeout_set = 0;
+
+  size_t i = s->pending_timers.len;
+  if (!i) {
+    return;
+  }
+
+  while (i--) {
+    ws_conn_t *c = s->pending_timers.conns[i];
+
+    timeout_kind +=
+        (unsigned int)(c->read_timeout != 0 && c->read_timeout < now);
+    timeout_kind +=
+        (unsigned int)((c->write_timeout != 0 && c->write_timeout < now) * 2);
+
+    if (timeout_kind != 993) {
+      c->read_timeout = 0;
+      c->write_timeout = 0;
+
+      if (cb) {
+        cb(c, timeout_kind);
+      } else {
+        ws_conn_destroy(c, timeout_kind);
+      }
+
+      timeout_kind = 993;
+    } else {
+      // we have more timers to check
+      if (c->read_timeout != 0) {
+        s->next_io_timeout = c->read_timeout;
+      }
+      if (c->write_timeout != 0) {
+        s->next_io_timeout = c->write_timeout;
+      }
+
+      // ping the client if they are within 15 seconds of a timeout
+      if (c->read_timeout != 0 && c->read_timeout < now + 15) {
+        if (is_writeable(c) && is_upgraded(c)) {
+          ws_conn_send_msg(c, NULL, 0, OP_PING, 0);
+        }
+      }
+    }
+  }
+
+  ws_server_schedule_next_io_timeout(s);
+}
+
+static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
+  if ((s->next_io_timeout != 0) &
+      (s->next_io_timeout_set != s->next_io_timeout)) {
+    struct timespec ts = {.tv_sec = s->next_io_timeout, .tv_nsec = 0};
+    ts.tv_sec = s->next_io_timeout > s->server_time + 1
+                    ? s->next_io_timeout - s->server_time
+                    : 1;
+
+    s->next_io_timeout_set = s->next_io_timeout;
+    ws_server_set_timeout(s, &ts, NULL, ws_server_on_io_timers_need_sweep);
+  }
+}
+
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = ws_server_listen_and_serve(s, backlog);
   if (ret < 0) {
     return ret;
   }
 
-  size_t timer_check_counter = TIMER_CHECK_TICKS;
   struct ws_server_async_runner *arptr = s->async_runner;
-
   int epfd = s->epoll_fd;
-  int tfd = s->tfd;
+  int tqfd = s->tq->timer_fd;
 
-  ws_server_register_timer(s, &tfd);
+  ws_server_register_timer_queue(s, &tqfd);
   ws_server_time_update(s);
+  struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
+  ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
 
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
@@ -3404,27 +3496,12 @@ int ws_server_start(ws_server_t *s, int backlog) {
     int *user_epoll_ptr = &s->user_epoll;
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if ((s->events[i].data.ptr == &tfd) |
-          (s->events[i].data.ptr == user_epoll_ptr) |
-          (s->events[i].data.ptr == arptr)) {
+      if ((s->events[i].data.ptr == user_epoll_ptr) |
+          (s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
 
-        if (s->events[i].data.ptr == &tfd) {
-          uint64_t _;
-          read(tfd, &_, 8);
-
-          // we update the time every time tfd is readable (every second)
-          ws_server_time_update(s);
-
-          (void)_;
-
-          timer_check_counter--;
-          if (!timer_check_counter) {
-            server_check_pending_timers(s);
-            timer_check_counter = TIMER_CHECK_TICKS;
-          }
-
-          server_do_mirrored_buf_pool_gc(s);
-
+        if (s->events[i].data.ptr == &tqfd) {
+          timer_consume(tqfd);
+          ws_timer_queue_run_expired_callbacks(s->tq, s);
         } else if (s->events[i].data.ptr == arptr) {
           ws_server_async_runner_run_pending_callbacks(s, arptr);
         } else {
@@ -3452,7 +3529,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                   if (!is_upgraded(c)) {
                     set_upgraded(c);
                     c->needed_bytes = 2;
-                    c->read_timeout = ws_server_time(s) + READ_TIMEOUT;
+                    ws_conn_set_read_timeout(c, READ_TIMEOUT);
                     s->on_ws_open(c);
                   }
                 } else {
@@ -3525,6 +3602,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     // drain all outgoing before calling epoll_wait
     server_writeable_conns_drain(s);
+
+    ws_server_schedule_next_io_timeout(s);
   }
 
   return 0;
@@ -3741,16 +3820,16 @@ int ws_server_shutdown(ws_server_t *s) {
     s->internal_polls--;
   }
 
-  // close timer fd
-  if (s->tfd) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &ev);
-    close(s->tfd);
-    s->tfd = -1;
+  // close event fd
+  if (s->async_runner->chanfd && s->internal_polls) {
     s->internal_polls--;
   }
 
-  // close event fd
-  if (s->async_runner->chanfd && s->internal_polls) {
+  // close timer fd
+  if (s->tq) {
+    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tq->timer_fd, &ev);
+    close(s->tq->timer_fd);
+    s->tq->timer_fd = -1;
     s->internal_polls--;
   }
 
@@ -3853,15 +3932,12 @@ int ws_server_destroy(ws_server_t *s) {
     s->fd = -1;
   }
 
-  if (s->tfd > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tfd, &ev);
-    close(s->tfd);
-    s->tfd = -1;
-  }
-
   server_ws_conn_pool_destroy(s);
   server_mirrored_buf_pool_destroy(s);
   ws_server_async_runner_destroy(s);
+  ws_timer_queue_destroy(s->tq);
+  free(s->tq);
+  s->tq = NULL;
 
   close(s->epoll_fd);
   s->epoll_fd = -1;
@@ -3886,6 +3962,483 @@ int ws_server_destroy(ws_server_t *s) {
   free(s);
 
   return 0;
+}
+
+/************** High Resolution Timers **************/
+
+static ws_timer_min_heap_t *ws_timer_min_heap_init(size_t n);
+
+static void ws_timer_min_heap_destroy(ws_timer_min_heap_t *q);
+
+static size_t ws_timer_min_heap_size(ws_timer_min_heap_t *q);
+
+static int ws_timer_min_heap_insert(ws_timer_min_heap_t *q, struct ws_timer *d);
+
+static struct ws_timer *ws_timer_min_heap_pop(ws_timer_min_heap_t *q);
+
+static struct ws_timer *ws_timer_min_heap_peek(ws_timer_min_heap_t *q);
+
+static inline uint64_t timespec_ns(struct timespec *tp) {
+  return ((uint64_t)tp->tv_sec * 1000000000) + (uint64_t)tp->tv_nsec;
+}
+
+static inline bool
+ws_timer_queue_is_timer_expired(struct ws_timer_queue *restrict tq,
+                                struct ws_timer *restrict t) {
+  return t->expiry_ns <= tq->cur_time;
+}
+
+// updates the current time of the timer queue
+// if timeout_after is not NULL it will return
+// the expiration time of the timeout in relation to the current time
+// if timeout_after is NULL it will return 0
+static uint64_t ws_timer_queue_get_expiration(struct ws_timer_queue *tq,
+                                              struct timespec *timeout_after) {
+  struct timespec tp;
+  int ret = clock_gettime(CLOCK_BOOTTIME, &tp);
+  assert(ret == 0);
+  (void)ret;
+
+  tq->cur_time = timespec_ns(&tp);
+
+  if (timeout_after != NULL) {
+    // add the timeout to the current time
+    tp.tv_sec += timeout_after->tv_sec;
+    tp.tv_nsec += timeout_after->tv_nsec;
+
+    // calculate the total time in nano seconds
+    uint64_t exp = timespec_ns(&tp);
+    // printf("current time %zu timeout after %zu\n", tq->cur_time, exp);
+    return exp;
+  } else {
+    return 0;
+  }
+}
+
+static struct ws_timer *
+ws_timer_queue_pool_new_timer(struct ws_timer_queue *tq) {
+  if (tq->timer_pool_head) {
+    assert(tq->avb_nodes > 0);
+    struct ws_timer *tn = tq->timer_pool_head;
+    tq->timer_pool_head = tn->next;
+    tq->avb_nodes--;
+    return tn;
+  } else {
+    // don't increase avb_nodes here
+    assert(tq->avb_nodes == 0);
+    struct ws_timer *tn = calloc(1, sizeof(struct ws_timer));
+    if (tn == NULL)
+      return NULL;
+    return tn;
+  }
+
+  return NULL;
+}
+
+static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq) {
+  tq->next_expiration = 0;
+
+  tq->timer_fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+  if (tq->timer_fd == -1) {
+    perror("timerfd_create");
+    exit(EXIT_FAILURE);
+  }
+
+  ws_timer_min_heap_t *tmh = ws_timer_min_heap_init(WS_TIMERS_DEFAULT_SZ);
+  if (tmh == NULL) {
+    perror("ws_timer_min_heap_init");
+    exit(EXIT_FAILURE);
+  }
+  tq->pqu = tmh;
+
+  tq->timer_pool_head = calloc(1, sizeof(struct ws_timer));
+  if (tq->timer_pool_head == NULL) {
+    perror("calloc");
+    exit(EXIT_FAILURE);
+  }
+
+  struct ws_timer *tmp = tq->timer_pool_head;
+  for (size_t i = 1; i < WS_TIMERS_DEFAULT_SZ; i++) {
+    tmp->next = calloc(1, sizeof(struct ws_timer));
+    if (tmp->next == NULL) {
+      perror("calloc");
+      exit(EXIT_FAILURE);
+    }
+    tmp = tmp->next;
+  }
+
+  tq->avb_nodes = WS_TIMERS_DEFAULT_SZ;
+
+  return tq;
+}
+
+static void ws_timer_queue_pool_put_timer(struct ws_timer_queue *tq,
+                                          struct ws_timer *t) {
+
+  t->next = tq->timer_pool_head;
+  tq->timer_pool_head = t;
+  tq->avb_nodes++;
+}
+
+static void ws_timer_queue_destroy(struct ws_timer_queue *tq) {
+  struct ws_timer *t;
+  while ((t = ws_timer_min_heap_peek(tq->pqu)) != NULL) {
+    t->cb = NULL;
+    ws_timer_min_heap_pop(tq->pqu);
+    ws_timer_queue_pool_put_timer(tq, t);
+  }
+
+  ws_timer_min_heap_destroy(tq->pqu);
+
+  if (tq->timer_fd > 0) {
+    close(tq->timer_fd);
+  }
+
+  struct ws_timer *tmp = tq->timer_pool_head;
+  while (tmp) {
+    struct ws_timer *next = tmp->next;
+    free(tmp);
+    tmp = next;
+    tq->avb_nodes--;
+  }
+
+  assert(tq->avb_nodes == 0);
+  memset(tq, 0, sizeof(*tq));
+}
+
+static uint64_t
+ws_timer_queue_get_soonest_expiration(struct ws_timer_queue *tq) {
+  struct ws_timer *t = ws_timer_min_heap_peek(tq->pqu);
+  if (t) {
+    return t->expiry_ns;
+  } else {
+    return 0;
+  }
+}
+
+static uint64_t
+ws_timer_queue_should_update_expiration(struct ws_timer_queue *tq,
+                                        uint64_t maybe_soonest) {
+  // if we don't have a soonest expiration
+  if (!maybe_soonest) {
+    return 0;
+  }
+
+  // if we don't have a next expiration
+  if (!tq->next_expiration) {
+    return 1;
+  }
+
+  // out-dated expiration (do we need this check???)
+  if (tq->next_expiration < tq->cur_time) {
+    return 1;
+  }
+
+  // if the new expiration is sooner than the current one
+  if (tq->next_expiration > maybe_soonest) {
+    // check to see if the new expiration is within the slack
+    // if it is we don't need to update the timer (the below evaluates to 0)
+    return tq->next_expiration > maybe_soonest + WS_TIMER_SLACK_NS;
+  }
+
+  return 0;
+}
+
+static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
+                                                      uint64_t maybe_soonest) {
+
+  if (ws_timer_queue_should_update_expiration(tq, maybe_soonest)) {
+    uint64_t ns = maybe_soonest - tq->cur_time;
+
+    struct itimerspec timeout = {
+        .it_value =
+            {
+                .tv_nsec = (long)ns % 1000000000,
+                .tv_sec = (long)ns / 1000000000,
+            },
+        .it_interval =
+            {
+                .tv_nsec = 0,
+                .tv_sec = 0,
+            },
+    };
+
+    tq->next_expiration = maybe_soonest;
+    timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
+  }
+}
+
+static void ws_timer_queue_cancel(struct ws_timer_queue *tq, uint64_t exp_id) {
+  size_t len = ws_timer_min_heap_size(tq->pqu);
+
+  if (len) {
+    struct ws_timer *t;
+
+    // fast path for soonest timer cancel
+    if ((t = ws_timer_min_heap_peek(tq->pqu))->expiry_ns == exp_id) {
+      t->cb = NULL;
+      ws_timer_min_heap_pop(tq->pqu);
+      ws_timer_queue_pool_put_timer(tq, t);
+
+      uint64_t soonest = ws_timer_queue_get_soonest_expiration(tq);
+      if (soonest) {
+        ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
+      } else {
+        // if this was the last timer to be canceled reset the tfd timer
+        struct itimerspec tp;
+        memset(&tp, 0, sizeof(tp));
+        timerfd_settime(tq->timer_fd, 0, &tp, NULL);
+      }
+
+      return;
+    }
+
+    // scan for the timer
+    while (len) {
+      t = tq->pqu->timers[len];
+      if (exp_id == t->expiry_ns) {
+        t->cb = NULL;
+        return;
+      }
+
+      if (!len--) {
+        // index zero isn't valid
+        break;
+      }
+    }
+  }
+}
+
+static void ws_timer_queue_run_expired_callbacks(struct ws_timer_queue *tq,
+                                                 ws_server_t *s) {
+  ws_timer_queue_get_expiration(tq, NULL); // used to update the time
+
+  struct ws_timer *t;
+  while ((t = ws_timer_min_heap_peek(tq->pqu)) != NULL) {
+    if (ws_timer_queue_is_timer_expired(tq, t)) {
+      ws_timer_min_heap_pop(tq->pqu);
+
+      tq->next_expiration = 0;
+      if ((t->cb != NULL)) {
+        t->cb(s, t->ctx);
+      }
+
+      ws_timer_queue_pool_put_timer(tq, t);
+    } else {
+      break;
+    }
+  }
+
+  uint64_t soonest = ws_timer_queue_get_soonest_expiration(tq);
+  if (!soonest || ws_timer_min_heap_size(tq->pqu) <= 2) {
+    // garabage collect timers that are no longer needed
+    // keep at least WS_TIMERS_DEFAULT_SZ timers in the pool
+    struct ws_timer *tmp = tq->timer_pool_head;
+    while (tmp) {
+      if (tq->avb_nodes > WS_TIMERS_DEFAULT_SZ) {
+        struct ws_timer *next = tmp->next;
+        free(tmp);
+        tmp = next;
+        tq->avb_nodes--;
+      } else {
+        break;
+      }
+    }
+
+    tq->timer_pool_head = tmp;
+  }
+
+  ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
+}
+
+static uint64_t timer_queue_add(struct ws_timer_queue *tq, struct ws_timer *t) {
+  int ret = ws_timer_min_heap_insert(tq->pqu, t);
+  if (ret != 0) {
+    return 0;
+  }
+
+  assert(tq->cur_time < t->expiry_ns);
+  ws_timer_queue_tfd_set_soonest_expiration(tq, t->expiry_ns);
+  return t->expiry_ns;
+}
+
+uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
+                               timeout_cb_t cb) {
+
+  if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999) ||
+      (tp->tv_nsec == 0 && tp->tv_sec == 0)) {
+    return 0;
+  }
+
+  struct ws_timer *t = ws_timer_queue_pool_new_timer(s->tq);
+  if (t == NULL)
+    return 0;
+
+  t->ctx = ctx;
+  t->cb = cb;
+  t->expiry_ns = ws_timer_queue_get_expiration(s->tq, tp);
+  return timer_queue_add(s->tq, t);
+}
+
+void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle) {
+  ws_timer_queue_cancel(s->tq, timer_handle);
+}
+
+static inline int ws_timer_min_heap_cmp_pri(uint64_t next, uint64_t curr) {
+  return (next > curr);
+}
+
+static inline uint64_t ws_timer_min_heap_get_timer_pri(struct ws_timer *t) {
+  return t->expiry_ns;
+}
+
+static inline size_t ws_timer_min_heap_get_timer_pos(struct ws_timer *t) {
+  return t->pos;
+}
+
+static inline void ws_timer_min_heap_set_timer_pos(struct ws_timer *t,
+                                                   size_t pos) {
+  t->pos = pos;
+}
+
+#define left(i) ((i) << 1)
+#define right(i) (((i) << 1) + 1)
+#define parent(i) ((i) >> 1)
+
+static ws_timer_min_heap_t *ws_timer_min_heap_init(size_t n) {
+  ws_timer_min_heap_t *q;
+
+  if (!(q = malloc(sizeof(ws_timer_min_heap_t))))
+    return NULL;
+
+  if (!(q->timers = malloc((n + 1) * sizeof(struct ws_timer *)))) {
+    free(q);
+    return NULL;
+  }
+
+  q->size = 1;
+  q->avb = q->step = (n + 1);
+
+  return q;
+}
+
+static void ws_timer_min_heap_destroy(ws_timer_min_heap_t *q) {
+  free(q->timers);
+  free(q);
+}
+
+static void bubble_up(ws_timer_min_heap_t *q, size_t i) {
+  size_t parent_node;
+  struct ws_timer *moving_node = q->timers[i];
+  uint64_t moving_pri = ws_timer_min_heap_get_timer_pri(moving_node);
+
+  for (parent_node = parent(i);
+       ((i > 1) && ws_timer_min_heap_cmp_pri(
+                       ws_timer_min_heap_get_timer_pri(q->timers[parent_node]),
+                       moving_pri));
+       i = parent_node, parent_node = parent(i)) {
+    q->timers[i] = q->timers[parent_node];
+
+    ws_timer_min_heap_set_timer_pos(q->timers[i], i);
+  }
+
+  q->timers[i] = moving_node;
+  ws_timer_min_heap_set_timer_pos(moving_node, i);
+}
+
+static size_t maxchild(ws_timer_min_heap_t *q, size_t i) {
+  size_t child_node = left(i);
+
+  if (child_node >= q->size)
+    return 0;
+
+  if ((child_node + 1) < q->size &&
+      ws_timer_min_heap_cmp_pri(
+          ws_timer_min_heap_get_timer_pri(q->timers[child_node]),
+          ws_timer_min_heap_get_timer_pri(q->timers[child_node + 1])))
+    child_node++; /* right child is greater */
+
+  return child_node;
+}
+
+static void bubble_down(ws_timer_min_heap_t *q, size_t i) {
+  size_t child_node;
+  void *moving_node = q->timers[i];
+  uint64_t moving_pri = ws_timer_min_heap_get_timer_pri(moving_node);
+
+  while ((child_node = maxchild(q, i)) &&
+         ws_timer_min_heap_cmp_pri(moving_pri, ws_timer_min_heap_get_timer_pri(
+                                                   q->timers[child_node]))) {
+    q->timers[i] = q->timers[child_node];
+    ws_timer_min_heap_set_timer_pos(q->timers[i], i);
+    i = child_node;
+  }
+
+  q->timers[i] = moving_node;
+  ws_timer_min_heap_set_timer_pos(moving_node, i);
+}
+
+static int ws_timer_min_heap_insert(ws_timer_min_heap_t *q,
+                                    struct ws_timer *d) {
+  void *tmp;
+  size_t i;
+  size_t newsize;
+
+  if (!q)
+    return 1;
+
+  if (q->size >= q->avb) {
+    newsize = q->size + q->step;
+    if (!(tmp = realloc(q->timers, sizeof(void *) * newsize)))
+      return 1;
+    q->timers = tmp;
+    q->avb = newsize;
+  }
+
+  i = q->size++;
+  q->timers[i] = d;
+  bubble_up(q, i);
+
+  return 0;
+}
+
+static struct ws_timer *ws_timer_min_heap_pop(ws_timer_min_heap_t *q) {
+  struct ws_timer *head;
+
+  if (!q || q->size == 1)
+    return NULL;
+
+  head = q->timers[1];
+  q->timers[1] = q->timers[--q->size];
+  bubble_down(q, 1);
+
+  return head;
+}
+
+// static int ws_timer_min_heap_rm(ws_timer_min_heap_t *q, struct ws_timer *d) {
+//   size_t posn = ws_timer_min_heap_get_timer_pos(d);
+//   q->timers[posn] = q->timers[--q->size];
+
+//   if (ws_timer_min_heap_cmp_pri(
+//           ws_timer_min_heap_get_timer_pri(d),
+//           ws_timer_min_heap_get_timer_pri(q->timers[posn])))
+//     bubble_up(q, posn);
+//   else
+//     bubble_down(q, posn);
+
+//   return 0;
+// }
+
+static struct ws_timer *ws_timer_min_heap_peek(ws_timer_min_heap_t *q) {
+  struct ws_timer *d;
+  if (!q || q->size == 1)
+    return NULL;
+  d = q->timers[1];
+  return d;
+}
+
+static size_t ws_timer_min_heap_size(ws_timer_min_heap_t *q) {
+  return (q->size - 1);
 }
 
 /*************** Per Message Deflate *************/
@@ -4016,36 +4569,27 @@ static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
 
 static z_stream *deflation_stream_init();
 
-static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
-  if (!c->pmd_buf) {
-    c->pmd_buf = malloc(sizeof(struct dyn_buf) +
-                        (c->base->buffer_pool->buf_sz * 2) + 16);
-    c->pmd_buf->len = 0;
-    c->pmd_buf->cap = (c->base->buffer_pool->buf_sz * 2) + 16;
-    if (c->pmd_buf == NULL) {
-      perror("malloc");
-      exit(EXIT_FAILURE);
-    }
-
-    return c->pmd_buf;
-  } else {
-    return c->pmd_buf;
-  }
-}
-
-static void conn_dyn_buf_dispose(ws_conn_t *c) {
-  if (c->pmd_buf) {
-    free(c->pmd_buf);
-    c->pmd_buf = NULL;
-  }
-}
-
 static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
                                            size_t payload_len) {
   ws_server_t *s = conn->base;
 
-  struct dyn_buf *inflated_buf = conn_dyn_buf_get(conn);
-  assert(inflated_buf->len == 0);
+  mirrored_buf_t *tmp_buf;
+  bool from_buf_pool = false;
+  if (s->buffer_pool->avb) {
+    tmp_buf = mirrored_buf_get(s->buffer_pool);
+    from_buf_pool = true;
+  }
+
+  char *inflate_buf;
+
+  if (from_buf_pool) {
+    inflate_buf = (char *)tmp_buf->buf;
+  } else {
+    inflate_buf = malloc(sizeof(char) * s->buffer_pool->buf_sz);
+    if (inflate_buf == NULL) {
+      return -1;
+    }
+  }
 
   bool was_fragmented = conn->fragments_len != 0;
 
@@ -4053,26 +4597,32 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
   payload_len = was_fragmented ? conn->fragments_len : payload_len;
 
   ssize_t inflated_sz = inflation_stream_inflate(
-      s->istrm, (char *)msg, (unsigned)payload_len, inflated_buf->data,
-      (unsigned)inflated_buf->cap, true);
+      s->istrm, (char *)msg, (unsigned)payload_len, inflate_buf,
+      (unsigned)s->buffer_pool->buf_sz, true);
   if (unlikely(inflated_sz <= 0)) {
+    if (from_buf_pool) {
+      mirrored_buf_put(s->buffer_pool, tmp_buf);
+    } else {
+      free(inflate_buf);
+    }
     printf("inflate error\n");
     ws_conn_destroy(conn, WS_ERR_INFLATE);
     return -1;
   }
-  inflated_buf->len += (size_t)inflated_sz;
 
   // non fragmented frame
   if (!was_fragmented) {
     // don't call buf_consume it's already done
-    s->on_ws_msg(conn, inflated_buf->data, (size_t)inflated_sz,
+    s->on_ws_msg(conn, inflate_buf, (size_t)inflated_sz,
                  is_bin(conn) ? OP_BIN : OP_TXT);
     conn->needed_bytes = 2;
     clear_bin(conn);
-    inflated_buf->len -= (size_t)inflated_sz;
 
-    if (!inflated_buf->len)
-      conn_dyn_buf_dispose(conn);
+    if (from_buf_pool) {
+      mirrored_buf_put(s->buffer_pool, tmp_buf);
+    } else {
+      free(inflate_buf);
+    }
 
   } else {
     // fragmented frame
@@ -4080,13 +4630,14 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 
     buf_consume(conn->recv_buf, conn->fragments_len);
 
-    s->on_ws_msg(conn, inflated_buf->data, (size_t)inflated_sz,
+    s->on_ws_msg(conn, inflate_buf, (size_t)inflated_sz,
                  is_bin(conn) ? OP_BIN : OP_TXT);
 
-    inflated_buf->len -= (size_t)inflated_sz;
-
-    if (!inflated_buf->len)
-      conn_dyn_buf_dispose(conn);
+    if (from_buf_pool) {
+      mirrored_buf_put(s->buffer_pool, tmp_buf);
+    } else {
+      free(inflate_buf);
+    }
 
     conn->fragments_len = 0;
     clear_fragmented(conn);

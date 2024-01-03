@@ -534,6 +534,15 @@ typedef struct async_cb_ctx {
 
 
 
+typedef void (*timeout_cb_t)(ws_server_t *s, void *ctx);
+
+
+uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp,
+                            void *ctx, timeout_cb_t cb);
+
+void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle);
+
+
 /**
  * Schedules an asynchronous callback to be executed in the server's thread.
  * This function enables users to run a callback function as part of the server's event loop,

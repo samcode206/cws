@@ -1,4 +1,5 @@
 #include "ws.h"
+#include <stdio.h>
 #include <sys/signal.h>
 
 
@@ -13,6 +14,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
 void onDisconnect(ws_conn_t *conn, unsigned long err) {}
 
 int main(void) {
+  printf("pid = %d\n", getpid());
   signal(SIGPIPE, SIG_IGN);
 
   struct ws_server_params p = {
