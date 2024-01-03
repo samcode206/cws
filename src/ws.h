@@ -26,8 +26,8 @@
 #define _GNU_SOURCE
 #endif
 
-#ifndef LWS_HDR_1113
-#define LWS_HDR_1113
+#ifndef LWS_HDR_H
+#define LWS_HDR_H
 
 #include <errno.h>
 #include <netinet/in.h>
@@ -823,4 +823,4 @@ ws_server_t *ws_server_create(struct ws_server_params *params);
 
 
 
-#endif /* LWS_HDR_1113 */
+#endif /* LWS_HDR_H */
