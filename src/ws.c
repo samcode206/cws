@@ -228,10 +228,6 @@ struct ws_conn_t {
   mirrored_buf_t *send_buf;
   ws_server_t *base; // server ptr
   void *ctx;         // user data pointer
-
-#ifdef WITH_COMPRESSION
-  struct dyn_buf *pmd_buf;
-#endif /* WITH_COMPRESSION */
 };
 
 static inline bool is_upgraded(ws_conn_t *c) {
@@ -546,19 +542,6 @@ void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
 
 static void mirrored_buf_put(struct mirrored_buf_pool *bp, mirrored_buf_t *buf);
 
-#ifdef WITH_COMPRESSION
-struct dyn_buf {
-  size_t len;
-  size_t cap;
-  char data[];
-};
-
-static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c);
-
-static void conn_dyn_buf_dispose(ws_conn_t *c);
-
-#endif /* WITH_COMPRESSION */
-
 void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
   if (is_closed(c)) {
     return;
@@ -575,10 +558,6 @@ void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
     c->send_buf = NULL;
   }
   server_pending_timers_remove(c);
-
-#ifdef WITH_COMPRESSION
-  conn_dyn_buf_dispose(c);
-#endif /* WITH_COMPRESSION */
 
   struct epoll_event ev = {
       0,
@@ -2453,20 +2432,40 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
   if (!compress || !is_compression_allowed(c)) {
     stat = conn_write_frame(c, msg, n, op);
   } else {
-    struct dyn_buf *deflate_buf = conn_dyn_buf_get(c);
+    mirrored_buf_t *tmp_buf;
+    bool from_buf_pool = false;
+    if (c->base->buffer_pool->avb) {
+      tmp_buf = mirrored_buf_get(c->base->buffer_pool);
+      from_buf_pool = true;
+    }
+
+    char *deflate_buf;
+    if (from_buf_pool) {
+      deflate_buf = (char *)tmp_buf->buf;
+    } else {
+      deflate_buf = malloc(sizeof(char) * c->base->buffer_pool->buf_sz);
+      if (deflate_buf == NULL) {
+        return WS_SEND_FAILED;
+      }
+    }
 
     ssize_t compressed_len = deflation_stream_deflate(
-        c->base->dstrm, msg, (unsigned)n, deflate_buf->data + deflate_buf->len,
-        (unsigned)deflate_buf->cap - (unsigned)deflate_buf->len, true);
+        c->base->dstrm, msg, (unsigned)n, deflate_buf, (unsigned)c->base->buffer_pool->buf_sz, true);
     if (compressed_len > 0) {
-      stat = conn_write_frame(c, deflate_buf->data + deflate_buf->len,
-                              (size_t)compressed_len, op | 0x40);
-
-      if (!deflate_buf->len) {
-        conn_dyn_buf_dispose(c);
+      stat =
+          conn_write_frame(c, deflate_buf, (size_t)compressed_len, op | 0x40);
+      if (from_buf_pool) {
+        mirrored_buf_put(c->base->buffer_pool, tmp_buf);
+      } else {
+        free(deflate_buf);
       }
 
     } else {
+      if (from_buf_pool) {
+        mirrored_buf_put(c->base->buffer_pool, tmp_buf);
+      } else {
+        free(deflate_buf);
+      }
       return WS_SEND_FAILED; // compression error
     }
   }
@@ -3211,10 +3210,6 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd) {
   assert(conn->send_buf == NULL);
   assert(conn->recv_buf == NULL);
 
-#ifdef WITH_COMPRESSION
-  conn->pmd_buf = NULL;
-#endif /* WITH_COMPRESSION*/
-
   struct epoll_event ev = {
       .events = EPOLLIN | EPOLLRDHUP,
       .data = {.ptr = conn},
@@ -3398,7 +3393,6 @@ static void ws_server_on_io_timers_need_sweep(ws_server_t *s, void *ctx) {
   static_assert(WS_ERR_READ_TIMEOUT == 994,
                 "WS_ERR_READ_TIMEOUT should be 994");
 
-
   unsigned int timeout_kind = 993;
   ws_on_timeout_t cb = s->on_ws_conn_timeout;
   unsigned int now = ws_server_time(s);
@@ -3409,7 +3403,7 @@ static void ws_server_on_io_timers_need_sweep(ws_server_t *s, void *ctx) {
   s->next_io_timeout_set = 0;
 
   size_t i = s->pending_timers.len;
-  if (!i){
+  if (!i) {
     return;
   }
 
@@ -3454,7 +3448,8 @@ static void ws_server_on_io_timers_need_sweep(ws_server_t *s, void *ctx) {
 }
 
 static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
-  if ((s->next_io_timeout != 0) & (s->next_io_timeout_set != s->next_io_timeout)) {
+  if ((s->next_io_timeout != 0) &
+      (s->next_io_timeout_set != s->next_io_timeout)) {
     struct timespec ts = {.tv_sec = s->next_io_timeout, .tv_nsec = 0};
     ts.tv_sec = s->next_io_timeout > s->server_time + 1
                     ? s->next_io_timeout - s->server_time
@@ -3462,7 +3457,7 @@ static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
 
     s->next_io_timeout_set = s->next_io_timeout;
     ws_server_set_timeout(s, &ts, NULL, ws_server_on_io_timers_need_sweep);
-  } 
+  }
 }
 
 int ws_server_start(ws_server_t *s, int backlog) {
@@ -4574,36 +4569,27 @@ static ssize_t inflation_stream_inflate(z_stream *istrm, char *input,
 
 static z_stream *deflation_stream_init();
 
-static struct dyn_buf *conn_dyn_buf_get(ws_conn_t *c) {
-  if (!c->pmd_buf) {
-    c->pmd_buf = malloc(sizeof(struct dyn_buf) +
-                        (c->base->buffer_pool->buf_sz * 2) + 16);
-    c->pmd_buf->len = 0;
-    c->pmd_buf->cap = (c->base->buffer_pool->buf_sz * 2) + 16;
-    if (c->pmd_buf == NULL) {
-      perror("malloc");
-      exit(EXIT_FAILURE);
-    }
-
-    return c->pmd_buf;
-  } else {
-    return c->pmd_buf;
-  }
-}
-
-static void conn_dyn_buf_dispose(ws_conn_t *c) {
-  if (c->pmd_buf) {
-    free(c->pmd_buf);
-    c->pmd_buf = NULL;
-  }
-}
-
 static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
                                            size_t payload_len) {
   ws_server_t *s = conn->base;
 
-  struct dyn_buf *inflated_buf = conn_dyn_buf_get(conn);
-  assert(inflated_buf->len == 0);
+  mirrored_buf_t *tmp_buf;
+  bool from_buf_pool = false;
+  if (s->buffer_pool->avb) {
+    tmp_buf = mirrored_buf_get(s->buffer_pool);
+    from_buf_pool = true;
+  }
+
+  char *inflate_buf;
+
+  if (from_buf_pool) {
+    inflate_buf = (char *)tmp_buf->buf;
+  } else {
+    inflate_buf = malloc(sizeof(char) * s->buffer_pool->buf_sz);
+    if (inflate_buf == NULL) {
+      return -1;
+    }
+  }
 
   bool was_fragmented = conn->fragments_len != 0;
 
@@ -4611,26 +4597,32 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
   payload_len = was_fragmented ? conn->fragments_len : payload_len;
 
   ssize_t inflated_sz = inflation_stream_inflate(
-      s->istrm, (char *)msg, (unsigned)payload_len, inflated_buf->data,
-      (unsigned)inflated_buf->cap, true);
+      s->istrm, (char *)msg, (unsigned)payload_len, inflate_buf,
+      (unsigned)s->buffer_pool->buf_sz, true);
   if (unlikely(inflated_sz <= 0)) {
+    if (from_buf_pool) {
+      mirrored_buf_put(s->buffer_pool, tmp_buf);
+    } else {
+      free(inflate_buf);
+    }
     printf("inflate error\n");
     ws_conn_destroy(conn, WS_ERR_INFLATE);
     return -1;
   }
-  inflated_buf->len += (size_t)inflated_sz;
 
   // non fragmented frame
   if (!was_fragmented) {
     // don't call buf_consume it's already done
-    s->on_ws_msg(conn, inflated_buf->data, (size_t)inflated_sz,
+    s->on_ws_msg(conn, inflate_buf, (size_t)inflated_sz,
                  is_bin(conn) ? OP_BIN : OP_TXT);
     conn->needed_bytes = 2;
     clear_bin(conn);
-    inflated_buf->len -= (size_t)inflated_sz;
 
-    if (!inflated_buf->len)
-      conn_dyn_buf_dispose(conn);
+    if (from_buf_pool) {
+      mirrored_buf_put(s->buffer_pool, tmp_buf);
+    } else {
+      free(inflate_buf);
+    }
 
   } else {
     // fragmented frame
@@ -4638,13 +4630,14 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 
     buf_consume(conn->recv_buf, conn->fragments_len);
 
-    s->on_ws_msg(conn, inflated_buf->data, (size_t)inflated_sz,
+    s->on_ws_msg(conn, inflate_buf, (size_t)inflated_sz,
                  is_bin(conn) ? OP_BIN : OP_TXT);
 
-    inflated_buf->len -= (size_t)inflated_sz;
-
-    if (!inflated_buf->len)
-      conn_dyn_buf_dispose(conn);
+    if (from_buf_pool) {
+      mirrored_buf_put(s->buffer_pool, tmp_buf);
+    } else {
+      free(inflate_buf);
+    }
 
     conn->fragments_len = 0;
     clear_fragmented(conn);
