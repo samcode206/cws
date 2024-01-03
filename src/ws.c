@@ -96,12 +96,14 @@ typedef struct server {
   ws_on_msg_cb_t on_ws_msg;
   struct mirrored_buf_pool *buffer_pool;
   unsigned int server_time;
+  unsigned int next_io_timeout;
+  unsigned int next_io_timeout_set;
   int active_events; // number of active events per epoll_wait call
   int fd;            // server file descriptor
   int epoll_fd;
   void *ctx;
-  ws_open_cb_t on_ws_open;
 
+  ws_open_cb_t on_ws_open;
   unsigned open_conns; // open websocket connections
   unsigned max_conns;  // max connections allowed
   ws_accept_cb_t on_ws_accept;
@@ -129,7 +131,6 @@ typedef struct server {
 } ws_server_t;
 
 #define SECONDS_PER_TICK 1
-#define TIMER_CHECK_TICKS 5
 #define READ_TIMEOUT 60
 #define BUF_POOL_LONG_AVG_TICKS 256
 #define BUF_POOL_GC_TICKS 16
@@ -524,9 +525,12 @@ void ws_conn_resume_reads(ws_conn_t *c) {
   }
 }
 
+static void ws_server_set_io_timeout(ws_server_t *s, unsigned int *restrict res,
+                                     unsigned int secs);
+
 void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closed(c)) {
-    c->read_timeout = ws_server_time(c->base) + secs;
+    ws_server_set_io_timeout(c->base, &c->read_timeout, secs);
   } else {
     c->read_timeout = 0;
   }
@@ -534,7 +538,7 @@ void ws_conn_set_read_timeout(ws_conn_t *c, unsigned secs) {
 
 void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs) {
   if ((secs != 0) & !is_closed(c)) {
-    c->write_timeout = ws_server_time(c->base) + secs;
+    ws_server_set_io_timeout(c->base, &c->write_timeout, secs);
   } else {
     c->write_timeout = 0;
   }
@@ -1710,7 +1714,7 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
 #endif /* WITH_COMPRESSION */
 
     conn->needed_bytes = 2;
-    conn->read_timeout = ws_server_time(s) + READ_TIMEOUT;
+    ws_conn_set_read_timeout(conn, READ_TIMEOUT);
     mirrored_buf_put(s->buffer_pool, conn->recv_buf);
     conn->recv_buf = NULL;
     if (s->on_ws_handshake) {
@@ -1954,8 +1958,6 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
-  unsigned int next_read_timeout = ws_server_time(s) + READ_TIMEOUT;
-
   // total frame header bytes trimmed
   size_t total_trimmed = 0;
   size_t max_allowed_len = s->max_msg_len;
@@ -2044,7 +2046,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
 
         uint8_t *msg = frame + mask_offset + 4;
         msg_unmask(msg, frame + mask_offset, payload_len);
-        conn->read_timeout = next_read_timeout;
+        ws_conn_set_read_timeout(conn, READ_TIMEOUT);
         switch (opcode) {
         case OP_TXT:
         case OP_BIN:
@@ -2653,6 +2655,18 @@ static void ws_server_time_update(ws_server_t *s) {
   }
 }
 
+static void ws_server_set_io_timeout(ws_server_t *s, unsigned int *restrict res,
+                                     unsigned int secs) {
+  unsigned int timeout = ws_server_time(s) + secs;
+  if (!s->next_io_timeout) {
+    s->next_io_timeout = timeout;
+  } else if (timeout < s->next_io_timeout) {
+    s->next_io_timeout = timeout;
+  }
+
+  *res = timeout;
+}
+
 static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
 
 static void ws_server_register_timer_queue(ws_server_t *s, int *tfd) {
@@ -2730,50 +2744,6 @@ static size_t buf_pool_max_depth_running_avg(struct mirrored_buf_pool *p) {
   }
 
   return 0;
-}
-
-static void server_check_pending_timers(ws_server_t *s) {
-  static_assert(WS_ERR_READ_TIMEOUT == 994,
-                "WS_ERR_READ_TIMEOUT should be 994");
-
-  unsigned int timeout_kind = 993;
-  ws_on_timeout_t cb = s->on_ws_conn_timeout;
-  unsigned int now = ws_server_time(s);
-
-  while (s->pending_timers.len) {
-    size_t i = s->pending_timers.len;
-    while (i--) {
-      ws_conn_t *c = s->pending_timers.conns[i];
-
-      timeout_kind +=
-          (unsigned int)(c->read_timeout != 0 && c->read_timeout < now);
-      timeout_kind +=
-          (unsigned int)((c->write_timeout != 0 && c->write_timeout < now) * 2);
-
-      if (timeout_kind != 993) {
-        c->read_timeout = 0;
-        c->write_timeout = 0;
-
-        if (cb) {
-          cb(c, timeout_kind);
-        } else {
-          ws_conn_destroy(c, timeout_kind);
-        }
-
-        timeout_kind = 993;
-      } else {
-        // ping the client if they are near read timeout
-        if (c->read_timeout != 0 &&
-            c->read_timeout < now + (TIMER_CHECK_TICKS + TIMER_CHECK_TICKS)) {
-          if (is_writeable(c) && is_upgraded(c)) {
-            ws_conn_send_msg(c, NULL, 0, OP_PING, 0);
-          }
-        }
-      }
-    }
-
-    break;
-  }
 }
 
 static void server_maybe_do_mirrored_buf_pool_gc(ws_server_t *s) {
@@ -3214,8 +3184,7 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
   };
 }
 
-static void ws_server_new_conn(ws_server_t *s, int client_fd,
-                               unsigned int now) {
+static void ws_server_new_conn(ws_server_t *s, int client_fd) {
   ws_conn_t *conn = ws_conn_get(s->conn_pool);
   if (unlikely(conn == NULL)) {
     // this would NEVER happen
@@ -3232,10 +3201,10 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd,
   conn->fd = client_fd;
   conn->flags = 0;
   conn->write_timeout = 0;
-  conn->read_timeout = now + READ_TIMEOUT;
+  conn->base = s;
+  ws_conn_set_read_timeout(conn, READ_TIMEOUT);
   conn->needed_bytes = 12;
   conn->fragments_len = 0;
-  conn->base = s;
   set_writeable(conn);
   conn->ctx = NULL;
 
@@ -3283,7 +3252,6 @@ static bool ws_server_accept_err_recoverable(int err) {
 
 static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
-  unsigned int now = ws_server_time(s);
   // how many conns should we try to accept in total
   size_t accepts = 1024; // we do a batch of 1024 accepts at a time
 
@@ -3346,7 +3314,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
           return;
         }
 
-        ws_server_new_conn(s, fd, now);
+        ws_server_new_conn(s, fd);
       } else {
         if (s->on_ws_accept_err) {
           s->on_ws_accept_err(s, 0);
@@ -3422,12 +3390,79 @@ static void ws_server_on_tick(ws_server_t *s, void *ctx) {
   ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
 }
 
-static void ws_server_on_io_timers_need_check(ws_server_t *s, void *ctx) {
+static void ws_server_schedule_next_io_timeout(ws_server_t *s);
+
+static void ws_server_on_io_timers_need_sweep(ws_server_t *s, void *ctx) {
   (void)ctx;
-  // printf("ws_server_on_io_timers_need_check\n");
-  server_check_pending_timers(s);
-  struct timespec ts = {.tv_sec = TIMER_CHECK_TICKS, .tv_nsec = 0};
-  ws_server_set_timeout(s, &ts, NULL, ws_server_on_io_timers_need_check);
+  ws_server_time_update(s);
+  static_assert(WS_ERR_READ_TIMEOUT == 994,
+                "WS_ERR_READ_TIMEOUT should be 994");
+
+
+  unsigned int timeout_kind = 993;
+  ws_on_timeout_t cb = s->on_ws_conn_timeout;
+  unsigned int now = ws_server_time(s);
+
+  // reset the next_io_timeout (we no longer have one scheduled once this is
+  // called)
+  s->next_io_timeout = 0;
+  s->next_io_timeout_set = 0;
+
+  size_t i = s->pending_timers.len;
+  if (!i){
+    return;
+  }
+
+  while (i--) {
+    ws_conn_t *c = s->pending_timers.conns[i];
+
+    timeout_kind +=
+        (unsigned int)(c->read_timeout != 0 && c->read_timeout < now);
+    timeout_kind +=
+        (unsigned int)((c->write_timeout != 0 && c->write_timeout < now) * 2);
+
+    if (timeout_kind != 993) {
+      c->read_timeout = 0;
+      c->write_timeout = 0;
+
+      if (cb) {
+        cb(c, timeout_kind);
+      } else {
+        ws_conn_destroy(c, timeout_kind);
+      }
+
+      timeout_kind = 993;
+    } else {
+      // we have more timers to check
+      if (c->read_timeout != 0) {
+        s->next_io_timeout = c->read_timeout;
+      }
+      if (c->write_timeout != 0) {
+        s->next_io_timeout = c->write_timeout;
+      }
+
+      // ping the client if they are within 15 seconds of a timeout
+      if (c->read_timeout != 0 && c->read_timeout < now + 15) {
+        if (is_writeable(c) && is_upgraded(c)) {
+          ws_conn_send_msg(c, NULL, 0, OP_PING, 0);
+        }
+      }
+    }
+  }
+
+  ws_server_schedule_next_io_timeout(s);
+}
+
+static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
+  if ((s->next_io_timeout != 0) & (s->next_io_timeout_set != s->next_io_timeout)) {
+    struct timespec ts = {.tv_sec = s->next_io_timeout, .tv_nsec = 0};
+    ts.tv_sec = s->next_io_timeout > s->server_time + 1
+                    ? s->next_io_timeout - s->server_time
+                    : 1;
+
+    s->next_io_timeout_set = s->next_io_timeout;
+    ws_server_set_timeout(s, &ts, NULL, ws_server_on_io_timers_need_sweep);
+  } 
 }
 
 int ws_server_start(ws_server_t *s, int backlog) {
@@ -3444,8 +3479,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   ws_server_time_update(s);
   struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
   ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
-  ts.tv_sec = TIMER_CHECK_TICKS;
-  ws_server_set_timeout(s, &ts, NULL, ws_server_on_io_timers_need_check);
 
   struct sockaddr_storage client_sockaddr;
   socklen_t client_socklen;
@@ -3501,7 +3534,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                   if (!is_upgraded(c)) {
                     set_upgraded(c);
                     c->needed_bytes = 2;
-                    c->read_timeout = ws_server_time(s) + READ_TIMEOUT;
+                    ws_conn_set_read_timeout(c, READ_TIMEOUT);
                     s->on_ws_open(c);
                   }
                 } else {
@@ -3574,6 +3607,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     // drain all outgoing before calling epoll_wait
     server_writeable_conns_drain(s);
+
+    ws_server_schedule_next_io_timeout(s);
   }
 
   return 0;
