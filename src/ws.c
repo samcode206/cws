@@ -73,7 +73,7 @@ static_assert(WS_TIMER_SLACK_NS >= 0 && WS_TIMER_SLACK_NS <= 4000000000,
 static_assert(WS_TIMERS_DEFAULT_SZ >= 1, "WS_TIMERS_DEFAULT_SZ must be >= 1");
 
 
-static_assert(WS_TIMERS_DEFAULT_SZ >= 1, "ACCEPTS_PER_TICK must be >= 1");
+static_assert(ACCEPTS_PER_TICK >= 1, "ACCEPTS_PER_TICK must be >= 1");
 
 
 struct conn_list {
