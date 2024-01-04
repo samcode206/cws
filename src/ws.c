@@ -56,25 +56,38 @@
 #define READ_TIMEOUT 60
 #endif /* READ_TIMEOUT */
 
-
 #ifndef ACCEPTS_PER_TICK
 // we call accept in a loop when the listener fd is ready
-// this default value limits that to just one accept per tick (no loop, we only do one accept)
-// the default is chosen to help in case of multi threaded or multi proccess servers are running 
-// to avoid contention and evenly distribute the new connections, however this can be tuned with 
-// DACCEPTS_PER_TICK when compiling if only a single thread/process is to be used
-// (this helps to drain the accept queue more quickly)
+// this default value limits that to just one accept per tick (no loop, we only
+// do one accept) the default is chosen to help in case of multi threaded or
+// multi proccess servers are running to avoid contention and evenly distribute
+// the new connections, however this can be tuned with DACCEPTS_PER_TICK when
+// compiling if only a single thread/process is to be used (this helps to drain
+// the accept queue more quickly)
 #define ACCEPTS_PER_TICK 1
 #endif /* ACCEPTS_PER_TICK */
+
+#ifndef WS_WRITEV_THRESHOLD
+// if we have to write a frame larger than this threshold we use writev
+// to avoid having to copy the data into a single buffer before sending data to
+// the socket `writev` is only faster than `send` with larger data in other
+// cases it is noticeably slower than simply copying so don't set this too low
+// (default value is fine)
+#define WS_WRITEV_THRESHOLD 12288
+#endif /* WS_WRITEV_THRESHOLD */
 
 static_assert(WS_TIMER_SLACK_NS >= 0 && WS_TIMER_SLACK_NS <= 4000000000,
               "WS_TIMER_SLACK_NS must be between 0 and 4,000,000,000");
 
 static_assert(WS_TIMERS_DEFAULT_SZ >= 1, "WS_TIMERS_DEFAULT_SZ must be >= 1");
 
-
 static_assert(ACCEPTS_PER_TICK >= 1, "ACCEPTS_PER_TICK must be >= 1");
 
+// writev threshold must be between 126 and 65536
+// 65536 and over we use writev anyways and it makes no sense for it to be less
+// than 125
+static_assert(WS_WRITEV_THRESHOLD > 125 && WS_WRITEV_THRESHOLD <= 65536,
+              "WS_WRITEV_THRESHOLD must be between 125 and 65536");
 
 struct conn_list {
   size_t len;
@@ -2235,23 +2248,30 @@ clean_up_buffer:
 
 static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
                                   uint8_t opAndFinOpts) {
-
-  size_t hlen = 10;
-  size_t flen = len + 10;
+  size_t hlen = len > 65535 ? 10 : 4;
+  size_t flen = len + hlen;
 
   // large send
   uint8_t hbuf[hlen]; // place the header on the stack
   memset(hbuf, 0, 2);
-  hbuf[0] = opAndFinOpts;
-  hbuf[1] = 127;
-  hbuf[2] = (uint8_t)(len >> 56) & 0xFF;
-  hbuf[3] = (uint8_t)(len >> 48) & 0xFF;
-  hbuf[4] = (uint8_t)(len >> 40) & 0xFF;
-  hbuf[5] = (uint8_t)(len >> 32) & 0xFF;
-  hbuf[6] = (uint8_t)(len >> 24) & 0xFF;
-  hbuf[7] = (uint8_t)(len >> 16) & 0xFF;
-  hbuf[8] = (uint8_t)(len >> 8) & 0xFF;
-  hbuf[9] = (uint8_t)len & 0xFF;
+
+  if (hlen == 4) {
+    hbuf[0] = opAndFinOpts;
+    hbuf[1] = 126;
+    hbuf[2] = (len >> 8) & 0xFF;
+    hbuf[3] = len & 0xFF;
+  } else {
+    hbuf[0] = opAndFinOpts;
+    hbuf[1] = 127;
+    hbuf[2] = (uint8_t)(len >> 56) & 0xFF;
+    hbuf[3] = (uint8_t)(len >> 48) & 0xFF;
+    hbuf[4] = (uint8_t)(len >> 40) & 0xFF;
+    hbuf[5] = (uint8_t)(len >> 32) & 0xFF;
+    hbuf[6] = (uint8_t)(len >> 24) & 0xFF;
+    hbuf[7] = (uint8_t)(len >> 16) & 0xFF;
+    hbuf[8] = (uint8_t)(len >> 8) & 0xFF;
+    hbuf[9] = (uint8_t)len & 0xFF;
+  }
 
   if (is_writeable(conn)) {
     ssize_t n;
@@ -2358,7 +2378,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       }
     }
 
-    if (hlen == 4) {
+    if ((hlen == 4) & (len < WS_WRITEV_THRESHOLD)) {
       uint8_t *hbuf =
           conn->send_buf->buf +
           conn->send_buf->wpos; // place the header in the write buffer
@@ -2467,8 +2487,9 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
       }
     }
 
-    ssize_t compressed_len = deflation_stream_deflate(
-        c->base->dstrm, msg, (unsigned)n, deflate_buf, (unsigned)c->base->buffer_pool->buf_sz, true);
+    ssize_t compressed_len =
+        deflation_stream_deflate(c->base->dstrm, msg, (unsigned)n, deflate_buf,
+                                 (unsigned)c->base->buffer_pool->buf_sz, true);
     if (compressed_len > 0) {
       stat =
           conn_write_frame(c, deflate_buf, (size_t)compressed_len, op | 0x40);
