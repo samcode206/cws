@@ -52,10 +52,29 @@
 #define WS_TIMERS_DEFAULT_SZ 8
 #endif /* WS_TIMERS_DEFAULT_SZ */
 
+#ifndef READ_TIMEOUT
+#define READ_TIMEOUT 60
+#endif /* READ_TIMEOUT */
+
+
+#ifndef ACCEPTS_PER_TICK
+// we call accept in a loop when the listener fd is ready
+// this default value limits that to just one accept per tick (no loop, we only do one accept)
+// the default is chosen to help in case of multi threader or multi proccess servers are running 
+// to avoid contention and evenly distribute the new connections, however this can be tuned with 
+// DACCEPTS_PER_TICK when compiling if only a single thread/process is to be used
+// (this helps to drain the accept queue more quickly)
+#define ACCEPTS_PER_TICK 1
+#endif /* ACCEPTS_PER_TICK */
+
 static_assert(WS_TIMER_SLACK_NS >= 0 && WS_TIMER_SLACK_NS <= 4000000000,
               "WS_TIMER_SLACK_NS must be between 0 and 4,000,000,000");
 
 static_assert(WS_TIMERS_DEFAULT_SZ >= 1, "WS_TIMERS_DEFAULT_SZ must be >= 1");
+
+
+static_assert(WS_TIMERS_DEFAULT_SZ >= 1, "ACCEPTS_PER_TICK must be >= 1");
+
 
 struct conn_list {
   size_t len;
@@ -131,7 +150,6 @@ typedef struct server {
 } ws_server_t;
 
 #define SECONDS_PER_TICK 1
-#define READ_TIMEOUT 60
 #define BUF_POOL_LONG_AVG_TICKS 256
 #define BUF_POOL_GC_TICKS 16
 
@@ -3247,8 +3265,7 @@ static bool ws_server_accept_err_recoverable(int err) {
 
 static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
-  // how many conns should we try to accept in total
-  size_t accepts = 1024; // we do a batch of 1024 accepts at a time
+  size_t accepts = ACCEPTS_PER_TICK;
 
   int sockopt_on = 1;
   while (accepts--) {
