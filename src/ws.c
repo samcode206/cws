@@ -60,7 +60,7 @@
 #ifndef ACCEPTS_PER_TICK
 // we call accept in a loop when the listener fd is ready
 // this default value limits that to just one accept per tick (no loop, we only do one accept)
-// the default is chosen to help in case of multi threader or multi proccess servers are running 
+// the default is chosen to help in case of multi threaded or multi proccess servers are running 
 // to avoid contention and evenly distribute the new connections, however this can be tuned with 
 // DACCEPTS_PER_TICK when compiling if only a single thread/process is to be used
 // (this helps to drain the accept queue more quickly)
