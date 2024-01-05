@@ -717,9 +717,7 @@ typedef void (*ws_err_cb_t)(ws_server_t *s, int err);
  * It's important for users to avoid closing the file descriptor (`fd`) directly.
  * Instead, to reject and close the connection, return -1. This ensures that the
  * library is aware that the connection is not proceeding and will handle the
- * closure and cleanup appropriately. Directly closing the `fd` can lead to
- * the library attempting to allocate resources for a socket that is in the
- * process of closing, which may cause erratic behavior.
+ * closure and cleanup appropriately. 
  *
  *
  * @param s     Pointer to the WebSocket server (`ws_server_t`).
