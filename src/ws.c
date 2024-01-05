@@ -2213,29 +2213,27 @@ static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
         return WS_SEND_OK_BACKPRESSURE;
       }
     } else {
-      if (n >= flen) {
-        assert(n == flen);
+      if ((size_t)n >= flen) {
         mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
         conn->send_buf = NULL;
         return WS_SEND_OK;
-      } else if (n <= buf_len_without_cur_payload) {
+      } else if ((size_t)n <= buf_len_without_cur_payload) {
         // we couldn't drain or only drained what was already in the buffer
         // just copy the payload to the buffer and return with backpressure
         // status
 
         // consume what was written
-        buf_consume(conn->send_buf, n);
+        buf_consume(conn->send_buf, (size_t)n);
         // copy full payload
         buf_put(conn->send_buf, data, len);
       } else {
-        assert(n > buf_len_without_cur_payload);
         // we drained the buffer but couldn't write the whole payload
-        n -= buf_len_without_cur_payload;
+        n -= (ssize_t)buf_len_without_cur_payload;
         // consume what was written (previous buffer contents + header for
         // current payload)
         buf_consume(conn->send_buf, buf_len_without_cur_payload);
         // copy the remaining payload
-        buf_put(conn->send_buf, (uint8_t *)data + n, len - n);
+        buf_put(conn->send_buf, (uint8_t *)data + n, len - (size_t)n);
       }
 
       ws_conn_notify_on_writeable(conn);
