@@ -77,9 +77,12 @@ online: install
 broadcast: install
 	gcc ./examples/broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
+multi_broadcast: install
+	gcc ./examples/multi_broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+
 autobahn: install
 	gcc ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 async_task:
-	gcc ./src/*.c ./test/e2e/async_task.c -lz O3 -march=native -mtune=native -Wall --pedantic -o server
+	gcc ./src/*.c ./test/e2e/async_task.c -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
 

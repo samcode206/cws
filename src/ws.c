@@ -122,6 +122,14 @@ struct ws_timer_queue {
   struct ws_timer *timer_pool_head; // head of the linked list of timers
 };
 
+
+struct async_cb_ctx {
+  void *ctx;                /**< User-defined context passed to the callback function. */
+  ws_server_deferred_cb_t cb;  /**< Callback function to be executed asynchronously. */
+};
+
+
+
 typedef struct server {
   size_t max_msg_len;  // max allowed msg length
   size_t max_per_read; // max bytes to read per read call
@@ -176,7 +184,7 @@ static inline size_t align_to(size_t n, size_t to) {
 struct ws_server_async_runner_buf {
   size_t len;
   size_t cap;
-  struct async_cb_ctx **cbs;
+  struct async_cb_ctx *cbs;
 };
 
 struct ws_server_async_runner {
@@ -3576,7 +3584,7 @@ ws_server_async_runner_buf_create(size_t init_cap) {
     exit(EXIT_FAILURE);
   }
 
-  arb->cbs = calloc(init_cap, sizeof arb->cbs);
+  arb->cbs = calloc(init_cap, sizeof *arb->cbs);
   if (arb->cbs == NULL) {
     perror("calloc");
     exit(EXIT_FAILURE);
@@ -3633,8 +3641,9 @@ static void ws_server_async_runner_destroy(ws_server_t *s) {
   s->async_runner = NULL;
 }
 
-int ws_server_sched_callback(ws_server_t *s, struct async_cb_ctx *cb_info) {
-  if (cb_info != NULL) {
+
+int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb, void *ctx){
+  if (cb != NULL) {
     struct ws_server_async_runner *ar = s->async_runner;
 
     pthread_mutex_lock(&ar->mu);
@@ -3653,8 +3662,8 @@ int ws_server_sched_callback(ws_server_t *s, struct async_cb_ctx *cb_info) {
 
     // make sure we have/get the space needed
     if (new_len > q->cap) {
-      struct async_cb_ctx **new_cbs =
-          realloc(q->cbs, sizeof q->cbs * (q->cap + q->cap));
+      struct async_cb_ctx *new_cbs =
+          realloc(q->cbs, (sizeof *q->cbs) * (q->cap + q->cap));
       if (new_cbs != NULL) {
         q->cbs = new_cbs;
         q->cap = q->cap + q->cap;
@@ -3665,7 +3674,10 @@ int ws_server_sched_callback(ws_server_t *s, struct async_cb_ctx *cb_info) {
       }
     }
 
-    q->cbs[q->len++] = cb_info;
+    struct async_cb_ctx *cb_info = &q->cbs[q->len++];
+    cb_info->cb = cb;
+    cb_info->ctx = ctx;
+
 
     // mu end
     pthread_mutex_unlock(&ar->mu);
@@ -3716,10 +3728,10 @@ static void ws_server_async_runner_run_pending_callbacks(
   pthread_mutex_unlock(&ar->mu);
 
   // run all ready callbacks (no lock)
-  struct async_cb_ctx **cbs = ready->cbs;
+  struct async_cb_ctx *cbs = ready->cbs;
   for (size_t i = 0; i < len; ++i) {
     // run all callbacks
-    cbs[i]->cb(s, cbs[i]);
+    cbs[i].cb(s, cbs[i].ctx);
   }
 
   ready->len = 0;

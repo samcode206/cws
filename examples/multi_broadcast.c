@@ -31,9 +31,9 @@ void onOpen(ws_conn_t *conn) {
   ctx->conns[ctx->numConnections++] = conn;
 }
 
-void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
+void broadcast(ws_server_t *s, void *ctx) {
   Slice *slc = ws_server_ctx(s);
-  BroadcastRequest *req = ctx->ctx;
+  BroadcastRequest *req = ctx;
 
   for (size_t i = 0; i < slc->numConnections; i++) {
     if (!ws_conn_can_put_msg(slc->conns[i], req->msg_len)) {
@@ -47,8 +47,8 @@ void broadcast(ws_server_t *s, async_cb_ctx_t *ctx) {
 
   if (!req->refs) {
     free(req);
-    free(ctx);
   }
+  
   pthread_mutex_unlock(&slc->app->mu);
 }
 
@@ -56,20 +56,17 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_server_t *s = ws_conn_server(conn);
   Slice *ctx = ws_server_ctx(s);
 
-  struct async_cb_ctx *cbinfo = malloc(sizeof(struct async_cb_ctx));
-  BroadcastRequest *req = malloc(sizeof(BroadcastRequest) + n);
 
+  BroadcastRequest *req = malloc(sizeof(BroadcastRequest) + n);
   req->msg_len = n;
   req->refs = NUM_SERVERS;
   memcpy(req->msg, msg, n);
 
-  cbinfo->cb = broadcast;
-  cbinfo->ctx = req;
 
   for (size_t i = 0; i < NUM_SERVERS; i++) {
     // schedule the broadcast on each thread
     // broadcast will happen on each server's own time when they're ready
-    ws_server_sched_callback(ctx->app->servers[i], cbinfo);
+    ws_server_sched_callback(ctx->app->servers[i], broadcast, req);
   }
 }
 
