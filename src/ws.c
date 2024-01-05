@@ -990,7 +990,6 @@ static inline void buf_debug(mirrored_buf_t *r, const char *label) {
   printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
 }
 
-
 static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
                                int flags) {
   ssize_t n = recv(fd, r->buf + r->wpos, len, flags);
@@ -1874,6 +1873,16 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 
 #endif /* WITH_COMPRESSION */
 
+static inline void ws_server_call_on_msg(ws_server_t *s, ws_conn_t *conn,
+                                         uint8_t *msg, size_t payload_len,
+                                         uint_fast8_t opcode) {
+
+  uint8_t tmp = msg[payload_len];
+  msg[payload_len] = '\0';
+  s->on_ws_msg(conn, msg, payload_len, opcode);
+  msg[payload_len] = tmp;
+}
+
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
@@ -1996,7 +2005,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
               return; // TODO(sah): send a Close frame, & call close callback
             }
 
-            s->on_ws_msg(conn, msg, payload_len, opcode);
+            ws_server_call_on_msg(s, conn, msg, payload_len, opcode);
             clear_bin(conn);
 
             break; /* OP_BIN don't fall through to fragmented msg */
@@ -2058,12 +2067,13 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
               ws_conn_destroy(conn, WS_ERR_INVALID_UTF8);
               return; // TODO(sah): send a Close frame, & call close callback
             }
-            s->on_ws_msg(conn, msg, conn->fragments_len,
-                         is_bin(conn) ? OP_BIN : OP_TXT);
+
+            ws_server_call_on_msg(s, conn, msg, conn->fragments_len,
+                                  is_bin(conn) ? OP_BIN : OP_TXT);
 
             conn->fragments_len = 0;
-            clear_fragmented(conn);
             clear_bin(conn);
+            clear_fragmented(conn);
             conn->needed_bytes = 2;
           }
 
@@ -2080,7 +2090,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
             ws_conn_destroy(conn, WS_CLOSE_PROTOCOL);
             return;
           }
-          s->on_ws_msg(conn, msg, payload_len, opcode);
+          ws_server_call_on_msg(s, conn, msg, payload_len, opcode);
           break;
         case OP_CLOSE:
           if (!payload_len) {
@@ -2375,7 +2385,7 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 #endif /* WITH_COMPRESSION */
 
 static int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
-                                 bool compress, bool put_only) {
+                          bool compress, bool put_only) {
 
 #ifndef WITH_COMPRESSION
   (void)compress; // suppress unused warning
@@ -2411,8 +2421,8 @@ static int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
         deflation_stream_deflate(c->base->dstrm, msg, (unsigned)n, deflate_buf,
                                  (unsigned)c->base->buffer_pool->buf_sz, true);
     if (compressed_len > 0) {
-      stat =
-          conn_write_frame(c, deflate_buf, (size_t)compressed_len, op | 0x40, put_only);
+      stat = conn_write_frame(c, deflate_buf, (size_t)compressed_len, op | 0x40,
+                              put_only);
       if (from_buf_pool) {
         mirrored_buf_put(c->base->buffer_pool, tmp_buf);
       } else {
@@ -4571,8 +4581,9 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
   // non fragmented frame
   if (!was_fragmented) {
     // don't call buf_consume it's already done
-    s->on_ws_msg(conn, inflate_buf, (size_t)inflated_sz,
-                 is_bin(conn) ? OP_BIN : OP_TXT);
+
+    ws_server_call_on_msg(s, conn, (uint8_t *)inflate_buf, (size_t)inflated_sz,
+                          is_bin(conn) ? OP_BIN : OP_TXT);
     conn->needed_bytes = 2;
     clear_bin(conn);
 
@@ -4588,8 +4599,8 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
 
     buf_consume(conn->recv_buf, conn->fragments_len);
 
-    s->on_ws_msg(conn, inflate_buf, (size_t)inflated_sz,
-                 is_bin(conn) ? OP_BIN : OP_TXT);
+    ws_server_call_on_msg(s, conn, (uint8_t *)inflate_buf, (size_t)inflated_sz,
+                          is_bin(conn) ? OP_BIN : OP_TXT);
 
     if (from_buf_pool) {
       mirrored_buf_put(s->buffer_pool, tmp_buf);
