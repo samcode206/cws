@@ -8,8 +8,8 @@
 #include <sys/signal.h>
 #include <sys/timerfd.h>
 
-#define MAX_CONNS 1024
-#define NUM_SERVERS 2
+#define MAX_CONNS 4000
+#define NUM_SERVERS 4
 
 size_t total = 0;
 
@@ -17,7 +17,11 @@ void onOpen(ws_conn_t *conn) {}
 
 
 void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
-  ws_conn_put_msg(conn, msg, n, opcode, 0);
+  if (ws_conn_msg_ready(conn)) {
+    ws_conn_put_msg(conn, msg, n, opcode, 0);
+  } else {
+    ws_conn_send_msg(conn, msg, n, opcode, 0);
+  }
 }
 
 void onDisconnect(ws_conn_t *conn, unsigned long err) {}

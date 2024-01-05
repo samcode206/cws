@@ -990,97 +990,6 @@ static inline void buf_debug(mirrored_buf_t *r, const char *label) {
   printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
 }
 
-/*
- * writes two io vectors first is a header and the second is a payload
- * returns total written and copies any leftover if we didn't drain the buffer
- */
-static inline ssize_t buf_write2v(mirrored_buf_t *r, int fd,
-                                  struct iovec const *iovs,
-                                  size_t const total) {
-  ssize_t n = writev(fd, iovs, 2);
-  // everything was written
-  if (n == 0 || n == -1) {
-    // if temporary error do a copy
-    if (io_tmp_err(n)) {
-      buf_put(r, iovs[0].iov_base, iovs[0].iov_len);
-      buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
-    }
-
-    return n;
-    // less than the header was written
-  } else if ((size_t)n == total) {
-    return n;
-    // some error happened
-  } else if ((size_t)n < iovs[0].iov_len) {
-    buf_put(r, (uint8_t *)iovs[0].iov_base + n, iovs[0].iov_len - (size_t)n);
-    buf_put(r, iovs[1].iov_base, iovs[1].iov_len);
-    return n;
-  } else {
-    // header was written but only part of the payload
-    size_t leftover = (size_t)n - iovs[0].iov_len;
-    buf_put(r, (uint8_t *)iovs[1].iov_base + leftover,
-            iovs[1].iov_len - leftover);
-    return n;
-  }
-}
-
-static inline ssize_t buf_drain_write2v(mirrored_buf_t *r,
-                                        struct iovec const *iovs,
-                                        size_t const total,
-                                        mirrored_buf_t *rem_dst, int fd) {
-
-  mirrored_buf_t *dst;
-  if (rem_dst) {
-    dst = rem_dst;
-  } else {
-    dst = r;
-  }
-
-  ssize_t n = writev(fd, iovs, 3);
-  // everything was written
-  if (n == 0 || n < 0) {
-    // if temporary error do a copy
-    if (io_tmp_err(n)) {
-      // copy both header and payload first iov already in the buffer
-      buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
-      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
-    }
-    return n;
-
-  } else if ((size_t)n == total) {
-    // consume what we drained from the buffer
-    buf_consume(r, iovs[0].iov_len);
-    return n;
-    // some error happened
-  } else if ((size_t)n < iovs[0].iov_len) {
-    buf_consume(r, (size_t)n);
-    if (rem_dst) {
-      buf_move(r, dst, buf_len(r));
-    }
-
-    buf_put(dst, iovs[1].iov_base, iovs[1].iov_len);
-    buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
-  }
-  // drained the buffer but only wrote parts of the new frame
-  else if ((size_t)n > iovs[0].iov_len) {
-    size_t wrote = (size_t)n - iovs[0].iov_len;
-    buf_consume(r, iovs[0].iov_len);
-
-    // less than header was written
-    if (wrote < iovs[1].iov_len) {
-      buf_put(dst, (uint8_t *)iovs[1].iov_base + wrote,
-              iovs[1].iov_len - wrote);
-      buf_put(dst, iovs[2].iov_base, iovs[2].iov_len);
-    } else {
-      // parts of payload were written
-      size_t leftover = wrote - iovs[1].iov_len;
-      buf_put(dst, (uint8_t *)iovs[2].iov_base + leftover,
-              iovs[2].iov_len - leftover);
-    }
-  }
-
-  return n;
-}
 
 static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
                                int flags) {
@@ -2249,10 +2158,8 @@ clean_up_buffer:
 static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
                                   uint8_t opAndFinOpts) {
   size_t hlen = len > 65535 ? 10 : 4;
-  size_t flen = len + hlen;
 
-  // large send
-  uint8_t hbuf[hlen]; // place the header on the stack
+  uint8_t *hbuf = conn->send_buf->buf + conn->send_buf->wpos;
   memset(hbuf, 0, 2);
 
   if (hlen == 4) {
@@ -2273,62 +2180,75 @@ static int conn_write_large_frame(ws_conn_t *conn, void *data, size_t len,
     hbuf[9] = (uint8_t)len & 0xFF;
   }
 
+  // commit the header in the buffer
+  conn->send_buf->wpos += hlen;
+
+  size_t buf_len_without_cur_payload = buf_len(conn->send_buf);
+
+  // update total data to write
+  size_t flen = buf_len_without_cur_payload + len;
+
   if (is_writeable(conn)) {
-    ssize_t n;
-    size_t total_write;
+    // two iovecs first points to whatever is already in the buffer
+    // plus the header added for current frame, second holds the payload
+    struct iovec vecs[2] = {{
+                                .iov_base = buf_peek(conn->send_buf),
+                                .iov_len = buf_len_without_cur_payload,
+                            },
+                            {
+                                .iov_base = data,
+                                .iov_len = len,
+                            }};
 
-    if (!buf_len(conn->send_buf)) {
-      // here only two iovecs are needed
-      // stack allocated header and the payload data
-      struct iovec vecs[2];
-      vecs[0].iov_base = hbuf;
-      vecs[0].iov_len = hlen;
-      vecs[1].iov_base = data;
-      vecs[1].iov_len = len;
-      total_write = flen;
-      // write as much as possible and only copy from payload data what
-      // couldn't be drained
-      n = buf_write2v(conn->send_buf, conn->fd, vecs, flen);
+    ssize_t n = writev(conn->fd, vecs, 2);
+    if ((n == 0) | (n == -1)) {
+      if (!io_tmp_err(n)) {
+        mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
+        conn->send_buf = NULL;
+        return WS_SEND_FAILED;
+      } else {
+        buf_put(conn->send_buf, data, len);
+        ws_conn_notify_on_writeable(conn);
+        // data was queued but there's some backpressure built up
+        return WS_SEND_OK_BACKPRESSURE;
+      }
     } else {
-      // here there is data pending in the connection send buffer
-      // first iovec points to the connection buffer
-      // second points to the stack allocated header
-      // third points to the payload data
-      struct iovec vecs[3];
-      vecs[0].iov_len = buf_len(conn->send_buf);
-      vecs[0].iov_base = conn->send_buf->buf + conn->send_buf->rpos;
-      vecs[1].iov_base = hbuf;
-      vecs[1].iov_len = hlen;
-      vecs[2].iov_base = data;
-      vecs[2].iov_len = len;
-      total_write = flen + vecs[0].iov_len;
+      if ((size_t)n >= flen) {
+        mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
+        conn->send_buf = NULL;
+        return WS_SEND_OK;
+      } else if ((size_t)n <= buf_len_without_cur_payload) {
+        // we couldn't drain or only drained what was already in the buffer
+        // just copy the payload to the buffer and return with backpressure
+        // status
 
-      // send of as much as we can and place the rest in the connection
-      // buffer
-      n = buf_drain_write2v(conn->send_buf, vecs, total_write, NULL, conn->fd);
-    }
+        // consume what was written
+        buf_consume(conn->send_buf, (size_t)n);
+        // copy full payload
+        buf_put(conn->send_buf, data, len);
+      } else {
+        // we drained the buffer but couldn't write the whole payload
+        n -= (ssize_t)buf_len_without_cur_payload;
+        // consume what was written (previous buffer contents + header for
+        // current payload)
+        buf_consume(conn->send_buf, buf_len_without_cur_payload);
+        // copy the remaining payload
+        buf_put(conn->send_buf, (uint8_t *)data + n, len - (size_t)n);
+      }
 
-    if (n == 0 || ((n == -1) & ((errno != EAGAIN) & (errno != EINTR)))) {
-      return WS_SEND_FAILED;
-    } else if ((size_t)n >= total_write) {
-      mirrored_buf_put(conn->base->buffer_pool, conn->send_buf);
-      conn->send_buf = NULL;
-      return WS_SEND_OK;
-    } else {
       ws_conn_notify_on_writeable(conn);
       return WS_SEND_OK_BACKPRESSURE;
     }
 
   } else {
-    buf_put(conn->send_buf, hbuf, hlen);
+    // there's some backpressure built up so we couldn't write anything
     buf_put(conn->send_buf, data, len);
-    // data was queued but there's some backpressure built up
     return WS_SEND_OK_BACKPRESSURE;
   }
 }
 
 static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
-                            uint8_t opAndFinOpts) {
+                            uint8_t opAndFinOpts, bool put_only) {
 
   if (!is_closed(conn)) {
     size_t hlen = frame_get_header_len(len);
@@ -2378,7 +2298,7 @@ static int conn_write_frame(ws_conn_t *conn, void *data, size_t len,
       }
     }
 
-    if ((hlen == 4) & (len < WS_WRITEV_THRESHOLD)) {
+    if ((hlen == 4) & ((len < WS_WRITEV_THRESHOLD) | (put_only == true))) {
       uint8_t *hbuf =
           conn->send_buf->buf +
           conn->send_buf->wpos; // place the header in the write buffer
@@ -2454,8 +2374,8 @@ static ssize_t deflation_stream_deflate(z_stream *dstrm, char *input,
 
 #endif /* WITH_COMPRESSION */
 
-static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
-                                 bool compress) {
+static int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
+                                 bool compress, bool put_only) {
 
 #ifndef WITH_COMPRESSION
   (void)compress; // suppress unused warning
@@ -2468,7 +2388,7 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
   int stat;
 #ifdef WITH_COMPRESSION
   if (!compress || !is_compression_allowed(c)) {
-    stat = conn_write_frame(c, msg, n, op);
+    stat = conn_write_frame(c, msg, n, op, put_only);
   } else {
     mirrored_buf_t *tmp_buf;
     bool from_buf_pool = false;
@@ -2492,7 +2412,7 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
                                  (unsigned)c->base->buffer_pool->buf_sz, true);
     if (compressed_len > 0) {
       stat =
-          conn_write_frame(c, deflate_buf, (size_t)compressed_len, op | 0x40);
+          conn_write_frame(c, deflate_buf, (size_t)compressed_len, op | 0x40, put_only);
       if (from_buf_pool) {
         mirrored_buf_put(c->base->buffer_pool, tmp_buf);
       } else {
@@ -2509,7 +2429,7 @@ static inline int conn_write_msg(ws_conn_t *c, void *msg, size_t n, uint8_t op,
     }
   }
 #else
-  stat = conn_write_frame(c, msg, n, op);
+  stat = conn_write_frame(c, msg, n, op, put_only);
 #endif /* WITH_COMPRESSION */
 
   return stat;
@@ -2521,13 +2441,13 @@ enum ws_send_status ws_conn_put_msg(ws_conn_t *c, void *msg, size_t n,
   switch (opcode) {
   case OP_TXT:
   case OP_BIN:
-    stat = conn_write_msg(c, msg, n, FIN | opcode, hint_compress);
+    stat = conn_write_msg(c, msg, n, FIN | opcode, hint_compress, 1);
     ws_conn_do_put(c, stat);
     return stat;
 
   case OP_PING:
   case OP_PONG:
-    stat = conn_write_frame(c, msg, n, FIN | opcode);
+    stat = conn_write_frame(c, msg, n, FIN | opcode, 1);
     ws_conn_do_put(c, stat);
     return stat;
 
@@ -2543,12 +2463,12 @@ enum ws_send_status ws_conn_send_msg(ws_conn_t *c, void *msg, size_t n,
   switch (opcode) {
   case OP_TXT:
   case OP_BIN:
-    stat = conn_write_msg(c, msg, n, FIN | opcode, hint_compress);
+    stat = conn_write_msg(c, msg, n, FIN | opcode, hint_compress, 0);
     return ws_conn_do_send(c, stat);
 
   case OP_PING:
   case OP_PONG:
-    stat = conn_write_frame(c, msg, n, FIN | opcode);
+    stat = conn_write_frame(c, msg, n, FIN | opcode, 0);
     return ws_conn_do_send(c, stat);
 
   default:
@@ -2635,7 +2555,7 @@ int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt,
   if (final)
     frame_cfg |= FIN;
 
-  int stat = conn_write_frame(c, msg, len, frame_cfg);
+  int stat = conn_write_frame(c, msg, len, frame_cfg, 0);
   int ret = ws_conn_do_send(c, stat);
 
   if ((final == 1) & ((ret == WS_SEND_OK) | (ret == WS_SEND_OK_BACKPRESSURE))) {
