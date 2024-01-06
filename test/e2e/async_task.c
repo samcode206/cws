@@ -9,6 +9,7 @@
 
 ws_server_t *srv;
 
+
 void server_on_open(ws_conn_t *conn) {}
 
 void server_on_msg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
@@ -35,57 +36,49 @@ void *server_init(void *_) {
 
   ws_server_start(srv, 1024);
 
+
   return NULL;
 }
 
-void server_async_task4(ws_server_t *rs, async_cb_ctx_t *ctx) {
-  int *chanid = ctx->ctx;
+void server_async_task4(ws_server_t *rs, void *ctx) {
+  int *chanid = ctx;
   printf("Final Task 4 running for %d\n", *chanid);
-  int *evfd = ctx->ctx;
-
   uint64_t v = 1;
-  assert(write(*evfd, &v, 8) == 8);
-
-  assert(srv == rs);
+  assert(write(*chanid, &v, 8) == 8);
 }
 
-void server_async_task3(ws_server_t *rs, async_cb_ctx_t *ctx) {
-  int *chanid = ctx->ctx;
-  printf("Task 3 running for %d\n", *chanid);
+void server_async_task3(ws_server_t *rs, void *ctx) {
+  int *chanid = ctx;
+  printf("Task 4 running for %d\n", *chanid);
   assert(srv == rs);
 
-  ctx->cb = server_async_task4;
-  ws_server_sched_callback(rs, ctx);
+  ws_server_sched_callback(rs, server_async_task4, ctx);
 }
 
-void server_async_task2(ws_server_t *rs, async_cb_ctx_t *ctx) {
-  int *chanid = ctx->ctx;
+void server_async_task2(ws_server_t *rs, void *ctx) {
+  int *chanid = ctx;
   printf("Task 2 running for %d\n", *chanid);
   assert(srv == rs);
 
-  ctx->cb = server_async_task3;
-  ws_server_sched_callback(rs, ctx);
+  ws_server_sched_callback(rs, server_async_task3, ctx);
 }
 
-void server_async_task(ws_server_t *rs, async_cb_ctx_t *ctx) {
-  int *chanid = ctx->ctx;
+void server_async_task(ws_server_t *rs, void *ctx) {
+  int *chanid = ctx;
   printf("Task 1 running for %d\n", *chanid);
   assert(srv == rs);
 
-  ctx->cb = server_async_task2;
-  ws_server_sched_callback(rs, ctx);
+  ws_server_sched_callback(rs, server_async_task2, ctx);
 }
 
+
+
 void *test_init(void *_) {
-  struct async_cb_ctx *task_info = malloc(sizeof(struct async_cb_ctx));
 
   // will use a blocking eventfd to know when all tasks are run
   int evfd = eventfd(0, 0);
 
-  task_info->ctx = &evfd;
-  task_info->cb = server_async_task;
-
-  ws_server_sched_callback(srv, task_info);
+  ws_server_sched_callback(srv, server_async_task, &evfd);
 
   uint64_t val;
   // once read is done we know we are done because write to eventfd happens in
@@ -93,11 +86,6 @@ void *test_init(void *_) {
   assert(read(evfd, &val, 8) == 8);
   printf("thread %d scheduled And Ran All tasks\n", gettid());
 
-  // free the task ctx
-  // note* the task_info struct was reused across tasks for the same thread, but
-  // it doesn't have to be there is just no point in allocating a new one for
-  // each task in this particular case
-  free(task_info);
 
   return NULL;
 }
@@ -127,4 +115,10 @@ int main() {
   for (size_t i = 0; i < NUM_TEST_THREADS; i++) {
     pthread_join(client_threads[i], NULL);
   }
+
+
+
+
+  ws_server_destroy(srv);
+
 }

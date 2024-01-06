@@ -43,9 +43,8 @@ void *server_init(void *_) {
   return NULL;
 }
 
-void async_shutdown(ws_server_t *s, struct async_cb_ctx *ctx) {
+void async_shutdown(ws_server_t *s, void *ctx) {
   ws_server_shutdown(s);
-
   assert(eventfd_write(done, 1) == 0);
 }
 
@@ -94,11 +93,8 @@ int ECHO_TEST(const char *name) {
   done = eventfd(0, EFD_CLOEXEC);
   assert(done != -1);
 
-  struct async_cb_ctx *cb_info = malloc(sizeof(struct async_cb_ctx));
-  cb_info->cb = async_shutdown;
-  cb_info->ctx = NULL;
 
-  assert(ws_server_sched_callback(s, cb_info) == 0);
+  assert(ws_server_sched_callback(s, async_shutdown, NULL) == 0);
 
   eventfd_t value;
   eventfd_read(done, &value);

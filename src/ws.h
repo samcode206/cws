@@ -511,27 +511,6 @@ void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read);
 int ws_server_active_events(ws_server_t *s);
 
 
-typedef struct async_cb_ctx async_cb_ctx_t;
-
-/**
- *
- * This callback is used in conjunction with `ws_server_sched_callback` to execute custom
- * functions asynchronously within the context of the server's thread. 
- *
- * @param s    Pointer to the WebSocket server (`ws_server_t`) where the callback is executed.
- * @param ctx  Pointer to an `async_cb_ctx_t` structure as provided when scheduling (see `ws_server_sched_callback` above)
- */
-typedef void (*ws_server_async_cb_t)(ws_server_t *s, async_cb_ctx_t *ctx);
-
-
-/**
- * Structure representing the context for an asynchronous callback.
- */
-typedef struct async_cb_ctx {
-  void *ctx;                /**< User-defined context passed to the callback function. */
-  ws_server_async_cb_t cb;  /**< Callback function to be executed asynchronously. */
-} async_cb_ctx;
-
 
 
 typedef void (*timeout_cb_t)(ws_server_t *s, void *ctx);
@@ -543,19 +522,20 @@ uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp,
 void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle);
 
 
+typedef void (*ws_server_deferred_cb_t)(ws_server_t *s, void *ctx);
 /**
  * Schedules an asynchronous callback to be executed in the server's thread.
  * This function enables users to run a callback function as part of the server's event loop,
  * which is useful for thread-safe operations and synchronizing with the server's state.
  *
- * The `cb_info` structure must remain valid until the callback is called. After the callback
- * execution, it can either be discarded or reused to schedule another callback. 
  *
  * @param runner   Pointer to the WebSocket server (`ws_server_t`) where the callback is scheduled.
- * @param cb_info  Pointer to the `async_cb_ctx` structure containing the callback and its context.
+ * @param cb_info  Pointer to the callback function to be executed (`ws_server_deferred_cb_t`).
+ * @param ctx      Pointer to the user-defined context to be passed to the callback function.
  * @return         Non-zero on failure, indicating an error in scheduling the callback.
  */
-int ws_server_sched_callback(ws_server_t *runner, struct async_cb_ctx *cb_info);
+int ws_server_sched_callback(ws_server_t *runner, ws_server_deferred_cb_t cb, void *ctx);
+
 
 /**
  * Returns the number of asynchronous callbacks currently queued in the server's event loop.
