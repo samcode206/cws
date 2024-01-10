@@ -3553,7 +3553,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
         ws_conn_t *c = ws_event_udata(s->events + i);
         if (s->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
           c->fragments_len = 0; // EOF
-          ws_conn_destroy(s->events[i].data.ptr, WS_ERR_READ);
+          ws_conn_destroy(c, WS_ERR_READ);
         } else {
           if (s->events[i].events & EPOLLOUT) {
             if (!is_closed(c)) {
