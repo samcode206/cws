@@ -3687,37 +3687,36 @@ int ws_server_start(ws_server_t *s, int backlog) {
           c->fragments_len = 0; // EOF
           ws_conn_destroy(c, WS_ERR_READ);
         } else {
-          if (ws_event_writeable(s->events + i)) {
-            if (!is_closed(c)) {
-              int ret = conn_drain_write_buf(c);
-              if (ret == 1) {
-                if (!is_write_shutdown(c)) {
-                  if (s->on_ws_drain) {
-                    s->on_ws_drain(c);
-                  }
-
-                  if (!is_upgraded(c)) {
-                    set_upgraded(c);
-                    c->needed_bytes = 2;
-                    ws_conn_set_read_timeout(c, READ_TIMEOUT);
-                    s->on_ws_open(c);
-                  }
-                } else {
-                  // we wrote everything we needed to write
-                  // we can shutdown our write end
-                  if (conn_shutdown_wr(c) == -1) {
-                    continue; // skip arming EPOLLIN if this fails
-                  };
+          if (ws_event_writeable(s->events + i) & (!is_closed(c)) &
+              (c->send_buf != NULL)) {
+            int ret = conn_drain_write_buf(c);
+            if (ret == 1) {
+              if (!is_write_shutdown(c)) {
+                if (s->on_ws_drain) {
+                  s->on_ws_drain(c);
                 }
 
-                // we must recheck if the connection is still writeable
-                // it may be that more back pressure was built when
-                // s->on_ws_drain was called if that's the case we want to keep
-                // waiting on EPOLLOUT before resuming reads
-                if (is_writeable(c)) {
-                  ws_server_event_mod(s, c->fd, c, true, false);
-                  clear_read_paused(c);
+                if (!is_upgraded(c)) {
+                  set_upgraded(c);
+                  c->needed_bytes = 2;
+                  ws_conn_set_read_timeout(c, READ_TIMEOUT);
+                  s->on_ws_open(c);
                 }
+              } else {
+                // we wrote everything we needed to write
+                // we can shutdown our write end
+                if (conn_shutdown_wr(c) == -1) {
+                  continue; // skip arming EPOLLIN if this fails
+                };
+              }
+
+              // we must recheck if the connection is still writeable
+              // it may be that more back pressure was built when
+              // s->on_ws_drain was called if that's the case we want to keep
+              // waiting on EPOLLOUT before resuming reads
+              if (is_writeable(c)) {
+                ws_server_event_mod(s, c->fd, c, true, false);
+                clear_read_paused(c);
               }
             }
           }
