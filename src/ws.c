@@ -165,7 +165,7 @@ typedef struct server {
   unsigned int next_io_timeout;
   unsigned int next_io_timeout_set;
   int active_events; // number of active events per epoll_wait call
-  int fd;            // server file descriptor
+  int listener_fd;            // server file descriptor
   int event_loop_fd;
   void *ctx;
 
@@ -2883,15 +2883,15 @@ static int ws_server_socket_bind(ws_server_t *s,
 
   int ret;
 
-  s->fd = socket(ipv6 ? AF_INET6 : AF_INET,
+  s->listener_fd = socket(ipv6 ? AF_INET6 : AF_INET,
                  SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
-  if (s->fd < 0) {
+  if (s->listener_fd < 0) {
     return -1;
   }
 
   // socket config
   int on = 1;
-  ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
+  ret = setsockopt(s->listener_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
                    sizeof(int));
   if (ret < 0) {
     return -1;
@@ -2899,7 +2899,7 @@ static int ws_server_socket_bind(ws_server_t *s,
 
   if (ipv6) {
     int off = 0;
-    ret = setsockopt(s->fd, SOL_IPV6, IPV6_V6ONLY, &off, sizeof(int));
+    ret = setsockopt(s->listener_fd, SOL_IPV6, IPV6_V6ONLY, &off, sizeof(int));
     if (ret < 0) {
       return -1;
     }
@@ -2910,7 +2910,7 @@ static int ws_server_socket_bind(ws_server_t *s,
     srv_addr.sin6_port = htons(port);
     inet_pton(AF_INET6, addr, &srv_addr.sin6_addr);
 
-    ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    ret = bind(s->listener_fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
     if (ret < 0) {
       return -1;
     }
@@ -2921,7 +2921,7 @@ static int ws_server_socket_bind(ws_server_t *s,
     srv_addr.sin_port = htons(port);
     inet_pton(AF_INET, addr, &srv_addr.sin_addr);
 
-    ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    ret = bind(s->listener_fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
     if (ret < 0) {
       return -1;
     }
@@ -3125,8 +3125,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
 
   int res = ws_server_socket_bind(s, params);
   if (res != 0) {
-    if (s->fd != -1)
-      close(s->fd);
+    if (s->listener_fd != -1)
+      close(s->listener_fd);
 
     close(s->event_loop_fd);
     free(s);
@@ -3253,10 +3253,10 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
 
   int sockopt_on = 1;
   while (accepts--) {
-    if (s->fd == -1) {
+    if (s->listener_fd == -1) {
       return;
     }
-    int fd = accept4(s->fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    int fd = accept4(s->listener_fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (fd == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         return; // done
@@ -3323,7 +3323,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
 }
 
 static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
-  int ret = listen(s->fd, backlog);
+  int ret = listen(s->listener_fd, backlog);
   if (ret < 0) {
     return ret;
   }
@@ -3333,7 +3333,7 @@ static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
       .data = {.ptr = s},
   };
 
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd, &ev);
+  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->listener_fd, &ev);
   s->internal_polls++;
 
   return 0;
@@ -3764,10 +3764,10 @@ int ws_server_shutdown(ws_server_t *s) {
 
   eventfd_write(s->async_runner->chanfd, 1);
 
-  close(s->fd);
-  epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->fd, &ev);
+  close(s->listener_fd);
+  epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->listener_fd, &ev);
   s->internal_polls--;
-  s->fd = -1;
+  s->listener_fd = -1;
 
   // go over all connections and shut them down
   for (size_t i = 0; i < s->conn_pool->cap; ++i) {
@@ -3826,10 +3826,10 @@ int ws_server_destroy(ws_server_t *s) {
   s->async_runner->chanfd = -1;
 
 
-  if (s->fd > 0) {
-    epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->fd, &ev);
-    close(s->fd);
-    s->fd = -1;
+  if (s->listener_fd > 0) {
+    epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->listener_fd, &ev);
+    close(s->listener_fd);
+    s->listener_fd = -1;
   }
 
   server_ws_conn_pool_destroy(s);
