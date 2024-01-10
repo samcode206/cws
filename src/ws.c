@@ -3500,9 +3500,19 @@ static inline bool ws_event_server(ws_server_t *s, ws_event_t *e) {
   return s == e->data.ptr;
 }
 
-static inline void *ws_event_udata(ws_event_t *e){
-  return e->data.ptr;
+static inline bool ws_event_conn_err(ws_event_t *e) {
+  return (e->events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) != 0;
 }
+
+static inline bool ws_event_writeable(ws_event_t *e) {
+  return (e->events & EPOLLOUT) != 0;
+}
+
+static inline bool ws_event_readable(ws_event_t *e) {
+  return (e->events & EPOLLIN) != 0;
+}
+
+static inline void *ws_event_udata(ws_event_t *e) { return e->data.ptr; }
 
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = ws_server_listen_and_serve(s, backlog);
@@ -3551,11 +3561,11 @@ int ws_server_start(ws_server_t *s, int backlog) {
                                   &client_socklen);
       } else {
         ws_conn_t *c = ws_event_udata(s->events + i);
-        if (s->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
+        if (ws_event_conn_err(s->events + i)) {
           c->fragments_len = 0; // EOF
           ws_conn_destroy(c, WS_ERR_READ);
         } else {
-          if (s->events[i].events & EPOLLOUT) {
+          if (ws_event_writeable(s->events + i)) {
             if (!is_closed(c)) {
               int ret = conn_drain_write_buf(c);
               if (ret == 1) {
@@ -3592,7 +3602,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
               }
             }
           }
-          if (s->events[i].events & EPOLLIN) {
+          if (ws_event_readable(s->events + i)) {
             if (!is_closed(c)) {
               if (!c->recv_buf) {
                 c->recv_buf = mirrored_buf_get(s->buffer_pool);
