@@ -166,7 +166,7 @@ typedef struct server {
   unsigned int next_io_timeout_set;
   int active_events; // number of active events per epoll_wait call
   int fd;            // server file descriptor
-  int epoll_fd;
+  int event_loop_fd;
   void *ctx;
 
   ws_open_cb_t on_ws_open;
@@ -3117,8 +3117,8 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
   }
 
   // init epoll
-  s->epoll_fd = epoll_create1(0);
-  if (s->epoll_fd < 0) {
+  s->event_loop_fd = epoll_create1(0);
+  if (s->event_loop_fd < 0) {
     free(s);
     return NULL;
   }
@@ -3128,7 +3128,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
     if (s->fd != -1)
       close(s->fd);
 
-    close(s->epoll_fd);
+    close(s->event_loop_fd);
     free(s);
     return NULL;
   }
@@ -3173,7 +3173,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
 
 static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
                                 ws_event_t *ev) {
-  if (epoll_ctl(s->epoll_fd, op, fd, ev) == -1) {
+  if (epoll_ctl(s->event_loop_fd, op, fd, ev) == -1) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
@@ -3468,7 +3468,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   }
 
   struct ws_server_async_runner *arptr = s->async_runner;
-  int epfd = s->epoll_fd;
+  int epfd = s->event_loop_fd;
   int tqfd = s->tq->timer_fd;
 
   ws_server_register_timer_queue(s, &tqfd);
@@ -3765,7 +3765,7 @@ int ws_server_shutdown(ws_server_t *s) {
   eventfd_write(s->async_runner->chanfd, 1);
 
   close(s->fd);
-  epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
+  epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->fd, &ev);
   s->internal_polls--;
   s->fd = -1;
 
@@ -3792,7 +3792,7 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // close timer fd
   if (s->tq) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tq->timer_fd, &ev);
+    epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->tq->timer_fd, &ev);
     close(s->tq->timer_fd);
     s->tq->timer_fd = -1;
     s->internal_polls--;
@@ -3821,13 +3821,13 @@ int ws_server_destroy(ws_server_t *s) {
 
   ws_event_t ev = {0};
 
-  epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
+  epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
   close(s->async_runner->chanfd);
   s->async_runner->chanfd = -1;
 
 
   if (s->fd > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
+    epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->fd, &ev);
     close(s->fd);
     s->fd = -1;
   }
@@ -3839,8 +3839,8 @@ int ws_server_destroy(ws_server_t *s) {
   free(s->tq);
   s->tq = NULL;
 
-  close(s->epoll_fd);
-  s->epoll_fd = -1;
+  close(s->event_loop_fd);
+  s->event_loop_fd = -1;
 
 #ifdef WITH_COMPRESSION
 
