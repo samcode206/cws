@@ -2845,12 +2845,26 @@ static int ws_server_socket_bind(ws_server_t *s,
 
   int ret;
 
+#if defined(SOCK_CLOEXEC) && defined(SOCK_NONBLOCK)
   s->listener_fd =
       socket(ipv6 ? AF_INET6 : AF_INET,
              SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
   if (s->listener_fd < 0) {
     return -1;
   }
+
+#else
+  s->listener_fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (s->listener_fd < 0) {
+    return -1;
+  }
+
+  if (fcntl(s->listener_fd, F_SETFL,
+            fcntl(s->listener_fd, F_GETFL) | O_NONBLOCK) == -1) {
+    close(s->listener_fd);
+    return -1;
+  };
+#endif
 
   // socket config
   int on = 1;
@@ -2862,7 +2876,8 @@ static int ws_server_socket_bind(ws_server_t *s,
 
   if (ipv6) {
     int off = 0;
-    ret = setsockopt(s->listener_fd, SOL_IPV6, IPV6_V6ONLY, &off, sizeof(int));
+    ret = setsockopt(s->listener_fd, IPPROTO_IPV6, IPV6_V6ONLY, &off,
+                     sizeof(int));
     if (ret < 0) {
       return -1;
     }
@@ -3081,8 +3096,12 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
     s->ctx = params->ctx;
   }
 
-  // init epoll
+#ifdef WS_WITH_EPOLL
   s->event_loop_fd = epoll_create1(0);
+#else
+  s->event_loop_fd = kqueue();
+#endif
+
   if (s->event_loop_fd < 0) {
     free(s);
     return NULL;
@@ -3158,7 +3177,7 @@ static void ws_server_event_add(ws_server_t *s, int fd, void *ctx) {
   ws_event_t ev[2];
   EV_SET(ev, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, ctx);
   EV_SET(ev + 1, fd, EVFILT_WRITE, EV_ADD | EV_DISABLE, 0, 0, ctx);
-  if (kevent(s->fd, ev, 2, NULL, 0, NULL) == -1) {
+  if (kevent(s->event_loop_fd, ev, 2, NULL, 0, NULL) == -1) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
@@ -3198,9 +3217,9 @@ static void ws_server_event_mod(ws_server_t *s, int fd, void *ctx, bool read,
 
 #else
   ws_event_t ev[2];
-  EV_SET(ev, c->fd, EVFILT_READ, read ? EV_ENABLE : EV_DISABLE, 0, 0, ctx);
-  EV_SET(ev + 1, c->fd, EVFILT_WRITE, write ? EV_ENABLE | EV_DISABLE, 0, 0, ctx);
-  if (kevent(s->fd, ev, 2, NULL, 0, NULL) == -1) {
+  EV_SET(ev, fd, EVFILT_READ, read ? EV_ENABLE : EV_DISABLE, 0, 0, ctx);
+  EV_SET(ev + 1, fd, EVFILT_WRITE, write ? EV_ENABLE : EV_DISABLE, 0, 0, ctx);
+  if (kevent(s->event_loop_fd, ev, 2, NULL, 0, NULL) == -1) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
@@ -3227,9 +3246,9 @@ static void ws_server_event_del(ws_server_t *s, int fd) {
 
 #else
   ws_event_t ev[2];
-  EV_SET(ev, c->fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-  EV_SET(ev + 1, c->fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-  if (kevent(s->fd, ev, 2, NULL, 0, NULL) == -1) {
+  EV_SET(ev, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+  EV_SET(ev + 1, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+  if (kevent(s->event_loop_fd, ev, 2, NULL, 0, NULL) == -1) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
@@ -3276,7 +3295,9 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd) {
 
 static bool ws_server_accept_err_recoverable(int err) {
   switch (err) {
+#if defined(ENONET)
   case ENONET:
+#endif
   case EPROTO:
   case ENOPROTOOPT:
   case EOPNOTSUPP:
@@ -3373,7 +3394,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
         };
 
         // disable Nagle's algorithm
-        if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &sockopt_on,
+        if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &sockopt_on,
                        sizeof(sockopt_on)) == -1) {
           if (s->on_ws_err) {
             int err = errno;
@@ -3415,7 +3436,11 @@ static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
   if (likely(s->internal_polls > 0)) {
     int n_evs;
     for (;;) {
+#ifdef WS_WITH_EPOLL
       n_evs = epoll_wait(epfd, s->events, 1024, -1);
+#else
+      n_evs = kevent(epfd, NULL, 0, s->events, 1024, NULL);
+#endif
       if (likely(n_evs >= 0)) {
         break;
       } else {
@@ -3426,7 +3451,11 @@ static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
             int err = errno;
             s->on_ws_err(s, err);
           } else {
+#ifdef WS_WITH_EPOLL
             perror("epoll_wait");
+#else
+            perror("kevent");
+#endif
             exit(EXIT_FAILURE);
           }
           return -1;
@@ -3533,30 +3562,61 @@ static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
 }
 
 static inline bool ws_event_timer(ws_server_t *s, ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
   return &s->tq == e->data.ptr;
+#else
+  return &s->tq == e->udata;
+#endif
 }
 
 static inline bool ws_event_async_runner(ws_server_t *s, ws_event_t *e) {
+
+#ifdef WS_WITH_EPOLL
   return &s->async_runner == e->data.ptr;
+#else
+  return &s->async_runner == e->udata;
+#endif
 }
 
 static inline bool ws_event_server(ws_server_t *s, ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
   return s == e->data.ptr;
+#else
+  return s == e->udata;
+#endif
 }
 
 static inline bool ws_event_conn_err(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
   return (e->events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) != 0;
+#else
+  return (e->flags & EV_EOF) != 0;
+#endif
 }
 
 static inline bool ws_event_writeable(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
   return (e->events & EPOLLOUT) != 0;
+#else
+  return (e->filter & EVFILT_WRITE) != 0;
+#endif
 }
 
 static inline bool ws_event_readable(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
   return (e->events & EPOLLIN) != 0;
+#else
+  return (e->filter & EVFILT_READ) != 0;
+#endif
 }
 
-static inline void *ws_event_udata(ws_event_t *e) { return e->data.ptr; }
+static inline void *ws_event_udata(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
+  return e->data.ptr;
+#else
+  return e->udata;
+#endif
+}
 
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = ws_server_listen_and_serve(s, backlog);
