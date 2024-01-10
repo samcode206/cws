@@ -3859,65 +3859,6 @@ inline void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read) {
 
 inline int ws_server_active_events(ws_server_t *s) { return s->active_events; }
 
-int ws_epoll_create1(ws_server_t *s) {
-  if (!s->user_epoll) {
-    s->user_epoll = epoll_create1(O_CLOEXEC);
-    if (s->user_epoll == -1) {
-      return -1;
-    } else {
-      struct epoll_event ev = {
-          .events = EPOLLIN,
-          .data = {.ptr = &s->user_epoll},
-      };
-
-      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->user_epoll, &ev);
-      s->internal_polls++;
-      return 0;
-    }
-  }
-
-  return s->user_epoll ? s->user_epoll : -1;
-}
-
-int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                     unsigned int events) {
-  if (!s->user_epoll || !cb_ctx) {
-    return -1;
-  }
-
-  struct epoll_event ev = {
-      .events = events,
-      .data = {.ptr = cb_ctx},
-  };
-
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_ADD, fd, &ev);
-}
-
-int ws_epoll_ctl_del(ws_server_t *s, int fd) {
-  if (!s->user_epoll) {
-    return -1;
-  }
-
-  struct epoll_event ev = {
-      .events = 0,
-      .data = {.ptr = NULL},
-  };
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_DEL, fd, &ev);
-}
-
-int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                     unsigned int events) {
-  if (!s->user_epoll || !cb_ctx) {
-    return -1;
-  }
-
-  struct epoll_event ev = {
-      .events = events,
-      .data = {.ptr = cb_ctx},
-  };
-
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &ev);
-}
 
 int ws_server_destroy(ws_server_t *s) {
   // this one was used to wake up from epoll_wait when we shut down

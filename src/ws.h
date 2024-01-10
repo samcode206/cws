@@ -446,45 +446,6 @@ typedef struct ws_poll_cb_ctx_t {
   void *ctx;        /**< User-defined context passed to the callback function. */
 } ws_poll_cb_ctx_t;
 
-/**
- * Creates an epoll instance for the given WebSocket server.
- *
- * @param s Pointer to the WebSocket server (`ws_server_t`).
- * @return  Non-zero on failure.
- */
-int ws_epoll_create1(ws_server_t *s);
-
-/**
- * Adds a file descriptor to the epoll instance for monitoring.
- *
- * @param s       Pointer to the WebSocket server (`ws_server_t`).
- * @param fd      File descriptor to be monitored.
- * @param cb_ctx  Pointer to the `ws_poll_cb_ctx_t` structure, containing the callback and context.
- * @param events  Epoll events to monitor (e.g., EPOLLIN, EPOLLOUT).
- * @return        Non-zero on failure.
- */
-int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, unsigned int events);
-
-/**
- * Removes a file descriptor from the epoll instance.
- *
- * @param s  Pointer to the WebSocket server (`ws_server_t`).
- * @param fd File descriptor to be removed from monitoring.
- * @return   Non-zero on failure.
- */
-int ws_epoll_ctl_del(ws_server_t *s, int fd);
-
-/**
- * Modifies the event subscription for a monitored file descriptor in the epoll instance.
- *
- * @param s       Pointer to the WebSocket server (`ws_server_t`).
- * @param fd      File descriptor with modified event subscription.
- * @param cb_ctx  Pointer to the `ws_poll_cb_ctx_t` structure, containing the updated callback and context.
- * @param events  New set of epoll events to monitor for the file descriptor.
- * @return        Non-zero on failure.
- */
-int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx, unsigned int events);
-
 
 /**
  * @brief Sets the maximum number of bytes to read per read operation for the WebSocket server.
