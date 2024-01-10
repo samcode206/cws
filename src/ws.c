@@ -30,19 +30,39 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdio.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
-#include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
 #endif /* WITH_COMPRESSION */
+
+#if defined(__linux__)
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
+
+#define WS_WITH_EPOLL
+#elif defined(__unix__)
+#include <sys/event.h>
+#define WS_WITH_KQUEUE
+#endif
+
+#ifdef WS_WITH_EPOLL
+#ifdef WS_WITH_KQUEUE
+static_assert(0, "epoll can't be used with kqueue");
+#endif
+#endif
+
+#ifdef WS_WITH_KQUEUE
+#ifdef WS_WITH_EPOLL
+static_assert(0, "kqueue can't be used with epoll");
+#endif
+#endif
 
 #ifndef WS_TIMER_SLACK_NS
 #define WS_TIMER_SLACK_NS 50000
@@ -122,11 +142,21 @@ struct ws_timer_queue {
   struct ws_timer *timer_pool_head; // head of the linked list of timers
 };
 
-
 struct async_cb_ctx {
-  void *ctx;                /**< User-defined context passed to the callback function. */
-  ws_server_deferred_cb_t cb;  /**< Callback function to be executed asynchronously. */
+  void *ctx; /**< User-defined context passed to the callback function. */
+  ws_server_deferred_cb_t
+      cb; /**< Callback function to be executed asynchronously. */
 };
+
+
+
+#ifdef WS_WITH_EPOLL
+typedef struct epoll_event ws_event_t;
+#endif /* WS_WITH_EPOLL */
+
+#ifdef WS_WITH_KQUEUE
+typedef struct kevent ws_event_t;
+#endif /* WS_WITH_KQUEUE */
 
 
 
@@ -3651,8 +3681,8 @@ static void ws_server_async_runner_destroy(ws_server_t *s) {
   s->async_runner = NULL;
 }
 
-
-int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb, void *ctx){
+int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
+                             void *ctx) {
   if (cb != NULL) {
     struct ws_server_async_runner *ar = s->async_runner;
 
@@ -3687,7 +3717,6 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb, void *c
     struct async_cb_ctx *cb_info = &q->cbs[q->len++];
     cb_info->cb = cb;
     cb_info->ctx = ctx;
-
 
     // mu end
     pthread_mutex_unlock(&ar->mu);
