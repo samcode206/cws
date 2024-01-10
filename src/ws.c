@@ -47,7 +47,7 @@
 #include <sys/timerfd.h>
 
 #define WS_WITH_EPOLL
-#elif defined(__unix__)
+#elif defined(__unix__) || defined(__APPLE__)
 #include <sys/event.h>
 #define WS_WITH_KQUEUE
 #endif
