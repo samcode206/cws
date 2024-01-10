@@ -784,7 +784,7 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   clock_gettime(CLOCK_REALTIME, &ts);
 
   sprintf(pname, "/ws_bp_%zu_%d_%zu", ts.tv_nsec + ts.tv_sec, getpid(),
-          pthread_self());
+          (unsigned long)pthread_self());
 
   pool->fd = shm_open(pname, O_CREAT | O_RDWR | O_EXCL, 600);
   if (pool->fd == -1) {
