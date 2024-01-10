@@ -3173,6 +3173,114 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
   return s;
 }
 
+static void ws_server_event_add(ws_server_t *s, int fd, void *ctx) {
+#ifdef WS_WITH_EPOLL
+  ws_event_t ev = {
+      .events = EPOLLIN | EPOLLRDHUP,
+      .data.ptr = ctx,
+  };
+
+  if (epoll_ctl(s->event_loop_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("epoll_ctl");
+      exit(EXIT_FAILURE);
+    }
+  };
+
+#else
+  ws_event_t ev[2];
+  EV_SET(ev, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, ctx);
+  EV_SET(ev + 1, fd, EVFILT_WRITE, EV_ADD | EV_DISABLE, 0, 0, ctx);
+  if (kevent(s->fd, ev, 2, NULL, 0, NULL) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("kevent");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+#endif /* WS_WITH_EPOLL */
+}
+
+static void ws_server_event_mod(ws_server_t *s, int fd, void *ctx, bool read,
+                                bool write) {
+#ifdef WS_WITH_EPOLL
+  ws_event_t ev;
+  ev.data.ptr = ctx;
+  ev.events = EPOLLRDHUP;
+
+  if (read)
+    ev.events |= EPOLLIN;
+
+  if (write)
+    ev.events |= EPOLLOUT;
+
+  if (epoll_ctl(s->event_loop_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("epoll_ctl");
+      exit(EXIT_FAILURE);
+    }
+  };
+
+#else
+  ws_event_t ev[2];
+  EV_SET(ev, c->fd, EVFILT_READ, read ? EV_ENABLE : EV_DISABLE, 0, 0, ctx);
+  EV_SET(ev + 1, c->fd, EVFILT_WRITE, write ? EV_ENABLE | EV_DISABLE, 0, 0, ctx);
+  if (kevent(s->fd, ev, 2, NULL, 0, NULL) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("kevent");
+      exit(EXIT_FAILURE);
+    }
+  }
+#endif
+}
+
+static void ws_server_event_del(ws_server_t *s, int fd) {
+#ifdef WS_WITH_EPOLL
+  ws_event_t ev = {0};
+  if (epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, fd, &ev) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("epoll_ctl");
+      exit(EXIT_FAILURE);
+    }
+  };
+
+#else
+  ws_event_t ev[2];
+  EV_SET(ev, c->fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+  EV_SET(ev + 1, c->fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+  if (kevent(s->fd, ev, 2, NULL, 0, NULL) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("kevent");
+      exit(EXIT_FAILURE);
+    }
+  }
+#endif
+}
+
 static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
                                 ws_event_t *ev) {
   if (epoll_ctl(s->event_loop_fd, op, fd, ev) == -1) {
