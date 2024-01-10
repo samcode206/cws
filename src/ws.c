@@ -770,11 +770,33 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
                           align_to(sizeof(struct mirrored_buf_pool), 32) +
                           mirrored_bufs_total_size);
 
+#ifdef WS_WITH_EPOLL
   pool->fd = memfd_create("buf", 0);
   if (pool->fd == -1) {
     perror("memfd_create");
     return NULL;
   }
+
+#else
+  char pname[128] = {0};
+
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+
+  sprintf(pname, "/ws_bp_%zu_%d_%zu", ts.tv_nsec + ts.tv_sec, getpid(),
+          pthread_self());
+
+  pool->fd = shm_open(pname, O_CREAT | O_RDWR | O_EXCL, 600);
+  if (pool->fd == -1) {
+    perror("shm_open");
+    return NULL;
+  }
+
+  if (shm_unlink(pname) == -1) {
+    perror("shm_unlink");
+  };
+
+#endif
 
   pool->buf_sz = buf_sz;
   pool->base = ((uint8_t *)pool_mem) + pool_sz;
