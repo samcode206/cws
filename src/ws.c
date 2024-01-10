@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -225,7 +226,12 @@ static void server_writeable_conns_append(ws_conn_t *c);
 
 static void ws_conn_proccess_frames(ws_conn_t *conn);
 
-static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd, ws_event_t *ev);
+static void ws_server_event_add(ws_server_t *s, int fd, void *ctx);
+
+static void ws_server_event_mod(ws_server_t *s, int fd, void *ctx, bool read,
+                                bool write);
+
+static void ws_server_event_del(ws_server_t *s, int fd);
 
 inline void *ws_server_ctx(ws_server_t *s) { return s->ctx; }
 
@@ -539,19 +545,7 @@ void ws_conn_pause_read(ws_conn_t *c) {
   // if we aren't currently paused
   if (!is_read_paused(c)) {
     ws_server_t *s = c->base;
-
-    ws_event_t ev = {
-        .events = EPOLLRDHUP,
-        .data = {.ptr = c},
-    };
-
-    // if we aren't writeable keep EPOLLOUT
-    if (!is_writeable(c)) {
-      ev.events |= EPOLLOUT;
-    }
-
-    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
-
+    ws_server_event_mod(s, c->fd, c, 0, !is_writeable(c));
     set_read_paused(c);
     clear_processing(c);
   }
@@ -560,17 +554,7 @@ void ws_conn_pause_read(ws_conn_t *c) {
 void ws_conn_resume_reads(ws_conn_t *c) {
   if (is_read_paused(c)) {
     ws_server_t *s = c->base;
-
-    ws_event_t ev = {
-        .events = EPOLLIN | EPOLLRDHUP,
-        .data = {.ptr = c},
-    };
-
-    if (!is_writeable(c)) {
-      ev.events |= EPOLLOUT;
-    }
-
-    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
+    ws_server_event_mod(s, c->fd, c, true, !is_writeable(c));
     clear_read_paused(c);
 
     // if there is data in the buffer after resuming
@@ -622,11 +606,10 @@ void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
   }
   server_pending_timers_remove(c);
 
-  ws_event_t ev = {
-      0,
-  };
+#ifdef WS_WITH_EPOLL
+  ws_server_event_del(s, c->fd);
+#endif /* WS_WITH_EPOLL */
 
-  ws_server_epoll_ctl(c->base, EPOLL_CTL_DEL, c->fd, &ev);
   clear_writeable(c);
   set_read_paused(c);
   close(c->fd);
@@ -1099,26 +1082,12 @@ static int conn_read(ws_conn_t *conn) {
 
 static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
   clear_writeable(conn);
-  ws_event_t ev = {
-      .events = EPOLLOUT | EPOLLRDHUP,
-      .data = {.ptr = conn},
-  };
 
-  if (is_sending_fragments(conn)) {
-    // keep EPOLLIN armed if we are in the sending_fragments state
-    // this is so that we can continue to read control frames
-    // we usually disable reading if there is backpressure
-    // until the client has read what was sent but this case
-    // we may be in the sending_fragments state for too long and don't wanna
-    // miss any ping/pongs or other messages that may cause a read timeout
-    // TODO : add a pause function for when the client wants to stop reading
-    // from a connection temporarily
-    ev.events |= EPOLLIN;
-  } else {
+  ws_server_event_mod(conn->base, conn->fd, conn, is_sending_fragments(conn),
+                      true);
+
+  if (!is_sending_fragments(conn))
     set_read_paused(conn);
-  }
-
-  ws_server_epoll_ctl(conn->base, EPOLL_CTL_MOD, conn->fd, &ev);
 }
 
 static int conn_drain_write_buf(ws_conn_t *conn) {
@@ -2671,13 +2640,7 @@ static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
 
 static void ws_server_register_timer_queue(ws_server_t *s, void *id) {
   assert(s->tq->timer_fd > 0);
-
-  ws_event_t ev = {
-      .events = EPOLLIN,
-      .data = {.ptr = id},
-  };
-
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->tq->timer_fd, &ev);
+  ws_server_event_add(s, s->tq->timer_fd, id);
 }
 
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
@@ -3257,10 +3220,8 @@ static void ws_server_event_del(ws_server_t *s, int fd) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
-      exit(EXIT_FAILURE);
     } else {
       perror("epoll_ctl");
-      exit(EXIT_FAILURE);
     }
   };
 
@@ -3272,27 +3233,11 @@ static void ws_server_event_del(ws_server_t *s, int fd) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
-      exit(EXIT_FAILURE);
     } else {
       perror("kevent");
-      exit(EXIT_FAILURE);
     }
   }
 #endif
-}
-
-static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
-                                ws_event_t *ev) {
-  if (epoll_ctl(s->event_loop_fd, op, fd, ev) == -1) {
-    if (s->on_ws_err) {
-      int err = errno;
-      s->on_ws_err(s, err);
-      exit(EXIT_FAILURE);
-    } else {
-      perror("epoll_ctl");
-      exit(EXIT_FAILURE);
-    }
-  };
 }
 
 static void ws_server_new_conn(ws_server_t *s, int client_fd) {
@@ -3322,12 +3267,8 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd) {
   assert(conn->send_buf == NULL);
   assert(conn->recv_buf == NULL);
 
-  ws_event_t ev = {
-      .events = EPOLLIN | EPOLLRDHUP,
-      .data = {.ptr = conn},
-  };
+  ws_server_event_add(s, client_fd, conn);
 
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd, &ev);
   ++s->open_conns;
 
   server_pending_timers_append(conn);
@@ -3463,12 +3404,7 @@ static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
     return ret;
   }
 
-  ws_event_t ev = {
-      .events = EPOLLIN,
-      .data = {.ptr = s},
-  };
-
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->listener_fd, &ev);
+  ws_server_event_add(s, s->listener_fd, s);
   s->internal_polls++;
 
   return 0;
@@ -3639,10 +3575,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
 
-  ws_event_t ev = {
-      0,
-  };
-
   for (;;) {
     s->active_events = 0;
     int n_evs = ws_server_do_epoll_wait(s, epfd);
@@ -3701,10 +3633,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
                 // s->on_ws_drain was called if that's the case we want to keep
                 // waiting on EPOLLOUT before resuming reads
                 if (is_writeable(c)) {
-                  ev.events = EPOLLIN | EPOLLRDHUP;
-                  ev.data.ptr = c;
-                  ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
-
+                  ws_server_event_mod(s, c->fd, c, true, false);
                   clear_read_paused(c);
                 }
               }
@@ -3784,12 +3713,8 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
     perror("pthread_mutex_init");
     exit(EXIT_FAILURE);
   }
-  ws_event_t ev = {
-      .events = EPOLLIN,
-      .data = {.ptr = &s->async_runner},
-  };
 
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd, &ev);
+  ws_server_event_add(s, ar->chanfd, &s->async_runner);
   s->internal_polls++;
   s->async_runner = ar;
 }
@@ -3917,16 +3842,11 @@ int ws_server_shutdown(ws_server_t *s) {
     return -1;
   }
 
-  // remove and close listner fd
-  ws_event_t ev = {
-      .events = 0,
-      .data = {.ptr = NULL},
-  };
-
   eventfd_write(s->async_runner->chanfd, 1);
 
+  ws_server_event_del(s, s->listener_fd);
   close(s->listener_fd);
-  epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->listener_fd, &ev);
+
   s->internal_polls--;
   s->listener_fd = -1;
 
@@ -3951,7 +3871,7 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // close timer fd
   if (s->tq) {
-    epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->tq->timer_fd, &ev);
+    ws_server_event_del(s, s->tq->timer_fd);
     close(s->tq->timer_fd);
     s->tq->timer_fd = -1;
     s->internal_polls--;
@@ -3978,14 +3898,12 @@ int ws_server_destroy(ws_server_t *s) {
   // this one was used to wake up from epoll_wait when we shut down
   // this is why we didn't close it in ws_server_shutdown
 
-  ws_event_t ev = {0};
-
-  epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
+  ws_server_event_del(s, s->async_runner->chanfd);
   close(s->async_runner->chanfd);
   s->async_runner->chanfd = -1;
 
   if (s->listener_fd > 0) {
-    epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->listener_fd, &ev);
+    ws_server_event_del(s, s->listener_fd);
     close(s->listener_fd);
     s->listener_fd = -1;
   }
