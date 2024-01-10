@@ -148,8 +148,6 @@ struct async_cb_ctx {
       cb; /**< Callback function to be executed asynchronously. */
 };
 
-
-
 #ifdef WS_WITH_EPOLL
 typedef struct epoll_event ws_event_t;
 #endif /* WS_WITH_EPOLL */
@@ -157,8 +155,6 @@ typedef struct epoll_event ws_event_t;
 #ifdef WS_WITH_KQUEUE
 typedef struct kevent ws_event_t;
 #endif /* WS_WITH_KQUEUE */
-
-
 
 typedef struct server {
   size_t max_msg_len;  // max allowed msg length
@@ -194,7 +190,6 @@ typedef struct server {
 
   struct ws_timer_queue *tq; // High resolution timer queue
   size_t internal_polls;     // number of internal fds being watched by epoll
-  int user_epoll;
   struct epoll_event events[1024];
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
@@ -3498,20 +3493,14 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     s->active_events = n_evs;
 
-    bool check_user_epoll = false;
-    int *user_epoll_ptr = &s->user_epoll;
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if ((s->events[i].data.ptr == user_epoll_ptr) |
-          (s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
-
+      if ((s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
         if (s->events[i].data.ptr == &tqfd) {
           timer_consume(tqfd);
           ws_timer_queue_run_expired_callbacks(s->tq, s);
         } else if (s->events[i].data.ptr == arptr) {
           ws_server_async_runner_run_pending_callbacks(s, arptr);
-        } else {
-          check_user_epoll = true;
         }
 
       } else if (s->events[i].data.ptr == s) {
@@ -3577,33 +3566,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
           }
         }
       }
-    }
-
-    if (check_user_epoll) {
-      int count;
-      for (;;) {
-        count = epoll_wait(*user_epoll_ptr, s->events, 1024, 0);
-        if (unlikely(count == 0 || count == -1)) {
-          if (count == -1 && errno == EINTR) {
-            continue;
-          } else {
-            break;
-          }
-        } else {
-          break;
-        }
-      }
-
-      if (count > 0) {
-        for (int i = 0; i < count; ++i) {
-          ws_poll_cb_ctx_t *ctx = s->events[i].data.ptr;
-          if (ctx) {
-            ctx->cb(s, ctx, s->events[i].events);
-          }
-        }
-      }
-
-      check_user_epoll = false;
     }
 
     // drain all outgoing before calling epoll_wait
@@ -3821,13 +3783,7 @@ int ws_server_shutdown(ws_server_t *s) {
     }
   }
 
-  // close user epoll
-  if (s->user_epoll > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &ev);
-    close(s->user_epoll);
-    s->user_epoll = -1;
-    s->internal_polls--;
-  }
+
 
   // close event fd
   if (s->async_runner->chanfd && s->internal_polls) {
@@ -3859,7 +3815,6 @@ inline void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read) {
 
 inline int ws_server_active_events(ws_server_t *s) { return s->active_events; }
 
-
 int ws_server_destroy(ws_server_t *s) {
   // this one was used to wake up from epoll_wait when we shut down
   // this is why we didn't close it in ws_server_shutdown
@@ -3870,11 +3825,6 @@ int ws_server_destroy(ws_server_t *s) {
   close(s->async_runner->chanfd);
   s->async_runner->chanfd = -1;
 
-  if (s->user_epoll > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &ev);
-    close(s->user_epoll);
-    s->user_epoll = -1;
-  }
 
   if (s->fd > 0) {
     epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
