@@ -190,7 +190,7 @@ typedef struct server {
 
   struct ws_timer_queue *tq; // High resolution timer queue
   size_t internal_polls;     // number of internal fds being watched by epoll
-  struct epoll_event events[1024];
+  ws_event_t events[1024];
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
 } ws_server_t;
@@ -226,7 +226,7 @@ static void server_writeable_conns_append(ws_conn_t *c);
 static void ws_conn_proccess_frames(ws_conn_t *conn);
 
 static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
-                                struct epoll_event *ev);
+                                ws_event_t *ev);
 
 inline void *ws_server_ctx(ws_server_t *s) { return s->ctx; }
 
@@ -541,7 +541,7 @@ void ws_conn_pause_read(ws_conn_t *c) {
   if (!is_read_paused(c)) {
     ws_server_t *s = c->base;
 
-    struct epoll_event ev = {
+    ws_event_t ev = {
         .events = EPOLLRDHUP,
         .data = {.ptr = c},
     };
@@ -562,7 +562,7 @@ void ws_conn_resume_reads(ws_conn_t *c) {
   if (is_read_paused(c)) {
     ws_server_t *s = c->base;
 
-    struct epoll_event ev = {
+    ws_event_t ev = {
         .events = EPOLLIN | EPOLLRDHUP,
         .data = {.ptr = c},
     };
@@ -623,7 +623,7 @@ void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
   }
   server_pending_timers_remove(c);
 
-  struct epoll_event ev = {
+  ws_event_t ev = {
       0,
   };
 
@@ -1100,7 +1100,7 @@ static int conn_read(ws_conn_t *conn) {
 
 static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
   clear_writeable(conn);
-  struct epoll_event ev = {
+  ws_event_t ev = {
       .events = EPOLLOUT | EPOLLRDHUP,
       .data = {.ptr = conn},
   };
@@ -2673,7 +2673,7 @@ static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
 static void ws_server_register_timer_queue(ws_server_t *s, int *tfd) {
   assert(s->tq->timer_fd > 0);
 
-  struct epoll_event ev = {
+  ws_event_t ev = {
       .events = EPOLLIN,
       .data = {.ptr = tfd},
   };
@@ -3172,7 +3172,7 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
 }
 
 static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
-                                struct epoll_event *ev) {
+                                ws_event_t *ev) {
   if (epoll_ctl(s->epoll_fd, op, fd, ev) == -1) {
     if (s->on_ws_err) {
       int err = errno;
@@ -3212,7 +3212,7 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd) {
   assert(conn->send_buf == NULL);
   assert(conn->recv_buf == NULL);
 
-  struct epoll_event ev = {
+  ws_event_t ev = {
       .events = EPOLLIN | EPOLLRDHUP,
       .data = {.ptr = conn},
   };
@@ -3328,7 +3328,7 @@ static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
     return ret;
   }
 
-  struct epoll_event ev = {
+  ws_event_t ev = {
       .events = EPOLLIN,
       .data = {.ptr = s},
   };
@@ -3480,7 +3480,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
 
-  struct epoll_event ev = {
+  ws_event_t ev = {
       0,
   };
 
@@ -3623,7 +3623,7 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
     perror("pthread_mutex_init");
     exit(EXIT_FAILURE);
   }
-  struct epoll_event ev = {
+  ws_event_t ev = {
       .events = EPOLLIN,
       .data = {.ptr = ar},
   };
@@ -3757,7 +3757,7 @@ int ws_server_shutdown(ws_server_t *s) {
   }
 
   // remove and close listner fd
-  struct epoll_event ev = {
+  ws_event_t ev = {
       .events = 0,
       .data = {.ptr = NULL},
   };
@@ -3819,7 +3819,7 @@ int ws_server_destroy(ws_server_t *s) {
   // this one was used to wake up from epoll_wait when we shut down
   // this is why we didn't close it in ws_server_shutdown
 
-  struct epoll_event ev = {0};
+  ws_event_t ev = {0};
 
   epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
   close(s->async_runner->chanfd);
