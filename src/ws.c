@@ -2669,12 +2669,12 @@ static void ws_server_set_io_timeout(ws_server_t *s, unsigned int *restrict res,
 
 static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
 
-static void ws_server_register_timer_queue(ws_server_t *s, int *tfd) {
+static void ws_server_register_timer_queue(ws_server_t *s, void *id) {
   assert(s->tq->timer_fd > 0);
 
   ws_event_t ev = {
       .events = EPOLLIN,
-      .data = {.ptr = tfd},
+      .data = {.ptr = id},
   };
 
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->tq->timer_fd, &ev);
@@ -3488,17 +3488,31 @@ static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
   }
 }
 
+static inline bool ws_event_timer(ws_server_t *s, ws_event_t *e) {
+  return &s->tq == e->data.ptr;
+}
+
+static inline bool ws_event_async_runner(ws_server_t *s, ws_event_t *e) {
+  return &s->async_runner == e->data.ptr;
+}
+
+static inline bool ws_event_server(ws_server_t *s, ws_event_t *e) {
+  return s == e->data.ptr;
+}
+
+static inline void *ws_event_udata(ws_event_t *e){
+  return e->data.ptr;
+}
+
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = ws_server_listen_and_serve(s, backlog);
   if (ret < 0) {
     return ret;
   }
 
-  struct ws_server_async_runner *arptr = s->async_runner;
   int epfd = s->event_loop_fd;
-  int tqfd = s->tq->timer_fd;
 
-  ws_server_register_timer_queue(s, &tqfd);
+  ws_server_register_timer_queue(s, &s->tq);
   ws_server_time_update(s);
   struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
   ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
@@ -3522,19 +3536,21 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if ((s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
-        if (s->events[i].data.ptr == &tqfd) {
-          timer_consume(tqfd);
+      if (ws_event_async_runner(s, s->events + i) |
+          ws_event_timer(s, s->events + i)) {
+
+        if (ws_event_timer(s, s->events + i)) {
+          timer_consume(s->tq->timer_fd);
           ws_timer_queue_run_expired_callbacks(s->tq, s);
-        } else if (s->events[i].data.ptr == arptr) {
-          ws_server_async_runner_run_pending_callbacks(s, arptr);
+        } else {
+          ws_server_async_runner_run_pending_callbacks(s, s->async_runner);
         }
 
-      } else if (s->events[i].data.ptr == s) {
+      } else if (ws_event_server(s, s->events + i)) {
         ws_server_conns_establish(s, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
       } else {
-        ws_conn_t *c = s->events[i].data.ptr;
+        ws_conn_t *c = ws_event_udata(s->events + i);
         if (s->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
           c->fragments_len = 0; // EOF
           ws_conn_destroy(s->events[i].data.ptr, WS_ERR_READ);
@@ -3652,7 +3668,7 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   }
   ws_event_t ev = {
       .events = EPOLLIN,
-      .data = {.ptr = ar},
+      .data = {.ptr = &s->async_runner},
   };
 
   ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd, &ev);
