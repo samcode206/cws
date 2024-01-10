@@ -165,7 +165,7 @@ typedef struct server {
   unsigned int next_io_timeout;
   unsigned int next_io_timeout_set;
   int active_events; // number of active events per epoll_wait call
-  int listener_fd;            // server file descriptor
+  int listener_fd;   // server file descriptor
   int event_loop_fd;
   void *ctx;
 
@@ -225,8 +225,7 @@ static void server_writeable_conns_append(ws_conn_t *c);
 
 static void ws_conn_proccess_frames(ws_conn_t *conn);
 
-static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
-                                ws_event_t *ev);
+static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd, ws_event_t *ev);
 
 inline void *ws_server_ctx(ws_server_t *s) { return s->ctx; }
 
@@ -2883,8 +2882,9 @@ static int ws_server_socket_bind(ws_server_t *s,
 
   int ret;
 
-  s->listener_fd = socket(ipv6 ? AF_INET6 : AF_INET,
-                 SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+  s->listener_fd =
+      socket(ipv6 ? AF_INET6 : AF_INET,
+             SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
   if (s->listener_fd < 0) {
     return -1;
   }
@@ -2910,7 +2910,8 @@ static int ws_server_socket_bind(ws_server_t *s,
     srv_addr.sin6_port = htons(port);
     inet_pton(AF_INET6, addr, &srv_addr.sin6_addr);
 
-    ret = bind(s->listener_fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    ret = bind(s->listener_fd, (const struct sockaddr *)&srv_addr,
+               sizeof(srv_addr));
     if (ret < 0) {
       return -1;
     }
@@ -2921,7 +2922,8 @@ static int ws_server_socket_bind(ws_server_t *s,
     srv_addr.sin_port = htons(port);
     inet_pton(AF_INET, addr, &srv_addr.sin_addr);
 
-    ret = bind(s->listener_fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    ret = bind(s->listener_fd, (const struct sockaddr *)&srv_addr,
+               sizeof(srv_addr));
     if (ret < 0) {
       return -1;
     }
@@ -3247,6 +3249,31 @@ static bool ws_server_accept_err_recoverable(int err) {
   }
 }
 
+static inline int ws_server_accept(ws_server_t *s, struct sockaddr *sockaddr,
+                                   socklen_t *socklen) {
+
+#ifdef WS_WITH_EPOLL
+  return accept4(s->listener_fd, sockaddr, socklen,
+                 SOCK_NONBLOCK | SOCK_CLOEXEC);
+#else
+  int fd = accept(s->listener_fd, sockaddr, socklen);
+  if (fd == -1)
+    return -1;
+  int flags = fcntl(fd, F_GETFL);
+  if (flags == -1) {
+    close(fd);
+    return -1;
+  }
+
+  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+    close(fd);
+    return -1;
+  };
+
+  return fd;
+#endif
+}
+
 static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
   size_t accepts = ACCEPTS_PER_TICK;
@@ -3256,7 +3283,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
     if (s->listener_fd == -1) {
       return;
     }
-    int fd = accept4(s->listener_fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    int fd = ws_server_accept(s, sockaddr, socklen);
     if (fd == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         return; // done
@@ -3783,8 +3810,6 @@ int ws_server_shutdown(ws_server_t *s) {
     }
   }
 
-
-
   // close event fd
   if (s->async_runner->chanfd && s->internal_polls) {
     s->internal_polls--;
@@ -3824,7 +3849,6 @@ int ws_server_destroy(ws_server_t *s) {
   epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
   close(s->async_runner->chanfd);
   s->async_runner->chanfd = -1;
-
 
   if (s->listener_fd > 0) {
     epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, s->listener_fd, &ev);
