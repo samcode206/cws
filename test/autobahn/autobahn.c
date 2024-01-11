@@ -95,7 +95,7 @@ ws_server_t *s = NULL;
 
 void on_sigint(int sig) {
   int ret = ws_server_shutdown(s);
-  printf("ret = %d\n", ret);
+  printf("ws_server_shutdown = %d\n", ret);
 }
 
 void *start_server() {
@@ -120,7 +120,7 @@ void *start_server() {
   s = ws_server_create(&sp);
 
   int ret = ws_server_start(s, backlog);
-  printf("ret = %d\n", ret);
+  printf("ws_server_start = %d\n", ret);
 
   ws_server_destroy(s);
 

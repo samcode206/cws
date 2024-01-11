@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #if defined(__linux__)
 #include <sys/eventfd.h>
@@ -13,6 +14,8 @@
 #define ADDR "::1"
 
 ws_server_t *srv;
+
+_Atomic unsigned long done = 0;
 
 void server_on_open(ws_conn_t *conn) {}
 
@@ -38,7 +41,12 @@ void *server_init(void *_) {
 
   srv = ws_server_create(&p);
 
-  ws_server_start(srv, 1024);
+  int ret = ws_server_start(srv, 1024);
+
+  printf("ws_server_start = %d\n", ret);
+
+  ret = ws_server_destroy(srv);
+  printf("ws_server_destroy = %d\n", ret);
 
   return NULL;
 }
@@ -106,6 +114,7 @@ void *test_init(void *_) {
   printf("thread %zu scheduled And Ran All tasks\n",
          (unsigned long)pthread_self());
 
+  done++;
   return NULL;
 }
 
@@ -135,7 +144,13 @@ int main() {
     pthread_join(client_threads[i], NULL);
   }
 
-  ws_server_destroy(srv);
+  ws_server_shutdown(srv);
+  pthread_join(server_w, NULL);
 
-  printf("done\n");
+  printf("done %zu/%zu\n", done, (unsigned long)NUM_TEST_THREADS);
+  if (done == NUM_TEST_THREADS) {
+    exit(EXIT_SUCCESS);
+  } else {
+    exit(EXIT_FAILURE);
+  }
 }

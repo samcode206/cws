@@ -3983,6 +3983,7 @@ int ws_server_shutdown(ws_server_t *s) {
 
 #ifdef WS_WITH_EPOLL
   eventfd_write(s->async_runner->chanfd, 1);
+  ws_server_event_del(s, s->listener_fd);
 #else
   ws_event_t ev;
   EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, EV_ONESHOT | EV_ADD,
@@ -3992,7 +3993,6 @@ int ws_server_shutdown(ws_server_t *s) {
   assert(ret == 0);
 #endif
 
-  ws_server_event_del(s, s->listener_fd);
   close(s->listener_fd);
 
   s->internal_polls--;
@@ -4019,8 +4019,10 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // close timer fd
   if (s->tq) {
+#ifdef WS_WITH_EPOLL
     ws_server_event_del(s, s->tq->timer_fd);
     close(s->tq->timer_fd);
+#endif
     s->tq->timer_fd = -1;
     s->internal_polls--;
   }
@@ -4226,9 +4228,11 @@ static void ws_timer_queue_destroy(struct ws_timer_queue *tq) {
 
   ws_timer_min_heap_destroy(tq->pqu);
 
+#ifdef WS_WITH_EPOLL
   if (tq->timer_fd > 0) {
     close(tq->timer_fd);
   }
+#endif
 
   struct ws_timer *tmp = tq->timer_pool_head;
   while (tmp) {
