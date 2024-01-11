@@ -3923,8 +3923,8 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
 static void ws_server_async_runner_run_pending_callbacks(
     ws_server_t *s, struct ws_server_async_runner *ar) {
 #ifdef WS_WITH_EPOLL
-  uint64_t val;
-  read(ar->chanfd, &val, 8);
+  eventfd_t val;
+  eventfd_read(ar->chanfd, &val);
   (void)val;
 #endif
 
