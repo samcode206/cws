@@ -191,7 +191,7 @@ typedef struct server {
 #endif /* WITH_COMPRESSION */
 
   struct ws_timer_queue *tq; // High resolution timer queue
-  size_t internal_polls;     // number of internal fds being watched by epoll
+  long internal_polls;       // number of internal fds being watched by epoll
   ws_event_t events[1024];
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
@@ -3480,7 +3480,7 @@ static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
   return 0;
 }
 
-static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
+static int ws_server_event_wait(ws_server_t *s, int epfd) {
 
   if (likely(s->internal_polls > 0)) {
     int n_evs;
@@ -3686,7 +3686,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
   for (;;) {
     s->active_events = 0;
-    int n_evs = ws_server_do_epoll_wait(s, epfd);
+    int n_evs = ws_server_event_wait(s, epfd);
     if (unlikely((n_evs == 0) | (n_evs == -1))) {
       return n_evs;
     }
@@ -3981,18 +3981,6 @@ int ws_server_shutdown(ws_server_t *s) {
     return -1;
   }
 
-#ifdef WS_WITH_EPOLL
-  eventfd_write(s->async_runner->chanfd, 1);
-  ws_server_event_del(s, s->listener_fd);
-#else
-  ws_event_t ev;
-  EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, EV_ONESHOT | EV_ADD,
-         NOTE_TRIGGER, 0, &s->async_runner);
-
-  int ret = kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
-  assert(ret == 0);
-#endif
-
   close(s->listener_fd);
 
   s->internal_polls--;
@@ -4026,6 +4014,18 @@ int ws_server_shutdown(ws_server_t *s) {
     s->tq->timer_fd = -1;
     s->internal_polls--;
   }
+
+#ifdef WS_WITH_EPOLL
+  eventfd_write(s->async_runner->chanfd, 1);
+  ws_server_event_del(s, s->listener_fd);
+#else
+  ws_event_t ev;
+  EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, EV_ONESHOT | EV_ADD,
+         NOTE_TRIGGER, 0, &s->async_runner);
+
+  int ret = kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
+  assert(ret == 0);
+#endif
 
   return 0;
 }

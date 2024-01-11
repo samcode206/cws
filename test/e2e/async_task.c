@@ -144,7 +144,10 @@ int main() {
     pthread_join(client_threads[i], NULL);
   }
 
-  ws_server_shutdown(srv);
+  printf("shutting down...\n");
+  int ret = ws_server_shutdown(srv);
+  printf("ws_server_shutdown = %d\n", ret);
+  printf("ws_server_shuttin_down = %d\n", ws_server_shutting_down(srv));
   pthread_join(server_w, NULL);
 
   printf("done %zu/%zu\n", done, (unsigned long)NUM_TEST_THREADS);
