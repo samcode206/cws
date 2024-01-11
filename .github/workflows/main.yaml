@@ -91,7 +91,7 @@ jobs:
           python3 ./test/autobahn/report.py "test/autobahn/reports/servers/index.json" "cws" --allow-unimplemented
 
 
-  macos-build-test:
+  macos-build-and-test:
     runs-on: macos-latest
     timeout-minutes: 2
     steps:
@@ -99,3 +99,18 @@ jobs:
       - name: Run Test Suite (Darwin)
         run: sh ./test.sh
   
+  freebsd-build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Test in FreeBSD
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        run: |
+          pwd
+          ls -lah
+          whoami
+          env
+          freebsd-version
+
