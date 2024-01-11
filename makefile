@@ -1,10 +1,18 @@
 CC=gcc
+OS := $(shell uname -s)
+
+ifeq ($(OS),Darwin)
+    LD_CONFIG_COMMAND = 
+else
+    LD_CONFIG_COMMAND = sudo ldconfig
+endif
+
 CFLAGS=-O3 -flto -march=native -mtune=native -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
 LIB_NAME=ws
-SHARED_LIB=lib$(LIB_NAME).so
+SHARED_LIB=lib$(LIB_NAME)$(SHARED_LIB_EXT)
 STATIC_LIB=lib$(LIB_NAME).a
 SRC=./src/ws.c
-HDR=./src/ws.h
+HDR=ws.h
 SOBJ=$(SRC:.c=.o)
 DOBJ=$(SRC:.c=.d.o)
 
@@ -22,26 +30,21 @@ ifdef NO_DEBUG
 CFLAGS += -DNDEBUG
 endif
 
-
 ifdef WS_TIMERS_DEFAULT_SZ
 CFLAGS += -DWS_TIMERS_DEFAULT_SZ=$(WS_TIMERS_DEFAULT_SZ)
 endif
 
-
 all: $(SHARED_LIB) $(STATIC_LIB)
-
 
 $(SOBJ): $(SRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-
 $(DOBJ): $(SRC)
 	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
-
 $(SHARED_LIB): $(DOBJ)
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^ $(if $(WITH_COMPRESSION),-lz)
-
+	$(LD_CONFIG_COMMAND)
 
 $(STATIC_LIB): $(SOBJ)
 	ar rcs $@ $^
@@ -49,19 +52,17 @@ $(STATIC_LIB): $(SOBJ)
 install: clean uninstall all
 	sudo install -m 644 $(SHARED_LIB) $(INSTALL_LIB_PATH)
 	sudo install -m 644 $(STATIC_LIB) $(INSTALL_LIB_PATH)
-	sudo ldconfig
-	sudo install -m 644 $(HDR) $(INSTALL_INCLUDE_PATH)
-	
+	$(LD_CONFIG_COMMAND)
+	sudo install -m 644 ./src/$(HDR) $(INSTALL_INCLUDE_PATH)
 
 uninstall:
 	sudo rm -f $(INSTALL_LIB_PATH)/$(SHARED_LIB)
 	sudo rm -f $(INSTALL_LIB_PATH)/$(STATIC_LIB)
-	sudo rm -f $(INSTALL_INCLUDE_PATH)/ws.h
-	sudo ldconfig
+	sudo rm -f $(INSTALL_INCLUDE_PATH)/$(HDR)
+	$(LD_CONFIG_COMMAND)
 
 clean:
 	rm -f $(SOBJ) $(DOBJ) $(SHARED_LIB) $(STATIC_LIB)
-
 
 
 
