@@ -3688,7 +3688,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           ws_conn_destroy(c, WS_ERR_READ);
         } else {
           if (ws_event_writeable(s->events + i) & (!is_closed(c)) &
-              (c->send_buf != NULL)) {
+              (c->send_buf != NULL) & (!is_writeable(c))) {
             int ret = conn_drain_write_buf(c);
             if (ret == 1) {
               if (!is_write_shutdown(c)) {
