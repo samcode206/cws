@@ -107,10 +107,4 @@ jobs:
       uses: vmactions/freebsd-vm@v1
       with:
         usesh: true
-        run: |
-          pwd
-          ls -lah
-          whoami
-          env
-          freebsd-version
-
+        run: sh ./test.sh
