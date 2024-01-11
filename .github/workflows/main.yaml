@@ -93,7 +93,7 @@ jobs:
 
   autobahn-no-compression-macos:
     runs-on: macos-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v3
 
