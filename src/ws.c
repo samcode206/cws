@@ -3610,60 +3610,48 @@ static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
   }
 }
 
-static inline bool ws_event_timer(ws_server_t *s, ws_event_t *e) {
-#ifdef WS_WITH_EPOLL
-  return s->tq == e->data.ptr;
-#else
-  return s->tq == e->udata;
-#endif
-}
-
-static inline bool ws_event_async_runner(ws_server_t *s, ws_event_t *e) {
-
-#ifdef WS_WITH_EPOLL
-  return &s->async_runner == e->data.ptr;
-#else
-  return &s->async_runner == e->udata;
-#endif
-}
-
-static inline bool ws_event_server(ws_server_t *s, ws_event_t *e) {
-#ifdef WS_WITH_EPOLL
-  return s == e->data.ptr;
-#else
-  return s == e->udata;
-#endif
-}
-
-static inline bool ws_event_conn_err(ws_event_t *e) {
-#ifdef WS_WITH_EPOLL
-  return (e->events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) != 0;
-#else
-  return (e->flags & EV_EOF) != 0;
-#endif
-}
-
-static inline bool ws_event_writeable(ws_event_t *e) {
-#ifdef WS_WITH_EPOLL
-  return (e->events & EPOLLOUT) != 0;
-#else
-  return (e->filter & EVFILT_WRITE) != 0;
-#endif
-}
-
-static inline bool ws_event_readable(ws_event_t *e) {
-#ifdef WS_WITH_EPOLL
-  return (e->events & EPOLLIN) != 0;
-#else
-  return (e->filter & EVFILT_READ) != 0;
-#endif
-}
-
 static inline void *ws_event_udata(ws_event_t *e) {
 #ifdef WS_WITH_EPOLL
   return e->data.ptr;
 #else
   return e->udata;
+#endif
+}
+
+static inline uint_fast32_t ws_event_timer(ws_server_t *s, ws_event_t *e) {
+  return s->tq == ws_event_udata(e);
+}
+
+static inline uint_fast32_t ws_event_async_runner(ws_server_t *s,
+                                                  ws_event_t *e) {
+  return &s->async_runner == ws_event_udata(e);
+}
+
+static inline uint_fast32_t ws_event_server(ws_server_t *s, ws_event_t *e) {
+  return s == ws_event_udata(e);
+}
+
+static inline uint_fast32_t ws_event_conn_err(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
+  return e->events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR);
+#else
+  return e->flags & EV_EOF;
+#endif
+}
+
+static inline uint_fast32_t ws_event_writeable(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
+  return (e->events & EPOLLOUT);
+#else
+  return (e->filter & EVFILT_WRITE);
+#endif
+}
+
+static inline uint_fast32_t ws_event_readable(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
+  return (e->events & EPOLLIN);
+#else
+  return (e->filter & EVFILT_READ);
 #endif
 }
 
@@ -3714,7 +3702,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
           c->fragments_len = 0; // EOF
           ws_conn_destroy(c, WS_ERR_READ);
         } else {
-          if (ws_event_writeable(s->events + i) & (!is_closed(c)) &
+          if ((ws_event_writeable(s->events + i) != 0) & (!is_closed(c)) &
               (c->send_buf != NULL) & (!is_writeable(c))) {
             int ret = conn_drain_write_buf(c);
             if (ret == 1) {
