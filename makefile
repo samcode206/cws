@@ -5,6 +5,7 @@ ifeq ($(OS),Darwin)
     LD_CONFIG_COMMAND = 
 else
     LD_CONFIG_COMMAND = sudo ldconfig
+	SHARED_LIB_EXT = .so
 endif
 
 CFLAGS=-O3 -flto -march=native -mtune=native -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
@@ -44,7 +45,6 @@ $(DOBJ): $(SRC)
 
 $(SHARED_LIB): $(DOBJ)
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $^ $(if $(WITH_COMPRESSION),-lz)
-	$(LD_CONFIG_COMMAND)
 
 $(STATIC_LIB): $(SOBJ)
 	ar rcs $@ $^
