@@ -56,13 +56,13 @@ void server_async_task4(ws_server_t *rs, void *ctx) {
   printf("Final Task 4 running for %d\n", *chanid);
 
 #if defined(__linux__)
+  uint64_t v = 1;
   assert(write(*chanid, &v, 8) == 8);
 #else
   struct kevent ev;
   EV_SET(&ev, 0, EVFILT_USER, EV_ONESHOT | EV_ADD, NOTE_TRIGGER, 0, NULL);
   kevent(*chanid, &ev, 1, NULL, 0, NULL);
 #endif
-  uint64_t v = 1;
 }
 
 void server_async_task3(ws_server_t *rs, void *ctx) {
