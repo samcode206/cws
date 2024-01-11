@@ -3818,8 +3818,8 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   }
 
 #else
-
-  // TODO(sah): make this work with kqueue
+  // just need to set up the ident for kqueue
+  ar->chanfd = 2147483646;
 
 #endif /*WS_WITH_EPOLL */
 
@@ -3829,7 +3829,10 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
     exit(EXIT_FAILURE);
   }
 
+#ifdef WS_WITH_EPOLL
   ws_server_event_add(s, ar->chanfd, &s->async_runner);
+#endif
+
   s->internal_polls++;
   s->async_runner = ar;
 }
@@ -3905,7 +3908,22 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
       }
     }
 #else
-// TODO(sah): make this work with kqueue
+    ws_event_t ev;
+    EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ONESHOT | EV_ADD, NOTE_TRIGGER, 0,
+           &s->async_runner);
+    for (;;) {
+      if (likely(kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL) == 0)) {
+        break;
+      } else {
+        if (errno == EINTR) {
+          continue;
+        } else {
+          perror("kevent");
+          break;
+        }
+      }
+    }
+
 #endif
 
     return 0;
@@ -3916,10 +3934,11 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
 
 static void ws_server_async_runner_run_pending_callbacks(
     ws_server_t *s, struct ws_server_async_runner *ar) {
+#ifdef WS_WITH_EPOLL
   uint64_t val;
   read(ar->chanfd, &val, 8);
-
   (void)val;
+#endif
 
   // grab the lock to swap the buffers
   // and get the count of ready callbacks
@@ -3965,7 +3984,12 @@ int ws_server_shutdown(ws_server_t *s) {
 #ifdef WS_WITH_EPOLL
   eventfd_write(s->async_runner->chanfd, 1);
 #else
-  // TODO(sah): make this work with kqueue
+  ws_event_t ev;
+  EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, EV_ONESHOT | EV_ADD,
+         NOTE_TRIGGER, 0, &s->async_runner);
+
+  int ret = kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
+  assert(ret == 0);
 #endif
 
   ws_server_event_del(s, s->listener_fd);
@@ -4022,9 +4046,14 @@ int ws_server_destroy(ws_server_t *s) {
   // this one was used to wake up from epoll_wait when we shut down
   // this is why we didn't close it in ws_server_shutdown
 
+#ifdef WS_WITH_EPOLL
   ws_server_event_del(s, s->async_runner->chanfd);
   close(s->async_runner->chanfd);
   s->async_runner->chanfd = -1;
+
+#else
+  s->async_runner->chanfd = -1;
+#endif
 
   if (s->listener_fd > 0) {
     ws_server_event_del(s, s->listener_fd);
@@ -4280,8 +4309,6 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
 
     int ret = kevent(tq->base->event_loop_fd, &ev, 1, NULL, 0, NULL);
     assert(ret == 0);
-
-    // TODO(sah): make this work with kqueue
 #endif
   }
 }
