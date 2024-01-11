@@ -2,13 +2,17 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+
+#if defined(__linux__)
 #include <sys/eventfd.h>
+#else
+#include <sys/event.h>
+#endif
 
 #define PORT 9919
 #define ADDR "::1"
 
 ws_server_t *srv;
-
 
 void server_on_open(ws_conn_t *conn) {}
 
@@ -36,15 +40,21 @@ void *server_init(void *_) {
 
   ws_server_start(srv, 1024);
 
-
   return NULL;
 }
 
 void server_async_task4(ws_server_t *rs, void *ctx) {
   int *chanid = ctx;
   printf("Final Task 4 running for %d\n", *chanid);
-  uint64_t v = 1;
+
+#if defined(__linux__)
   assert(write(*chanid, &v, 8) == 8);
+#else
+  struct kevent ev;
+  EV_SET(&ev, 0, EVFILT_USER, EV_ONESHOT | EV_ADD, NOTE_TRIGGER, 0, NULL);
+  kevent(*chanid, &ev, 1, NULL, 0, NULL);
+#endif
+  uint64_t v = 1;
 }
 
 void server_async_task3(ws_server_t *rs, void *ctx) {
@@ -71,21 +81,30 @@ void server_async_task(ws_server_t *rs, void *ctx) {
   ws_server_sched_callback(rs, server_async_task2, ctx);
 }
 
-
-
 void *test_init(void *_) {
 
+#if defined(__linux__)
   // will use a blocking eventfd to know when all tasks are run
   int evfd = eventfd(0, 0);
+#else
+  int evfd = kqueue();
+#endif
 
   ws_server_sched_callback(srv, server_async_task, &evfd);
 
   uint64_t val;
   // once read is done we know we are done because write to eventfd happens in
   // the final task
-  assert(read(evfd, &val, 8) == 8);
-  printf("thread %d scheduled And Ran All tasks\n", gettid());
 
+#if defined(__linux__)
+  assert(read(evfd, &val, 8) == 8);
+#else
+  struct kevent ev;
+  kevent(evfd, NULL, 0, &ev, 1, NULL);
+#endif
+
+  printf("thread %zu scheduled And Ran All tasks\n",
+         (unsigned long)pthread_self());
 
   return NULL;
 }
@@ -116,9 +135,7 @@ int main() {
     pthread_join(client_threads[i], NULL);
   }
 
-
-
-
   ws_server_destroy(srv);
 
+  printf("done\n");
 }

@@ -37,7 +37,7 @@ static uint64_t get_ns_time() {
       .tv_nsec = 0,
   };
 
-  clock_gettime(CLOCK_BOOTTIME, &now);
+  clock_gettime(CLOCK_MONOTONIC, &now);
   uint64_t n = now.tv_nsec + (now.tv_sec * 1000000000);
   assert(n != 0);
   return n;
