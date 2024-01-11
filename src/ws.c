@@ -139,6 +139,7 @@ struct ws_timer_queue {
   int timer_fd;             // timer fd for epoll
   ws_timer_min_heap_t *pqu; // min heap of soonest expiring timers
 
+  ws_server_t *base;                // pointer back to server
   size_t avb_nodes;                 // timer nodes available for use
   struct ws_timer *timer_pool_head; // head of the linked list of timers
 };
@@ -2670,9 +2671,8 @@ static void ws_server_register_timer_queue(ws_server_t *s, void *id) {
   assert(s->tq->timer_fd > 0);
   ws_server_event_add(s, s->tq->timer_fd, id);
 #else
-
-  // TODO(sah): make this work with kqueue
-
+  // nothing to do here for kqueue
+  assert(s->tq->timer_fd > 0);
 #endif
 }
 
@@ -3113,6 +3113,7 @@ static void ws_server_register_buffers(ws_server_t *s,
 
   s->tq = ws_timer_queue_init(s->tq);
   s->internal_polls++;
+  s->tq->base = s;
 }
 
 #ifdef WITH_COMPRESSION
@@ -3613,7 +3614,7 @@ static inline bool ws_event_timer(ws_server_t *s, ws_event_t *e) {
 #ifdef WS_WITH_EPOLL
   return &s->tq == e->data.ptr;
 #else
-  return &s->tq == e->udata;
+  return s->tq == e->udata;
 #endif
 }
 
@@ -3674,7 +3675,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
   int epfd = s->event_loop_fd;
 
-  ws_server_register_timer_queue(s, &s->tq);
+  ws_server_register_timer_queue(s, s->tq);
   ws_server_time_update(s);
   struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
   ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
@@ -4144,7 +4145,10 @@ static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq) {
     exit(EXIT_FAILURE);
   }
 #else
-  // TODO(sah): make this work with kqueue
+  // any arbitrary identifier for the timer works
+  // setting to a large value to avoid conflicting with fds (not sure if that's
+  // even possible but just to be safe)
+  tq->timer_fd = 2147483647;
 #endif
 
   ws_timer_min_heap_t *tmh = ws_timer_min_heap_init(WS_TIMERS_DEFAULT_SZ);
@@ -4270,6 +4274,13 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
     tq->next_expiration = maybe_soonest;
     timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
 #else
+    ws_event_t ev;
+    EV_SET(&ev, tq->timer_fd, EVFILT_TIMER, EV_ONESHOT | EV_ADD, NOTE_NSECONDS,
+           ns, tq);
+
+    int ret = kevent(tq->base->event_loop_fd, &ev, 1, NULL, 0, NULL);
+    assert(ret == 0);
+
     // TODO(sah): make this work with kqueue
 #endif
   }
