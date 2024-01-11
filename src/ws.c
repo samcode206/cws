@@ -3981,7 +3981,10 @@ int ws_server_shutdown(ws_server_t *s) {
     return -1;
   }
 
+#ifdef WS_WITH_EPOLL
+  ws_server_event_del(s, s->listener_fd);
   close(s->listener_fd);
+#endif
 
   s->internal_polls--;
   s->listener_fd = -1;
@@ -4017,14 +4020,12 @@ int ws_server_shutdown(ws_server_t *s) {
 
 #ifdef WS_WITH_EPOLL
   eventfd_write(s->async_runner->chanfd, 1);
-  ws_server_event_del(s, s->listener_fd);
 #else
   ws_event_t ev;
   EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, EV_ONESHOT | EV_ADD,
          NOTE_TRIGGER, 0, &s->async_runner);
 
-  int ret = kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
-  assert(ret == 0);
+  kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
 #endif
 
   return 0;
