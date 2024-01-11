@@ -1,4 +1,4 @@
-#include "ws.h"
+#include "../src/ws.h"
 #include <stdio.h>
 #include <sys/signal.h>
 

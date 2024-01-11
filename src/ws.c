@@ -783,8 +783,13 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
 
-  sprintf(pname, "/ws_bp_%zu_%d_%zu", ts.tv_nsec + ts.tv_sec, getpid(),
+  sprintf(pname, "/%zu_%d_%zu_ws_bp", ts.tv_nsec + ts.tv_sec, getpid(),
           (unsigned long)pthread_self());
+
+#if defined(__APPLE__)
+  // this sucks
+  pname[31] = '\0';
+#endif
 
   pool->fd = shm_open(pname, O_CREAT | O_RDWR | O_EXCL, 600);
   if (pool->fd == -1) {
@@ -2661,8 +2666,14 @@ static void ws_server_set_io_timeout(ws_server_t *s, unsigned int *restrict res,
 static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
 
 static void ws_server_register_timer_queue(ws_server_t *s, void *id) {
+#ifdef WS_WITH_EPOLL
   assert(s->tq->timer_fd > 0);
   ws_server_event_add(s, s->tq->timer_fd, id);
+#else
+
+  // TODO(sah): make this work with kqueue
+
+#endif
 }
 
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
@@ -2990,6 +3001,7 @@ static void ws_server_register_buffers(ws_server_t *s,
 
   unsigned max_map_count;
 
+#ifdef WS_WITH_EPOLL
   FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
   if (f == NULL) {
     perror("Error Opening /proc/sys/vm/max_map_count");
@@ -3000,6 +3012,11 @@ static void ws_server_register_buffers(ws_server_t *s,
 
     fclose(f);
   }
+
+#else
+  // just set to a high value so it gets out of the way
+  max_map_count = 4294967295;
+#endif
 
   size_t lim = rlim.rlim_cur > 16 ? rlim.rlim_cur - 16 : rlim.rlim_cur;
   max_map_count = max_map_count ? max_map_count : 65530;
@@ -3017,7 +3034,8 @@ static void ws_server_register_buffers(ws_server_t *s,
             "[WARN] params->max_conns %u may be too high. RLIMIT_NOFILE=%zu "
             "only %zu can be opened for other tasks when running at "
             "max_conns\n",
-            s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
+            s->max_conns, (size_t)rlim.rlim_cur,
+            (size_t)rlim.rlim_cur - s->max_conns);
       }
     }
 
@@ -3025,7 +3043,7 @@ static void ws_server_register_buffers(ws_server_t *s,
     s->max_conns = (unsigned)(lim < 4294967296 ? lim : 4294967295);
     if (!params->silent) {
       fprintf(stderr, "[WARN] params->max_conns %u exceeds RLIMIT_NOFILE %zu\n",
-              params->max_conns, rlim.rlim_cur);
+              params->max_conns, (size_t)rlim.rlim_cur);
     }
   }
 
@@ -3791,11 +3809,18 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   ar->pending = ws_server_async_runner_buf_create(init_cap);
   ar->ready = ws_server_async_runner_buf_create(init_cap);
 
+#ifdef WS_WITH_EPOLL
   ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
   if (ar->chanfd == -1) {
     perror("eventfd");
     exit(EXIT_FAILURE);
   }
+
+#else
+
+  // TODO(sah): make this work with kqueue
+
+#endif /*WS_WITH_EPOLL */
 
   int ret = pthread_mutex_init(&ar->mu, NULL);
   if (ret == -1) {
@@ -3859,6 +3884,8 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
     pthread_mutex_unlock(&ar->mu);
 
     // notify
+
+#ifdef WS_WITH_EPOLL
     register int fd = ar->chanfd;
     for (;;) {
       if (likely(eventfd_write(fd, 1) == 0)) {
@@ -3876,6 +3903,9 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
         }
       }
     }
+#else
+// TODO(sah): make this work with kqueue
+#endif
 
     return 0;
   }
@@ -3931,7 +3961,11 @@ int ws_server_shutdown(ws_server_t *s) {
     return -1;
   }
 
+#ifdef WS_WITH_EPOLL
   eventfd_write(s->async_runner->chanfd, 1);
+#else
+  // TODO(sah): make this work with kqueue
+#endif
 
   ws_server_event_del(s, s->listener_fd);
   close(s->listener_fd);
@@ -4060,7 +4094,7 @@ ws_timer_queue_is_timer_expired(struct ws_timer_queue *restrict tq,
 static uint64_t ws_timer_queue_get_expiration(struct ws_timer_queue *tq,
                                               struct timespec *timeout_after) {
   struct timespec tp;
-  int ret = clock_gettime(CLOCK_BOOTTIME, &tp);
+  int ret = clock_gettime(CLOCK_MONOTONIC, &tp);
   assert(ret == 0);
   (void)ret;
 
@@ -4103,11 +4137,15 @@ ws_timer_queue_pool_new_timer(struct ws_timer_queue *tq) {
 static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq) {
   tq->next_expiration = 0;
 
-  tq->timer_fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+#ifdef WS_WITH_EPOLL
+  tq->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
   if (tq->timer_fd == -1) {
     perror("timerfd_create");
     exit(EXIT_FAILURE);
   }
+#else
+  // TODO(sah): make this work with kqueue
+#endif
 
   ws_timer_min_heap_t *tmh = ws_timer_min_heap_init(WS_TIMERS_DEFAULT_SZ);
   if (tmh == NULL) {
@@ -4215,6 +4253,7 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
   if (ws_timer_queue_should_update_expiration(tq, maybe_soonest)) {
     uint64_t ns = maybe_soonest - tq->cur_time;
 
+#ifdef WS_WITH_EPOLL
     struct itimerspec timeout = {
         .it_value =
             {
@@ -4230,6 +4269,9 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
 
     tq->next_expiration = maybe_soonest;
     timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
+#else
+    // TODO(sah): make this work with kqueue
+#endif
   }
 }
 
@@ -4250,9 +4292,11 @@ static void ws_timer_queue_cancel(struct ws_timer_queue *tq, uint64_t exp_id) {
         ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
       } else {
         // if this was the last timer to be canceled reset the tfd timer
+#ifdef WS_WITH_EPOLL
         struct itimerspec tp;
         memset(&tp, 0, sizeof(tp));
         timerfd_settime(tq->timer_fd, 0, &tp, NULL);
+#endif
       }
 
       return;
