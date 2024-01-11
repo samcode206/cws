@@ -3,6 +3,7 @@ OS := $(shell uname -s)
 
 ifeq ($(OS),Darwin)
     LD_CONFIG_COMMAND = 
+	SHARED_LIB_EXT = .dylib
 else
     LD_CONFIG_COMMAND = sudo ldconfig
 	SHARED_LIB_EXT = .so
