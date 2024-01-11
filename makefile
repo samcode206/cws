@@ -68,23 +68,23 @@ clean:
 
 
 echo: install
-	gcc ./examples/echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
 
 multi_echo: install
-	gcc ./examples/multi_echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/multi_echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
 
 online: install
-	gcc ./examples/online.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/online.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 broadcast: install
-	gcc ./examples/broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 multi_broadcast: install
-	gcc ./examples/multi_broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/multi_broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 autobahn: install
-	gcc ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
 
 async_task:
-	gcc ./src/*.c ./test/e2e/async_task.c -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./src/*.c ./test/e2e/async_task.c -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
 
