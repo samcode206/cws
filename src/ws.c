@@ -37,6 +37,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <time.h>
+#include <stdint.h>
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
@@ -4819,8 +4820,6 @@ typedef struct {
 #include <stdio.h>
 #include <string.h>
 
-/* for uint32_t */
-#include <stdint.h>
 
 #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
 
