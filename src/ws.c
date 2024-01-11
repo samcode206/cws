@@ -2890,11 +2890,19 @@ static int ws_server_socket_bind(ws_server_t *s,
 
   // socket config
   int on = 1;
-  ret = setsockopt(s->listener_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
-                   sizeof(int));
+#if defined(SO_REUSEPORT)
+  ret = setsockopt(s->listener_fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(int));
   if (ret < 0) {
     return -1;
   }
+#endif
+
+#if defined(SO_REUSEADDR)
+  ret = setsockopt(s->listener_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(int));
+  if (ret < 0) {
+    return -1;
+  }
+#endif
 
   if (ipv6) {
     int off = 0;
