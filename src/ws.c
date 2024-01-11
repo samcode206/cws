@@ -3612,7 +3612,7 @@ static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
 
 static inline bool ws_event_timer(ws_server_t *s, ws_event_t *e) {
 #ifdef WS_WITH_EPOLL
-  return &s->tq == e->data.ptr;
+  return s->tq == e->data.ptr;
 #else
   return s->tq == e->udata;
 #endif
