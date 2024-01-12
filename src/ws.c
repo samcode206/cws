@@ -1050,7 +1050,7 @@ static ssize_t conn_readn(ws_conn_t *conn, size_t n) {
 static int conn_read(ws_conn_t *conn) {
   mirrored_buf_t *rb = conn->recv_buf;
   // check wether we need to read more first
-  if (is_upgraded(conn) &
+  if (is_upgraded(conn) &&
       (buf_len(conn->recv_buf) - conn->fragments_len >= conn->needed_bytes)) {
     return 0;
   }
@@ -1837,8 +1837,8 @@ static void msg_unmask(uint8_t *restrict src, uint8_t const *restrict mask,
 
 static inline uint_fast8_t frame_valid(ws_conn_t *c, uint8_t const *frame,
                                        uint_fast8_t fin, uint_fast8_t opcode) {
-  if ((((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
-       (frame_has_unsupported_reserved_bits_set(c, frame) == 1) |
+  if ((((fin == 0) && ((opcode > 2) && (opcode != OP_CONT))) ||
+       (frame_has_unsupported_reserved_bits_set(c, frame) == 1) ||
        (frame_is_masked(frame) == 0)) == 0) {
     return 1;
   } else {
@@ -2147,7 +2147,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
     }
   } /* loop end */
 
-  if ((conn->send_buf != NULL) & (is_writeable(conn)) & (!is_closed(conn))) {
+  if ((conn->send_buf != NULL) && (is_writeable(conn))) {
     conn_drain_write_buf(conn);
   }
 
@@ -2497,7 +2497,7 @@ enum ws_send_status ws_conn_send_msg(ws_conn_t *c, void *msg, size_t n,
 }
 
 void ws_conn_flush_pending(ws_conn_t *c) {
-  if (!is_closed(c) & (c->send_buf != NULL) & is_writeable(c)) {
+  if ((c->send_buf != NULL) && is_writeable(c)) {
     conn_drain_write_buf(c);
   }
 }
@@ -2545,7 +2545,7 @@ inline size_t ws_conn_pending_bytes(ws_conn_t *c) {
 
 bool ws_conn_msg_ready(ws_conn_t *c) {
   mirrored_buf_t *rb = c->recv_buf;
-  if (is_upgraded(c) & !is_closed(c) & (rb != NULL)) {
+  if (is_upgraded(c) && !is_closed(c) && (rb != NULL)) {
     size_t val = 0;
     // note* : this doesn't account for total_trimmed and may be wrong
     unsigned int ret = frame_decode_payload_len(
@@ -2818,7 +2818,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
 
   for (size_t i = 0; i < n; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
-    if (!is_closed(c) & (c->send_buf != NULL) & is_writeable(c)) {
+    if (!is_closed(c) && (c->send_buf != NULL) && is_writeable(c)) {
       conn_drain_write_buf(c);
     }
     clear_write_queued(c);
@@ -3682,8 +3682,8 @@ int ws_server_start(ws_server_t *s, int backlog) {
           c->fragments_len = 0; // EOF
           ws_conn_destroy(c, WS_ERR_READ);
         } else {
-          if ((ws_event_writeable(s->events + i) != 0) & (!is_closed(c)) &
-              (c->send_buf != NULL) & (!is_writeable(c))) {
+          if ((ws_event_writeable(s->events + i) != 0) &&
+              (c->send_buf != NULL)) {
             int ret = conn_drain_write_buf(c);
             if (ret == 1) {
               if (!is_write_shutdown(c)) {
