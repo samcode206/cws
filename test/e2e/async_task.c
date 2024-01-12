@@ -140,6 +140,7 @@ int main() {
     }
   }
 
+  printf("waiting for threads to finish...\n");
   // wait for the tests to complete
   for (size_t i = 0; i < NUM_TEST_THREADS; i++) {
     pthread_join(client_threads[i], NULL);
