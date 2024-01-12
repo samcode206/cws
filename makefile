@@ -1,4 +1,4 @@
-CC=gcc
+CC=cc
 OS := $(shell uname -s)
 
 ifeq ($(OS),Darwin)

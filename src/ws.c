@@ -307,13 +307,10 @@ static inline bool is_upgraded(ws_conn_t *c) {
 
 static inline void set_upgraded(ws_conn_t *c) { c->flags |= CONN_UPGRADED; }
 
-static inline void clear_upgraded(ws_conn_t *c) { c->flags &= ~CONN_UPGRADED; }
 
 static inline bool is_bin(ws_conn_t *c) {
   return (c->flags & CONN_RX_BIN) != 0;
 }
-
-static inline void set_bin(ws_conn_t *c) { c->flags |= CONN_RX_BIN; }
 
 static inline void clear_bin(ws_conn_t *c) { c->flags &= ~CONN_RX_BIN; }
 
@@ -970,17 +967,6 @@ static inline size_t buf_space(mirrored_buf_t *r) {
 
 static inline uint8_t *buf_peek(mirrored_buf_t *r) { return r->buf + r->rpos; }
 
-static inline uint8_t *buf_peek_at(mirrored_buf_t *r, size_t at) {
-  return r->buf + at;
-}
-
-static inline uint8_t *buf_peekn(mirrored_buf_t *r, size_t n) {
-  if (buf_len(r) < n) {
-    return NULL;
-  }
-
-  return r->buf + r->rpos;
-}
 
 static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n) {
   if (buf_space(r) < n) {
@@ -1024,15 +1010,6 @@ static inline int buf_consume(mirrored_buf_t *r, size_t n) {
   return 0;
 }
 
-static inline void buf_move(mirrored_buf_t *src_b, mirrored_buf_t *dst_b,
-                            size_t n) {
-  buf_put(dst_b, src_b->buf + src_b->rpos, n);
-  buf_consume(src_b, n);
-}
-
-static inline void buf_debug(mirrored_buf_t *r, const char *label) {
-  printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
-}
 
 static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
                                int flags) {
@@ -1798,7 +1775,7 @@ static unsigned frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
   switch (raw_len) {
   case 126:
     if (rbuf_len > 3) {
-      *res = (buf[2] << 8) | buf[3];
+      *res = (size_t)(buf[2] << 8) | buf[3];
     } else {
       return 4;
     }
@@ -2141,7 +2118,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
               return;
             };
 
-            code = (msg[0] << 8) | msg[1];
+            code = (uint16_t)(msg[0] << 8) | msg[1];
             if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
                 code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
                 code == 2999) {
@@ -3000,7 +2977,7 @@ static void ws_server_register_buffers(ws_server_t *s,
   struct rlimit rlim = {0};
   getrlimit(RLIMIT_NOFILE, &rlim);
 
-  unsigned max_map_count;
+  unsigned max_map_count = 0;
 
 #ifdef WS_WITH_EPOLL
   FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
@@ -4433,9 +4410,7 @@ static inline uint64_t ws_timer_min_heap_get_timer_pri(struct ws_timer *t) {
   return t->expiry_ns;
 }
 
-static inline size_t ws_timer_min_heap_get_timer_pos(struct ws_timer *t) {
-  return t->pos;
-}
+
 
 static inline void ws_timer_min_heap_set_timer_pos(struct ws_timer *t,
                                                    size_t pos) {
