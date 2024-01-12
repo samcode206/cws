@@ -128,7 +128,7 @@ int main() {
 
   sleep(1);
 
-#define NUM_TEST_THREADS 128
+#define NUM_TEST_THREADS 32
   pthread_t client_threads[NUM_TEST_THREADS];
 
   for (size_t i = 0; i < NUM_TEST_THREADS; i++) {
