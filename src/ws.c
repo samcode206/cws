@@ -614,6 +614,8 @@ void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
   close(c->fd);
   mark_closed(c);
 
+  c->read_timeout = 0;
+  c->write_timeout = 0;
   // needed_bytes holds the reason
   c->needed_bytes = reason;
   s->on_ws_disconnect(c, reason);
