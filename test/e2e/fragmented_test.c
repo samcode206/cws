@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define PORT 9919
 #define ADDR "::1"
@@ -182,6 +183,7 @@ void test4(int fd) {
   for (size_t i = 0; i < nvecs; i++) {
     for (size_t j = 0; j < vecs[i].iov_len; j++) {
       ssize_t n = send(fd, vecs[i].iov_base + j, 1, 0);
+      usleep(1000);
       assert(n == 1);
     }
   }
