@@ -12,6 +12,7 @@ for file in "$suite_dir"/*.c; do
     cc ./src/*.c "$file" -O3 -march=native -mtune=native $1 -o "$suite_dir/$base_name"
 
     if [ $? -eq 0 ]; then
+        echo "running $suite_dir/$base_name"
         "$suite_dir/$base_name"
         rm "$suite_dir/$base_name"
     else
