@@ -4271,7 +4271,7 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
                 .tv_sec = 0,
             },
     };
-
+    tq->next_expiration = maybe_soonest;
     timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
 #else
     tq->next_expiration = maybe_soonest;
