@@ -21,7 +21,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, uint8_t opcode) {
   }
 
   ws_conn_send_msg(c, msg, n, opcode == OP_PING ? OP_PONG : opcode,
-                   ws_conn_compression_allowed(c) ? 1 : 0);
+                   ws_conn_msg_compressed(c) ? 1 : 0);
 }
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {

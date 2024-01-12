@@ -285,6 +285,8 @@ static size_t get_pagesize() {
 #define CONN_RX_PROCESSING_FRAMES (1u << 11)
 #define CONN_TX_SENDING_FRAGMENTS (1u << 12)
 #define CONN_RX_PAUSED (1u << 13)
+#define CONN_RX_COMPRESSED (1u << 14)
+
 
 typedef struct mirrored_buf_t mirrored_buf_t;
 struct ws_conn_t {
@@ -384,6 +386,10 @@ inline bool is_compression_allowed(ws_conn_t *c) {
   return (c->flags & CONN_COMPRESSION_ALLOWED) != 0;
 }
 
+inline bool is_msg_compressed(ws_conn_t *c){
+  return (c->flags & CONN_RX_COMPRESSED) != 0;
+}
+
 #ifdef WITH_COMPRESSION
 static inline void set_compression_allowed(ws_conn_t *c) {
   c->flags |= CONN_COMPRESSION_ALLOWED;
@@ -392,9 +398,7 @@ static inline void set_compression_allowed(ws_conn_t *c) {
 static inline void clear_compression_allowed(ws_conn_t *c) {
   c->flags &= ~CONN_COMPRESSION_ALLOWED;
 }
-#endif
 
-#ifdef WITH_COMPRESSION
 static inline bool is_fragment_compressed(ws_conn_t *c) {
   return (c->flags & CONN_RX_COMPRESSED_FRAGMENTS) != 0;
 }
@@ -405,6 +409,14 @@ static inline void set_fragment_compressed(ws_conn_t *c) {
 
 static inline void clear_fragment_compressed(ws_conn_t *c) {
   c->flags &= ~CONN_RX_COMPRESSED_FRAGMENTS;
+}
+
+static inline void set_msg_compressed(ws_conn_t *c){
+  c->flags |= CONN_RX_COMPRESSED;
+}
+
+static inline void clear_msg_compressed(ws_conn_t *c){
+  c->flags &= ~CONN_RX_COMPRESSED;
 }
 #endif /* WITH_COMPRESSION */
 
@@ -1913,6 +1925,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
 
 #ifdef WITH_COMPRESSION
       bool is_compressed = is_compressed_msg(frame);
+      if (is_compressed) set_msg_compressed(conn);
 #endif /* WITH_COMPRESSION */
 
       if (frame_valid(conn, frame, fin, opcode)) {
@@ -2045,6 +2058,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
           set_fragmented(conn);
 #ifdef WITH_COMPRESSION
           if (is_compressed) {
+            set_msg_compressed(conn);
             set_fragment_compressed(conn);
           }
 #endif
@@ -2556,6 +2570,12 @@ bool ws_conn_msg_ready(ws_conn_t *c) {
     return 0;
   }
 }
+
+
+inline bool ws_conn_msg_compressed(ws_conn_t *c){
+  return is_msg_compressed(c);
+}
+
 
 inline bool ws_conn_sending_fragments(ws_conn_t *c) {
   return is_sending_fragments(c);
@@ -4733,6 +4753,7 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
                           is_bin(conn) ? OP_BIN : OP_TXT);
     conn->needed_bytes = 2;
     clear_bin(conn);
+    clear_msg_compressed(conn);
 
     if (from_buf_pool) {
       mirrored_buf_put(s->buffer_pool, tmp_buf);
@@ -4756,6 +4777,7 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
     }
 
     conn->fragments_len = 0;
+    clear_msg_compressed(conn);
     clear_fragmented(conn);
     clear_bin(conn);
     conn->needed_bytes = 2;

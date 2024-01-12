@@ -376,6 +376,16 @@ bool ws_conn_compression_allowed(ws_conn_t *c);
 
 
 /**
+ * Checks if the current msg was compressed by the sending client
+ * only valid when `on_ws_msg` for a OP_TXT or OP_BIN msg
+ *
+ * @param c Pointer to the WebSocket connection (`ws_conn_t`).
+ * @return  True if the msg received was sent compressed and inflated by the server
+ */
+bool ws_conn_msg_compressed(ws_conn_t *c);
+
+
+/**
  * Checks if reading from the given WebSocket connection is currently paused.
  *
  * @param c Pointer to the WebSocket connection (`ws_conn_t`).
