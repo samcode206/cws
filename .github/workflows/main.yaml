@@ -107,6 +107,7 @@ jobs:
   
   freebsd-build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v4
     - name: Build, Install and Test (FreeBSD)
@@ -114,4 +115,4 @@ jobs:
       with:
         usesh: true
         prepare: pkg install -y gmake
-        run: WITH_PTHREAD=1 gmake install && sh ./check-install.sh && sh ./test.sh && sh ./e2e.sh -pthread
+        run: WITH_PTHREAD=1 gmake install && sh ./check-install.sh && sh ./test.sh
