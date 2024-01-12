@@ -5,7 +5,7 @@ ifeq ($(OS),Darwin)
 LD_CONFIG_COMMAND = 
 SHARED_LIB_EXT = .dylib
 else
-LD_CONFIG_COMMAND = sudo ldconfig
+LD_CONFIG_COMMAND = ldconfig
 SHARED_LIB_EXT = .so
 endif
 
@@ -51,15 +51,15 @@ $(STATIC_LIB): $(SOBJ)
 	ar rcs $@ $^
 
 install: clean uninstall all
-	sudo install -m 644 $(SHARED_LIB) $(INSTALL_LIB_PATH)
-	sudo install -m 644 $(STATIC_LIB) $(INSTALL_LIB_PATH)
+	install -m 644 $(SHARED_LIB) $(INSTALL_LIB_PATH)
+	install -m 644 $(STATIC_LIB) $(INSTALL_LIB_PATH)
 	$(LD_CONFIG_COMMAND)
-	sudo install -m 644 ./src/$(HDR) $(INSTALL_INCLUDE_PATH)
+	install -m 644 ./src/$(HDR) $(INSTALL_INCLUDE_PATH)
 
 uninstall:
-	sudo rm -f $(INSTALL_LIB_PATH)/$(SHARED_LIB)
-	sudo rm -f $(INSTALL_LIB_PATH)/$(STATIC_LIB)
-	sudo rm -f $(INSTALL_INCLUDE_PATH)/$(HDR)
+	rm -f $(INSTALL_LIB_PATH)/$(SHARED_LIB)
+	rm -f $(INSTALL_LIB_PATH)/$(STATIC_LIB)
+	rm -f $(INSTALL_INCLUDE_PATH)/$(HDR)
 	$(LD_CONFIG_COMMAND)
 
 clean:
