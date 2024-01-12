@@ -90,7 +90,9 @@ jobs:
           wstest -m fuzzingclient --spec /config/fuzzingclient.json && cd ../../ && \
           python3 ./test/autobahn/report.py "test/autobahn/reports/servers/index.json" "cws" --allow-unimplemented
 
-
+# would be nice to also run autobahn for OSX
+# but the time multiplier for OSX on GH actions is ridiculous high at 10x
+# and just installing docker takes ~4 minutes (40 minutes after multiplier)
   macos-build-and-test:
     runs-on: macos-latest
     timeout-minutes: 2
