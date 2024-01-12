@@ -3610,11 +3610,6 @@ static inline uint_fast32_t ws_event_server(ws_server_t *s, ws_event_t *e) {
 }
 
 
-#ifdef WS_WITH_EPOLL
-#define WS_EV_STATE uint_fast32_t
-#else
-#define WS_EV_STATE int
-#endif
 
 static inline uint_fast32_t ws_event_conn_err(ws_event_t *e) {
 #ifdef WS_WITH_EPOLL
@@ -3624,19 +3619,19 @@ static inline uint_fast32_t ws_event_conn_err(ws_event_t *e) {
 #endif
 }
 
-static inline WS_EV_STATE ws_event_writeable(ws_event_t *e) {
+static inline uint_fast32_t ws_event_writeable(ws_event_t *e) {
 #ifdef WS_WITH_EPOLL
   return (e->events & EPOLLOUT);
 #else
-  return (e->filter & EVFILT_WRITE);
+  return e->filter == EVFILT_WRITE;
 #endif
 }
 
-static inline WS_EV_STATE ws_event_readable(ws_event_t *e) {
+static inline uint_fast32_t ws_event_readable(ws_event_t *e) {
 #ifdef WS_WITH_EPOLL
   return (e->events & EPOLLIN);
 #else
-  return (e->filter & EVFILT_READ);
+  return e->filter == EVFILT_READ;
 #endif
 }
 
