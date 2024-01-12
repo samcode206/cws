@@ -308,9 +308,7 @@ static inline bool is_upgraded(ws_conn_t *c) {
 
 static inline void set_upgraded(ws_conn_t *c) { c->flags |= CONN_UPGRADED; }
 
-static inline bool is_bin(ws_conn_t *c) {
-  return (c->flags & CONN_RX_BIN) != 0;
-}
+inline bool is_bin(ws_conn_t *c) { return (c->flags & CONN_RX_BIN) != 0; }
 
 static inline void clear_bin(ws_conn_t *c) { c->flags &= ~CONN_RX_BIN; }
 
@@ -382,10 +380,11 @@ static inline void set_write_shutdown(ws_conn_t *c) {
   c->flags |= CONN_TX_DISPOSING;
 }
 
-static inline bool is_compression_allowed(ws_conn_t *c) {
+inline bool is_compression_allowed(ws_conn_t *c) {
   return (c->flags & CONN_COMPRESSION_ALLOWED) != 0;
 }
 
+#ifdef WITH_COMPRESSION
 static inline void set_compression_allowed(ws_conn_t *c) {
   c->flags |= CONN_COMPRESSION_ALLOWED;
 }
@@ -393,7 +392,9 @@ static inline void set_compression_allowed(ws_conn_t *c) {
 static inline void clear_compression_allowed(ws_conn_t *c) {
   c->flags &= ~CONN_COMPRESSION_ALLOWED;
 }
+#endif
 
+#ifdef WITH_COMPRESSION
 static inline bool is_fragment_compressed(ws_conn_t *c) {
   return (c->flags & CONN_RX_COMPRESSED_FRAGMENTS) != 0;
 }
@@ -405,6 +406,7 @@ static inline void set_fragment_compressed(ws_conn_t *c) {
 static inline void clear_fragment_compressed(ws_conn_t *c) {
   c->flags &= ~CONN_RX_COMPRESSED_FRAGMENTS;
 }
+#endif /* WITH_COMPRESSION */
 
 static inline bool has_pending_timers(ws_conn_t *c) {
   return (c->flags & CONN_TIMER_QUEUED) != 0;
@@ -418,7 +420,7 @@ static inline void clear_has_pending_timers(ws_conn_t *c) {
   c->flags &= ~CONN_TIMER_QUEUED;
 }
 
-static inline bool is_sending_fragments(ws_conn_t *c) {
+inline bool is_sending_fragments(ws_conn_t *c) {
   return (c->flags & CONN_TX_SENDING_FRAGMENTS) != 0;
 }
 
@@ -430,7 +432,7 @@ static inline void clear_sending_fragments(ws_conn_t *c) {
   c->flags &= ~CONN_TX_SENDING_FRAGMENTS;
 }
 
-static inline bool is_read_paused(ws_conn_t *c) {
+inline bool is_read_paused(ws_conn_t *c) {
   return (c->flags & CONN_RX_PAUSED) != 0;
 }
 
@@ -956,7 +958,7 @@ static void mirrored_buf_put(struct mirrored_buf_pool *bp,
   }
 }
 
-static inline size_t buf_len(mirrored_buf_t *r) { return r->wpos - r->rpos; }
+inline size_t buf_len(mirrored_buf_t *r) { return r->wpos - r->rpos; }
 
 static inline void buf_reset(mirrored_buf_t *r) {
   // we can do this because indexes are in the beginning
@@ -1391,9 +1393,8 @@ static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
   return 0;
 }
 
-static enum ws_send_status
-ws_conn_do_handshake_reply(ws_conn_t *c,
-                           struct ws_conn_handshake_response *resp) {
+enum ws_send_status
+ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
   // bail out if the connection is closed or already upgraded
   if (is_closed(c) || is_upgraded(c)) {
     return WS_SEND_DROPPED_NOT_ALLOWED;
@@ -1535,7 +1536,7 @@ ws_conn_handshake_send_default_response(ws_conn_t *conn,
 
   mirrored_buf_put(s->buffer_pool, conn->recv_buf);
   conn->recv_buf = NULL;
-  ws_conn_do_handshake_reply(conn, &r);
+  ws_conn_handshake_reply(conn, &r);
 }
 
 static void handle_bad_request(ws_conn_t *conn) {
@@ -1563,7 +1564,7 @@ static void handle_bad_request(ws_conn_t *conn) {
   mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
   conn->recv_buf = NULL;
   set_write_shutdown(conn);
-  ws_conn_do_handshake_reply(conn, &r);
+  ws_conn_handshake_reply(conn, &r);
 }
 
 static void ws_conn_do_handshake(ws_conn_t *conn) {
@@ -1652,11 +1653,6 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     handle_bad_request(conn);
     return;
   }
-}
-
-inline enum ws_send_status
-ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
-  return ws_conn_do_handshake_reply(c, resp);
 }
 
 const struct http_header *
@@ -1795,10 +1791,6 @@ static unsigned frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
   return 0;
 }
 
-static inline bool is_compressed_msg(uint8_t const *buf) {
-  return (buf[0] & 0x40) != 0;
-}
-
 static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
                                                           uint8_t const *buf) {
   return (buf[0] & 0x10) != 0 || (buf[0] & 0x20) != 0 ||
@@ -1890,6 +1882,12 @@ static inline void ws_server_call_on_msg(ws_server_t *s, ws_conn_t *conn,
   msg[payload_len] = tmp;
 }
 
+#ifdef WITH_COMPRESSION
+static inline bool is_compressed_msg(uint8_t const *buf) {
+  return (buf[0] & 0x40) != 0;
+}
+#endif
+
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
@@ -1912,7 +1910,10 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
 
       uint_fast8_t fin = frame_fin(frame);
       uint_fast8_t opcode = frame_opcode(frame);
+
+#ifdef WITH_COMPRESSION
       bool is_compressed = is_compressed_msg(frame);
+#endif /* WITH_COMPRESSION */
 
       if (frame_valid(conn, frame, fin, opcode)) {
         // make sure we can get the full msg
@@ -2042,9 +2043,11 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
 
           // set the state to fragmented after validation
           set_fragmented(conn);
+#ifdef WITH_COMPRESSION
           if (is_compressed) {
             set_fragment_compressed(conn);
           }
+#endif
 
           // place back at the frame start which contains the header & mask
           // we want to get rid of but ensure to subtract by the frame_gap to
@@ -2644,16 +2647,11 @@ static void ws_server_set_io_timeout(ws_server_t *s, unsigned int *restrict res,
 
 static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
 
-static void ws_server_register_timer_queue(ws_server_t *s, void *id) {
 #ifdef WS_WITH_EPOLL
-  assert(s->tq->timer_fd > 0);
+static void ws_server_register_timer_queue(ws_server_t *s, void *id) {
   ws_server_event_add(s, s->tq->timer_fd, id);
-#else
-  (void)id;
-  // nothing to do here for kqueue
-  assert(s->tq->timer_fd > 0);
-#endif
 }
+#endif
 
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
   if (cl->len + 1 <= cl->cap) {
@@ -3642,7 +3640,10 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
   int epfd = s->event_loop_fd;
 
+#ifdef WS_WITH_EPOLL
   ws_server_register_timer_queue(s, s->tq);
+#endif /* WS_WITH_EPOLL */
+
   ws_server_time_update(s);
   struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
   ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
@@ -4279,8 +4280,7 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
     EV_SET(&ev, tq->timer_fd, EVFILT_TIMER, EV_ONESHOT | EV_ADD, NOTE_NSECONDS,
            ns, tq);
 
-    int ret = kevent(tq->base->event_loop_fd, &ev, 1, NULL, 0, NULL);
-    assert(ret == 0);
+    kevent(tq->base->event_loop_fd, &ev, 1, NULL, 0, NULL);
 #endif
   }
 }
