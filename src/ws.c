@@ -2649,6 +2649,7 @@ static void ws_server_register_timer_queue(ws_server_t *s, void *id) {
   assert(s->tq->timer_fd > 0);
   ws_server_event_add(s, s->tq->timer_fd, id);
 #else
+  (void)id;
   // nothing to do here for kqueue
   assert(s->tq->timer_fd > 0);
 #endif
@@ -3609,8 +3610,6 @@ static inline uint_fast32_t ws_event_server(ws_server_t *s, ws_event_t *e) {
   return s == ws_event_udata(e);
 }
 
-
-
 static inline uint_fast32_t ws_event_conn_err(ws_event_t *e) {
 #ifdef WS_WITH_EPOLL
   return e->events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR);
@@ -4273,9 +4272,9 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
             },
     };
 
-    tq->next_expiration = maybe_soonest;
     timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
 #else
+    tq->next_expiration = maybe_soonest;
     ws_event_t ev;
     EV_SET(&ev, tq->timer_fd, EVFILT_TIMER, EV_ONESHOT | EV_ADD, NOTE_NSECONDS,
            ns, tq);
