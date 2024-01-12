@@ -30,6 +30,7 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -37,7 +38,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <time.h>
-#include <stdint.h>
+#include <unistd.h>
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
@@ -306,7 +307,6 @@ static inline bool is_upgraded(ws_conn_t *c) {
 }
 
 static inline void set_upgraded(ws_conn_t *c) { c->flags |= CONN_UPGRADED; }
-
 
 static inline bool is_bin(ws_conn_t *c) {
   return (c->flags & CONN_RX_BIN) != 0;
@@ -969,7 +969,6 @@ static inline size_t buf_space(mirrored_buf_t *r) {
 
 static inline uint8_t *buf_peek(mirrored_buf_t *r) { return r->buf + r->rpos; }
 
-
 static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n) {
   if (buf_space(r) < n) {
     return -1;
@@ -1011,7 +1010,6 @@ static inline int buf_consume(mirrored_buf_t *r, size_t n) {
 
   return 0;
 }
-
 
 static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
                                int flags) {
@@ -4412,8 +4410,6 @@ static inline uint64_t ws_timer_min_heap_get_timer_pri(struct ws_timer *t) {
   return t->expiry_ns;
 }
 
-
-
 static inline void ws_timer_min_heap_set_timer_pos(struct ws_timer *t,
                                                    size_t pos) {
   t->pos = pos;
@@ -4796,7 +4792,6 @@ typedef struct {
 
 #include <stdio.h>
 #include <string.h>
-
 
 #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
 
