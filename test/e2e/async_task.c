@@ -119,6 +119,7 @@ void *test_init(void *_) {
 }
 
 int main() {
+  printf("async task test starting...\n");
   pthread_t server_w;
 
   if (pthread_create(&server_w, NULL, server_init, NULL) == -1) {
