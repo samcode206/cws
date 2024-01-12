@@ -5,7 +5,13 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#if defined(__linux__)
 #include <sys/eventfd.h>
+
+#else
+#include <sys/event.h>
+#endif
 
 #define PORT 9919
 #define ADDR "::1"
@@ -45,7 +51,13 @@ void *server_init(void *_) {
 
 void async_shutdown(ws_server_t *s, void *ctx) {
   ws_server_shutdown(s);
+#if defined(__linux__)
   assert(eventfd_write(done, 1) == 0);
+#else
+  struct kevent ev;
+  EV_SET(&ev, 0, EVFILT_USER, EV_ADD | EV_ONESHOT, NOTE_TRIGGER, 0, NULL);
+  kevent(done, &ev, 1, NULL, 0, NULL);
+#endif
 }
 
 int ECHO_TEST(const char *name) {
@@ -90,9 +102,9 @@ int ECHO_TEST(const char *name) {
     free(frame);
   }
 
+#if defined(__linux__)
   done = eventfd(0, EFD_CLOEXEC);
   assert(done != -1);
-
 
   assert(ws_server_sched_callback(s, async_shutdown, NULL) == 0);
 
@@ -100,6 +112,14 @@ int ECHO_TEST(const char *name) {
   eventfd_read(done, &value);
 
   (void)value;
+#else
+  done = kqueue();
+  assert(done != -1);
+  assert(ws_server_sched_callback(s, async_shutdown, NULL) == 0);
+
+  struct kevent ev;
+  kevent(done, NULL, 0, &ev, 1, NULL);
+#endif
 
   return EXIT_SUCCESS;
 }

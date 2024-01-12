@@ -14,12 +14,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
-#include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
 
@@ -72,7 +70,7 @@ static int sock_new_connect(short port, char *addr) {
   }
 
   int on = 1;
-  if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &on, sizeof on) == -1) {
+  if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on) == -1) {
     perror("setsockopt");
     exit(EXIT_FAILURE);
   };
