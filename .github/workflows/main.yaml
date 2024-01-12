@@ -114,4 +114,4 @@ jobs:
       with:
         usesh: true
         prepare: pkg install -y gmake
-        run: gmake install && sh ./check-install.sh && sh ./test.sh && sh ./e2e.sh
+        run: WITH_PTHREAD=1 gmake install && sh ./check-install.sh && sh ./test.sh && sh ./e2e.sh
