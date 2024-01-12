@@ -36,6 +36,12 @@ ifdef WS_TIMERS_DEFAULT_SZ
 CFLAGS += -DWS_TIMERS_DEFAULT_SZ=$(WS_TIMERS_DEFAULT_SZ)
 endif
 
+
+ifdef WITH_PTHREAD
+CFLAGS += -pthread
+endif
+
+
 all: $(SHARED_LIB) $(STATIC_LIB)
 
 $(SOBJ): $(SRC)
