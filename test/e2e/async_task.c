@@ -119,6 +119,7 @@ void *test_init(void *_) {
 }
 
 int main() {
+  printf("async task test starting...\n");
   pthread_t server_w;
 
   if (pthread_create(&server_w, NULL, server_init, NULL) == -1) {
@@ -139,6 +140,7 @@ int main() {
     }
   }
 
+  printf("waiting for threads to finish...\n");
   // wait for the tests to complete
   for (size_t i = 0; i < NUM_TEST_THREADS; i++) {
     pthread_join(client_threads[i], NULL);
