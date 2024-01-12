@@ -287,7 +287,6 @@ static size_t get_pagesize() {
 #define CONN_RX_PAUSED (1u << 13)
 #define CONN_RX_COMPRESSED (1u << 14)
 
-
 typedef struct mirrored_buf_t mirrored_buf_t;
 struct ws_conn_t {
   int fd;                     // socket fd
@@ -386,7 +385,7 @@ inline bool is_compression_allowed(ws_conn_t *c) {
   return (c->flags & CONN_COMPRESSION_ALLOWED) != 0;
 }
 
-inline bool is_msg_compressed(ws_conn_t *c){
+inline bool is_msg_compressed(ws_conn_t *c) {
   return (c->flags & CONN_RX_COMPRESSED) != 0;
 }
 
@@ -411,11 +410,11 @@ static inline void clear_fragment_compressed(ws_conn_t *c) {
   c->flags &= ~CONN_RX_COMPRESSED_FRAGMENTS;
 }
 
-static inline void set_msg_compressed(ws_conn_t *c){
+static inline void set_msg_compressed(ws_conn_t *c) {
   c->flags |= CONN_RX_COMPRESSED;
 }
 
-static inline void clear_msg_compressed(ws_conn_t *c){
+static inline void clear_msg_compressed(ws_conn_t *c) {
   c->flags &= ~CONN_RX_COMPRESSED;
 }
 #endif /* WITH_COMPRESSION */
@@ -738,6 +737,36 @@ struct mirrored_buf_pool {
                                  // respective segment of base
 };
 
+// random path for shm_open
+#ifdef WS_WITH_KQUEUE
+static inline void shm_name(char str[31]) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+
+  unsigned int seed =
+      ((unsigned int)(ts.tv_nsec + ts.tv_sec)) ^
+      (unsigned int)(uintptr_t)pthread_self(); // Unique seed for each thread
+
+  unsigned int randValue = 100;
+  for (size_t i = 0, bitsUsed = 0; i < 31; ++i) {
+    if (bitsUsed == 0 || bitsUsed >= (sizeof(int) * 8 - 5)) {
+      randValue = (unsigned int)rand_r(&seed); // Thread-safe random number
+      bitsUsed = 0;
+    }
+
+    unsigned value = ((randValue) >> ((bitsUsed / 5) * 5)) % 52;
+    if (value < 26) {
+      str[i] = (char)('A' + value);
+    } else {
+      str[i] = (char)('a' + (value - 26));
+    }
+    bitsUsed += 5; // Move to the next 5-bit segment
+  }
+
+  str[31] = '\0';
+}
+#endif
+
 static struct mirrored_buf_pool *
 mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   size_t page_size = get_pagesize();
@@ -793,19 +822,9 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   }
 
 #else
-  char pname[128] = {0};
-
-  struct timespec ts;
-  clock_gettime(CLOCK_REALTIME, &ts);
-
-  sprintf(pname, "/%zu_%d_%zu_ws_bp", ts.tv_nsec + ts.tv_sec, getpid(),
-          (unsigned long)pthread_self());
-
-#if defined(__APPLE__)
-  // this sucks
+  char pname[32];
   pname[31] = '\0';
-#endif
-
+  shm_name(pname);
   pool->fd = shm_open(pname, O_CREAT | O_RDWR | O_EXCL, 600);
   if (pool->fd == -1) {
     perror("shm_open");
@@ -1925,7 +1944,8 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
 
 #ifdef WITH_COMPRESSION
       bool is_compressed = is_compressed_msg(frame);
-      if (is_compressed) set_msg_compressed(conn);
+      if (is_compressed)
+        set_msg_compressed(conn);
 #endif /* WITH_COMPRESSION */
 
       if (frame_valid(conn, frame, fin, opcode)) {
@@ -2571,11 +2591,9 @@ bool ws_conn_msg_ready(ws_conn_t *c) {
   }
 }
 
-
-inline bool ws_conn_msg_compressed(ws_conn_t *c){
+inline bool ws_conn_msg_compressed(ws_conn_t *c) {
   return is_msg_compressed(c);
 }
-
 
 inline bool ws_conn_sending_fragments(ws_conn_t *c) {
   return is_sending_fragments(c);
