@@ -2,11 +2,11 @@ CC=cc
 OS := $(shell uname -s)
 
 ifeq ($(OS),Darwin)
-    LD_CONFIG_COMMAND = 
-	SHARED_LIB_EXT = .dylib
+LD_CONFIG_COMMAND = 
+SHARED_LIB_EXT = .dylib
 else
-    LD_CONFIG_COMMAND = sudo ldconfig
-	SHARED_LIB_EXT = .so
+LD_CONFIG_COMMAND = sudo ldconfig
+SHARED_LIB_EXT = .so
 endif
 
 CFLAGS=-O3 -flto -march=native -mtune=native -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src

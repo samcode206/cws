@@ -109,4 +109,4 @@ jobs:
       uses: vmactions/freebsd-vm@v1
       with:
         usesh: true
-        run: sudo make install && sh ./check-install.sh && sh ./test.sh
+        run: make install && sh ./check-install.sh && sh ./test.sh
