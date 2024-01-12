@@ -97,7 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: install and confirm
-        run: make install && sh ./check-install.sh
+        run: sudo make install && sh ./check-install.sh
       - name: Run Test Suite (Darwin)
         run: sh ./test.sh
   
@@ -109,4 +109,4 @@ jobs:
       uses: vmactions/freebsd-vm@v1
       with:
         usesh: true
-        run: make install && sh ./check-install.sh && sh ./test.sh
+        run: sudo make install && sh ./check-install.sh && sh ./test.sh
