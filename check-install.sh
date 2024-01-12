@@ -1,4 +1,4 @@
-#!/bin/sh
+ #!/bin/sh
 
 
 LIB_PATH="/usr/local/lib"
@@ -10,12 +10,15 @@ exit_with_error() {
     exit 1
 }
 
+case "$OSTYPE" in
+    darwin*)
+        LIB_EXT=".dylib"
+        ;;
+    *)
+        LIB_EXT=".so"
+        ;;
+esac
 
-if [ "$OS" = "Darwin" ]; then
-    LIB_EXT=".dylib"
-else
-    LIB_EXT=".so"
-fi
 
 if [ -f "$LIB_PATH/libws$LIB_EXT" ]; then
     echo "libws$LIB_EXT found in $LIB_PATH"
@@ -39,5 +42,5 @@ fi
 
 
 echo "SUCCESS: library installed"
-# Exit with success if all checks pass
+
 exit 0
