@@ -825,6 +825,7 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   char pname[32];
   pname[31] = '\0';
   shm_name(pname);
+  pname[0] = '/';
   pool->fd = shm_open(pname, O_CREAT | O_RDWR | O_EXCL, 600);
   if (pool->fd == -1) {
     perror("shm_open");
