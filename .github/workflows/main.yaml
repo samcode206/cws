@@ -105,15 +105,15 @@ jobs:
       - name: Run E2E (Darwin)
         run: sh ./e2e.sh
   
-  # this vm is not very reliable and takes too long
-  # freebsd-build-and-test:
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 15
-  #   steps:
-  #   - uses: actions/checkout@v4
-  #   - name: Build, Install and Test (FreeBSD)
-  #     uses: vmactions/freebsd-vm@v1
-  #     with:
-  #       usesh: true
-  #       prepare: pkg install -y gmake
-  #       run: WITH_PTHREAD=1 gmake install && sh ./check-install.sh && sh ./e2e.sh -lpthread
+
+  freebsd-build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build, Install and Test (FreeBSD)
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        prepare: pkg install -y gmake
+        run: WITH_PTHREAD=1 gmake install && sh ./check-install.sh && sh ./e2e.sh -lpthread

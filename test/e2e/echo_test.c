@@ -55,7 +55,7 @@ void async_shutdown(ws_server_t *s, void *ctx) {
   assert(eventfd_write(done, 1) == 0);
 #else
   struct kevent ev;
-  EV_SET(&ev, 0, EVFILT_USER, EV_ADD | EV_ONESHOT, NOTE_TRIGGER, 0, NULL);
+  EV_SET(&ev, 0, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
   kevent(done, &ev, 1, NULL, 0, NULL);
 #endif
 }
@@ -114,11 +114,17 @@ int ECHO_TEST(const char *name) {
   (void)value;
 #else
   done = kqueue();
+
+  // TODO(sah): no need to call kevent twice here...
+  struct kevent ev;
+  EV_SET(&ev, 0, EVFILT_USER, EV_ADD, 0, 0, NULL);  
+  kevent(done, &ev, 1, NULL, 0, NULL);
+
   assert(done != -1);
   assert(ws_server_sched_callback(s, async_shutdown, NULL) == 0);
 
-  struct kevent ev;
-  kevent(done, NULL, 0, &ev, 1, NULL);
+  struct kevent ev2;
+  kevent(done, NULL, 0, &ev2, 1, NULL);
 #endif
 
   return EXIT_SUCCESS;

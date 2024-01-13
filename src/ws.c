@@ -3842,6 +3842,11 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
 
 #ifdef WS_WITH_EPOLL
   ws_server_event_add(s, ar->chanfd, &s->async_runner);
+#else
+  // add the event 
+  ws_event_t ev;
+  EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ADD, 0, 0, &s->async_runner);
+  kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
 #endif
 
   s->internal_polls++;
@@ -3920,7 +3925,10 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
     }
 #else
     ws_event_t ev;
-    EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ONESHOT | EV_ADD, NOTE_TRIGGER, 0,
+    // trigger (EV_ONESHOT | EV_ADD) combo is a no go on freeBSD (unreliable)
+    // instead we have the event added already and just need to trigger it
+    // it's also faster than EV_ADD for each event
+    EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0,
            &s->async_runner);
     for (;;) {
       if (likely(kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL) == 0)) {

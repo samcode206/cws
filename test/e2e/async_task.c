@@ -60,7 +60,8 @@ void server_async_task4(ws_server_t *rs, void *ctx) {
   assert(write(*chanid, &v, 8) == 8);
 #else
   struct kevent ev;
-  EV_SET(&ev, 0, EVFILT_USER, EV_ONESHOT | EV_ADD, NOTE_TRIGGER, 0, NULL);
+  // trigger
+  EV_SET(&ev, *chanid, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
   kevent(*chanid, &ev, 1, NULL, 0, NULL);
 #endif
 }
@@ -108,6 +109,11 @@ void *test_init(void *_) {
   assert(read(evfd, &val, 8) == 8);
 #else
   struct kevent ev;
+  // add 
+  EV_SET(&ev, evfd, EVFILT_USER, EV_ADD, 0, 0, NULL);
+  kevent(evfd, &ev, 1, NULL, 0, NULL);
+  
+  // wait
   kevent(evfd, NULL, 0, &ev, 1, NULL);
 #endif
 
@@ -127,7 +133,7 @@ int main() {
     exit(EXIT_FAILURE);
   };
 
-  sleep(1);
+  sleep(2);
 
 #define NUM_TEST_THREADS 32
   pthread_t client_threads[NUM_TEST_THREADS];

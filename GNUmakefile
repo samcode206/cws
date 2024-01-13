@@ -32,6 +32,10 @@ ifdef NO_DEBUG
 CFLAGS += -DNDEBUG
 endif
 
+ifdef WITH_PTHREAD
+CFLAGS += -pthread
+endif
+
 ifdef WS_TIMERS_DEFAULT_SZ
 CFLAGS += -DWS_TIMERS_DEFAULT_SZ=$(WS_TIMERS_DEFAULT_SZ)
 endif
