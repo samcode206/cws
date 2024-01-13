@@ -3536,11 +3536,13 @@ static int ws_server_event_wait(ws_server_t *s, int epfd) {
 static void ws_server_async_runner_run_pending_callbacks(
     ws_server_t *s, struct ws_server_async_runner *arptr);
 
+#ifdef WS_WITH_EPOLL
 static inline void timer_consume(int tfd) {
   uint64_t _;
   read(tfd, &_, 8);
   (void)_;
 }
+#endif
 
 static void ws_server_on_tick(ws_server_t *s, void *ctx) {
   (void)ctx;
@@ -3706,7 +3708,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
           ws_event_timer(s, s->events + i)) {
 
         if (ws_event_timer(s, s->events + i)) {
+#ifdef WS_WITH_EPOLL
           timer_consume(s->tq->timer_fd);
+#endif
           ws_timer_queue_run_expired_callbacks(s->tq, s);
         } else {
           ws_server_async_runner_run_pending_callbacks(s, s->async_runner);
