@@ -9,7 +9,7 @@ LD_CONFIG_COMMAND = ldconfig
 SHARED_LIB_EXT = .so
 endif
 
-CFLAGS=-O3 -flto -march=native -mtune=native -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
+CFLAGS=-O3 -flto -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
 LIB_NAME=ws
 SHARED_LIB=lib$(LIB_NAME)$(SHARED_LIB_EXT)
 STATIC_LIB=lib$(LIB_NAME).a
@@ -75,23 +75,23 @@ clean:
 
 
 echo: install
-	$(CC) ./examples/echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/echo.c -flto -lws -O3 -Wall --pedantic -o server
 
 multi_echo: install
-	$(CC) ./examples/multi_echo.c -flto -lws -O3 -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/multi_echo.c -flto -lws -O3 -Wall --pedantic -o server
 
 online: install
-	$(CC) ./examples/online.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/online.c -flto -lws -O3  -Wall --pedantic -o server
 
 broadcast: install
-	$(CC) ./examples/broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/broadcast.c -flto -lws -O3  -Wall --pedantic -o server
 
 multi_broadcast: install
-	$(CC) ./examples/multi_broadcast.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./examples/multi_broadcast.c -flto -lws -O3  -Wall --pedantic -o server
 
 autobahn: install
-	$(CC) ./test/autobahn/autobahn.c -flto -lws -O3  -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./test/autobahn/autobahn.c -flto -lws -O3  -Wall --pedantic -o server
 
 async_task:
-	$(CC) ./src/*.c ./test/e2e/async_task.c -lz -O3 -march=native -mtune=native -Wall --pedantic -o server
+	$(CC) ./src/*.c ./test/e2e/async_task.c -lz -O3 -Wall --pedantic -o server
 

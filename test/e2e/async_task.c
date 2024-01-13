@@ -59,6 +59,7 @@ void *server_init(void *_) {
 void on_tasks_done(ws_server_t *s, void *ctx) {
   int *chanid = ctx;
 
+  printf("id: #%d done\n", *(int *)ctx);
 #if defined(__linux__)
   uint64_t v = 1;
   assert(write(*chanid, &v, 8) == 8);
@@ -69,7 +70,6 @@ void on_tasks_done(ws_server_t *s, void *ctx) {
   kevent(*chanid, &ev, 1, NULL, 0, NULL);
 #endif
 
-  printf("id: #%d done\n", *(int *)ctx);
 }
 
 struct timespec rand_duration(long atleast, long mrand) {
@@ -89,7 +89,6 @@ void server_async_task3(ws_server_t *rs, void *ctx) {
 }
 
 void server_async_task2(ws_server_t *rs, void *ctx) {
-  int *chanid = ctx;
 
   assert(srv == rs);
 
@@ -112,8 +111,6 @@ void server_async_task2(ws_server_t *rs, void *ctx) {
 }
 
 void server_async_task(ws_server_t *rs, void *ctx) {
-  int *chanid = ctx;
-  printf("Task 1 running for %d\n", *chanid);
   assert(srv == rs);
 
   int fd = open("/dev/urandom", O_RDONLY);
@@ -134,36 +131,37 @@ void server_async_task(ws_server_t *rs, void *ctx) {
 }
 
 void *test_init(void *_) {
+  int *evfd = calloc(1, sizeof(int));
 
 #if defined(__linux__)
   // will use a blocking eventfd to know when all tasks are run
-  int evfd = eventfd(0, 0);
+  *evfd = eventfd(0, 0);
 #else
-  int evfd = kqueue();
+  *evfd = kqueue();
 #endif
 
-  ws_server_sched_callback(srv, server_async_task, &evfd);
+  ws_server_sched_callback(srv, server_async_task, evfd);
 
   uint64_t val;
   // once read is done we know we are done because write to eventfd happens in
   // the final task
 
 #if defined(__linux__)
-  assert(read(evfd, &val, 8) == 8);
+  assert(read(*evfd, &val, 8) == 8);
 #else
   struct kevent ev;
   // add
-  EV_SET(&ev, evfd, EVFILT_USER, EV_ADD, 0, 0, NULL);
-  kevent(evfd, &ev, 1, NULL, 0, NULL);
+  EV_SET(&ev, *evfd, EVFILT_USER, EV_ADD, 0, 0, NULL);
+  kevent(*evfd, &ev, 1, NULL, 0, NULL);
 
   // wait
-  kevent(evfd, NULL, 0, &ev, 1, NULL);
+  kevent(*evfd, NULL, 0, &ev, 1, NULL);
 #endif
 
-  printf("thread %zu scheduled And Ran All tasks\n",
-         (unsigned long)pthread_self());
-
   done++;
+  printf("id: #%d scheduled And Ran All tasks freeing: %p\n", *evfd, evfd);
+  close(*evfd);
+  free(evfd);
   return NULL;
 }
 
