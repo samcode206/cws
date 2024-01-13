@@ -103,7 +103,7 @@ jobs:
       - name: Run Test Suite (Darwin)
         run: sh ./test.sh
       - name: Run E2E (Darwin)
-        run: sh ./e2e.sh
+        run: sh ./e2e.sh -pthread
   
 
   freebsd-build-and-test:
