@@ -41,6 +41,7 @@ void *server_init(void *_) {
       .on_ws_disconnect = server_on_disconnect,
       .max_buffered_bytes = 512,
       .max_conns = 2,
+      .silent = 1,
   };
 
   srv = ws_server_create(&p);
