@@ -93,5 +93,5 @@ autobahn: install
 	$(CC) ./test/autobahn/autobahn.c -flto -lws -O3  -Wall --pedantic -o server
 
 async_task:
-	$(CC) ./src/*.c ./test/e2e/async_task.c -lz -O3 -Wall --pedantic -o server
+	$(CC) -pthread ./src/*.c ./test/e2e/async_task.c -lz -O3 -Wall --pedantic -o server
 
