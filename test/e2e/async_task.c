@@ -68,7 +68,7 @@ void server_async_task4(ws_server_t *rs, void *ctx) {
 
 void server_async_task3(ws_server_t *rs, void *ctx) {
   int *chanid = ctx;
-  printf("Task 4 running for %d\n", *chanid);
+  printf("Task 3 running for %d\n", *chanid);
   assert(srv == rs);
 
   ws_server_sched_callback(rs, server_async_task4, ctx);

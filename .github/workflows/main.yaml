@@ -116,4 +116,4 @@ jobs:
       with:
         usesh: true
         prepare: pkg install -y gmake
-        run: WITH_PTHREAD=1 gmake install && sh ./check-install.sh && sh ./e2e.sh -lpthread
+        run: WITH_PTHREAD=1 gmake install && sh ./check-install.sh && sh ./e2e.sh -pthread
