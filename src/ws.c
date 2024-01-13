@@ -255,7 +255,7 @@ static inline uint_fast8_t io_tmp_err(ssize_t n) {
 }
 
 static unsigned long page_size = 0;
-static size_t get_pagesize() {
+static size_t get_pagesize(void) {
   if (!page_size) {
     long ret = sysconf(_SC_PAGESIZE);
     if (ret <= 0) {
