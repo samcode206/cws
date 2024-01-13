@@ -1,10 +1,10 @@
 #include "../../src/ws.h"
 #include <assert.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <fcntl.h>
 
 #if defined(__linux__)
 #include <sys/eventfd.h>
@@ -188,7 +188,7 @@ int main() {
     }
   }
 
-  printf("waiting for threads to finish...\n");
+  printf("waiting for tasks to finish...\n");
   // wait for the tests to complete
   for (size_t i = 0; i < NUM_TEST_THREADS; i++) {
     pthread_join(client_threads[i], NULL);
@@ -196,14 +196,16 @@ int main() {
 
   printf("shutting down...\n");
   int ret = ws_server_shutdown(srv);
-  printf("ws_server_shutdown: %d\n", ret);
+  printf("ws_server_shutdown task complete: %s\n", !ret ? "true" : "false");
   printf("ws_server_shuttin_down: %s\n",
          ws_server_shutting_down(srv) ? "true" : "false");
   pthread_join(server_w, NULL);
 
   printf("tasks done:  %zu/%zu\n", done, (unsigned long)NUM_TEST_THREADS);
-  printf("/dev/urandom reads: %zu/%zu\n", reads, (unsigned long)NUM_TEST_THREADS);
-  printf("/dev/null writes: %zu/%zu\n", writes, (unsigned long)NUM_TEST_THREADS);
+  printf("/dev/urandom reads: %zu/%zu\n", reads,
+         (unsigned long)NUM_TEST_THREADS);
+  printf("/dev/null writes: %zu/%zu\n", writes,
+         (unsigned long)NUM_TEST_THREADS);
 
   if (done == NUM_TEST_THREADS) {
     exit(EXIT_SUCCESS);
