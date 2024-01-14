@@ -69,7 +69,6 @@ void on_tasks_done(ws_server_t *s, void *ctx) {
   EV_SET(&ev, *chanid, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
   kevent(*chanid, &ev, 1, NULL, 0, NULL);
 #endif
-
 }
 
 struct timespec rand_duration(long atleast, long mrand) {
@@ -89,44 +88,10 @@ void server_async_task3(ws_server_t *rs, void *ctx) {
 }
 
 void server_async_task2(ws_server_t *rs, void *ctx) {
-
-  assert(srv == rs);
-
-  int fd = open("/dev/null", O_WRONLY);
-  if (fd) {
-    char buf[4096] = {0};
-    ssize_t n;
-    while (1) {
-      if ((n = write(fd, buf, 4096)) == -1 && errno == EINTR)
-        continue;
-      if (n == 4096)
-        writes++;
-      break;
-    }
-  } else {
-    perror("server_async_task2 open");
-  }
-
   ws_server_sched_callback(rs, server_async_task3, ctx);
 }
 
 void server_async_task(ws_server_t *rs, void *ctx) {
-  assert(srv == rs);
-
-  int fd = open("/dev/urandom", O_RDONLY);
-  if (fd) {
-    char buf[4096];
-    ssize_t n;
-    while (1) {
-      if ((n = read(fd, buf, 4096)) == -1 && errno == EINTR)
-        continue;
-      if (n == 4096)
-        reads++;
-      break;
-    }
-    close(fd);
-  }
-
   ws_server_sched_callback(rs, server_async_task2, ctx);
 }
 

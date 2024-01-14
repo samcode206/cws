@@ -3963,7 +3963,7 @@ static void ws_server_async_runner_run_pending_callbacks(
   // and get the count of ready callbacks
   pthread_mutex_lock(&ar->mu);
   // mu start
-  printf("ready callbacks %zu\n", ar->pending->len);
+  // printf("ready callbacks %zu\n", ar->pending->len);
   // assert(ar->pending->len != 0);
 
   struct ws_server_async_runner_buf *ready = ar->pending;

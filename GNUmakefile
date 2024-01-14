@@ -96,6 +96,6 @@ multi_broadcast: install
 autobahn: install
 	$(CC) ./test/autobahn/autobahn.c -flto -lws -O3  -Wall --pedantic -o server
 
-async_task:
-	$(CC) -pthread ./src/*.c ./test/e2e/async_task2.c -lz -O3 -Wall --pedantic -o server
+async_task_io:
+	$(CC) -pthread ./src/*.c ./test/e2e/async_task_io.c -lz -O3 -Wall --pedantic -o server
 
