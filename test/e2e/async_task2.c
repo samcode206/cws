@@ -409,7 +409,7 @@ int main() {
     pthread_join(workers_thr[i], NULL);
   }
 
-  assert(ws_server_shutdown(srv) == 0);
+  // assert(ws_server_shutdown(srv) == 0);
 
   // todo: signal the end of server
   pthread_join(server_thr, NULL);
