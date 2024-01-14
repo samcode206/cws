@@ -10,7 +10,7 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_conn_put_msg(conn, msg, n, opcode, 0);
 }
 
-void onWsUpgrade(ws_conn_t *c, struct ws_conn_handshake *hs) {
+void onHandshakeRequest(ws_conn_t *c, struct ws_conn_handshake *hs) {
   struct http_header hdrs[] = {{"Access-Control-Allow-Origin", "*"},
                                {
                                    "Sec-Websocket-Accept",
@@ -38,7 +38,7 @@ int main(void) {
       .port = 9919,
       .on_ws_open = onOpen,
       .on_ws_msg = onMsg,
-      .on_ws_handshake = onWsUpgrade,
+      .on_ws_handshake = onHandshakeRequest,
       .on_ws_disconnect = onDisconnect,
       .max_buffered_bytes = 1024 * 512,
       .max_conns = MAX_CONNS,
