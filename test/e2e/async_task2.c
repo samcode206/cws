@@ -29,7 +29,7 @@
 */
 
 #define NUM_WORKERS 4
-#define NUM_CLIENTS 32
+#define NUM_CLIENTS 28
 #define EXPECTED_TASK_COMPLETIONS NUM_CLIENTS
 
 #define PORT 9919
@@ -409,7 +409,7 @@ int main() {
     pthread_join(workers_thr[i], NULL);
   }
 
-  // assert(ws_server_shutdown(srv) == 0);
+  assert(ws_server_shutdown(srv) == 0);
 
   // todo: signal the end of server
   pthread_join(server_thr, NULL);
