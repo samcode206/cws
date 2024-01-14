@@ -82,9 +82,9 @@ void onDisconnect(ws_conn_t *conn, unsigned long err) {
 }
 
 int main(void) {
-  printf("pid = %d\n", getpid());
   signal(SIGPIPE, SIG_IGN);
 
+  printf("starting server on ws://localhost:9919/\n");
   struct ws_server_params p = {
       .addr = "::1",
       .port = 9919,
@@ -93,11 +93,15 @@ int main(void) {
       .on_ws_handshake = onHandshakeRequest,
       .on_ws_disconnect = onDisconnect,
       .max_conns = MAX_CONNS,
-      .silent = 0,
+      .silent = 1,
   };
 
   ws_server_t *s = ws_server_create(&p);
 
-  ws_server_start(s, 1024);
-  return 0;
+  if (s)
+    ws_server_start(s, 1024);
+  else
+    return EXIT_FAILURE;
+
+  return EXIT_SUCCESS;
 }
