@@ -1,6 +1,8 @@
 CC=cc
 OS := $(shell uname -s)
 
+CFLAGS=
+
 ifeq ($(OS),Darwin)
 LD_CONFIG_COMMAND = 
 SHARED_LIB_EXT = .dylib
@@ -9,7 +11,13 @@ LD_CONFIG_COMMAND = ldconfig
 SHARED_LIB_EXT = .so
 endif
 
-CFLAGS=-O3 -flto -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
+
+ifdef WITH_PTHREAD
+CFLAGS += -pthread
+endif
+
+CFLAGS += -O3 -flto -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
+
 LIB_NAME=ws
 SHARED_LIB=lib$(LIB_NAME)$(SHARED_LIB_EXT)
 STATIC_LIB=lib$(LIB_NAME).a
@@ -30,10 +38,6 @@ endif
 
 ifdef NO_DEBUG
 CFLAGS += -DNDEBUG
-endif
-
-ifdef WITH_PTHREAD
-CFLAGS += -pthread
 endif
 
 ifdef WS_TIMERS_DEFAULT_SZ
@@ -87,11 +91,11 @@ broadcast: install
 	$(CC) ./examples/broadcast.c -flto -lws -O3  -Wall --pedantic -o server
 
 multi_broadcast: install
-	$(CC) ./examples/multi_broadcast.c -flto -lws -O3  -Wall --pedantic -o server
+	$(CC) -pthread ./examples/multi_broadcast.c -flto -lws -O3  -Wall --pedantic -o server
 
 autobahn: install
 	$(CC) ./test/autobahn/autobahn.c -flto -lws -O3  -Wall --pedantic -o server
 
 async_task:
-	$(CC) ./src/*.c ./test/e2e/async_task.c -lz -O3 -Wall --pedantic -o server
+	$(CC) -pthread ./src/*.c ./test/e2e/async_task2.c -lz -O3 -Wall --pedantic -o server
 

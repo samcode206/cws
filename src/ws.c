@@ -3845,7 +3845,7 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
 #else
   // add the event 
   ws_event_t ev;
-  EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ADD, 0, 0, &s->async_runner);
+  EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, &s->async_runner);
   kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
 #endif
 
@@ -3928,7 +3928,7 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
     // trigger (EV_ONESHOT | EV_ADD) combo is a no go on freeBSD (unreliable)
     // instead we have the event added already and just need to trigger it
     // it's also faster than EV_ADD for each event
-    EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0,
+    EV_SET(&ev, ar->chanfd, EVFILT_USER, 0, NOTE_TRIGGER, 0,
            &s->async_runner);
     for (;;) {
       if (likely(kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL) == 0)) {
@@ -3963,6 +3963,8 @@ static void ws_server_async_runner_run_pending_callbacks(
   // and get the count of ready callbacks
   pthread_mutex_lock(&ar->mu);
   // mu start
+  printf("ready callbacks %zu\n", ar->pending->len);
+  // assert(ar->pending->len != 0);
 
   struct ws_server_async_runner_buf *ready = ar->pending;
   ar->pending = ar->ready;
@@ -4041,7 +4043,7 @@ int ws_server_shutdown(ws_server_t *s) {
   eventfd_write(s->async_runner->chanfd, 1);
 #else
   ws_event_t ev;
-  EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, EV_ONESHOT | EV_ADD,
+  EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, 0,
          NOTE_TRIGGER, 0, &s->async_runner);
 
   kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
