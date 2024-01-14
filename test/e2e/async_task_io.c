@@ -147,12 +147,15 @@ void handle_task(task_t *tsk) {
 }
 
 struct task_q *task_q_create() {
+#if defined(__linux__)
+  int fd = eventfd(0, EFD_SEMAPHORE);
+#else
   int fd = kqueue();
   if (fd == -1) {
     perror("kqueue");
     return NULL;
   }
-
+#endif
   struct task_q *tq = calloc(1, sizeof(struct task_q));
   if (tq == NULL) {
     return NULL;
@@ -204,6 +207,10 @@ int task_q_add(struct task_q *tq, char *msg, size_t len, void *ctx) {
 
   // notify
   // printf("notifying\n");
+
+#if defined(__linux__)
+  eventfd_write(tq->channel, 1);
+#else
   struct kevent ev[2];
   EV_SET(ev, UEVID, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
   EV_SET(ev + 1, UEVID, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
@@ -212,7 +219,7 @@ int task_q_add(struct task_q *tq, char *msg, size_t len, void *ctx) {
   }
 
   UEVID++;
-
+#endif
   return 0;
 }
 
@@ -231,6 +238,9 @@ int task_q_add_shutdown(struct task_q *tq) {
   tq->task = tsk;
   pthread_mutex_unlock(&tq->mu);
 
+#if defined(__linux__)
+  eventfd_write(tq->channel, 1);
+#else
   // notify
   struct kevent ev[2];
   EV_SET(ev, UEVID, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
@@ -240,6 +250,7 @@ int task_q_add_shutdown(struct task_q *tq) {
   }
 
   UEVID++;
+#endif
 
   return 0;
 }
@@ -256,25 +267,33 @@ task_t *task_q_consume(struct task_q *tq) {
 }
 
 int task_q_wait(struct task_q *tq) {
+#if !defined(__linux__)
   struct kevent ev;
+#endif
 
   while (1) {
-    // printf("task_q_wait: waiting...\n");
+// printf("task_q_wait: waiting...\n");
+#if !defined(__linux__)
     if (kevent(tq->channel, NULL, 0, &ev, 1, NULL) == -1 && errno != EINTR) {
       perror("kevent");
       return -1;
-    } else {
-      task_t *tsk = task_q_consume(tq);
-      if (tsk) {
-        if (!tsk->shutdown) {
-          handle_task(tsk);
-        } else {
-          // printf("worker #%zu shutting down\n", (uintptr_t)pthread_self());
-          break;
-        }
+    }
+#else
+    eventfd_t val;
+    eventfd_read(tq->channel, &val);
+#endif
+
+    task_t *tsk = task_q_consume(tq);
+    if (tsk) {
+      if (!tsk->shutdown) {
+        handle_task(tsk);
       } else {
-        fprintf(stderr, "[WARN] task_q_wait woke up to no task\n");
+        // printf("worker #%zu shutting down\n", (uintptr_t)pthread_self());
+        free(tsk);
+        break;
       }
+    } else {
+      fprintf(stderr, "[WARN] task_q_wait woke up to no task\n");
     }
   }
 
@@ -352,7 +371,7 @@ void *client_init(void *_) {
   assert(read == msg_len + 1);
   free(frame);
 
-  // printf("client #%d is done\n", fd);
+  printf("client #%d is done\n", fd);
   return NULL;
 }
 
