@@ -249,6 +249,10 @@ static int sock_upgrade_ws(int fd) {
 
   char buf[4096] = {0};
 
+  // peek because we don't want to miss any frames
+  // after upgrade we only want to consume the upgrade response
+  // this keeps the function stateless which is more useful for testing
+
   ssize_t read = recv(fd, buf, 4096, MSG_PEEK);
   if (read == 0) {
     fprintf(stderr, "connection dropped before receiving upgrade response\n");
