@@ -5,21 +5,15 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/resource.h>
-#include <sys/signal.h>
 #include <sys/socket.h>
-#include <sys/uio.h>
-#include <time.h>
+
+// utils for socket testing
 
 #define OP_TXT 0x1
 #define OP_BIN 0x2
