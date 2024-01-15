@@ -17,9 +17,9 @@ static void appBroadcast(App *state, char *msg, size_t len) {
         ws_conn_flush_pending(state->conns[i]);
       }
 
-      // ws_conn_put_msg(state->conns[i], msg, len, OP_TXT, 0);
+      // ws_conn_put_msg(state->conns[i], msg, len, OP_TXT, false);
       // or
-      ws_conn_send_msg(state->conns[i], msg, len, OP_TXT, 0);
+      ws_conn_send_msg(state->conns[i], msg, len, OP_TXT, false);
     }
 
     break;
