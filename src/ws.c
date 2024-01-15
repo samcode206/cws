@@ -309,7 +309,7 @@ static inline bool is_upgraded(ws_conn_t *c) {
 
 static inline void set_upgraded(ws_conn_t *c) { c->flags |= CONN_UPGRADED; }
 
-inline bool is_bin(ws_conn_t *c) { return (c->flags & CONN_RX_BIN) != 0; }
+static inline bool is_bin(ws_conn_t *c) { return (c->flags & CONN_RX_BIN) != 0; }
 
 static inline void clear_bin(ws_conn_t *c) { c->flags &= ~CONN_RX_BIN; }
 
@@ -381,11 +381,11 @@ static inline void set_write_shutdown(ws_conn_t *c) {
   c->flags |= CONN_TX_DISPOSING;
 }
 
-inline bool is_compression_allowed(ws_conn_t *c) {
+static inline bool is_compression_allowed(ws_conn_t *c) {
   return (c->flags & CONN_COMPRESSION_ALLOWED) != 0;
 }
 
-inline bool is_msg_compressed(ws_conn_t *c) {
+static inline bool is_msg_compressed(ws_conn_t *c) {
   return (c->flags & CONN_RX_COMPRESSED) != 0;
 }
 
@@ -431,7 +431,7 @@ static inline void clear_has_pending_timers(ws_conn_t *c) {
   c->flags &= ~CONN_TIMER_QUEUED;
 }
 
-inline bool is_sending_fragments(ws_conn_t *c) {
+static inline bool is_sending_fragments(ws_conn_t *c) {
   return (c->flags & CONN_TX_SENDING_FRAGMENTS) != 0;
 }
 
@@ -443,7 +443,7 @@ static inline void clear_sending_fragments(ws_conn_t *c) {
   c->flags &= ~CONN_TX_SENDING_FRAGMENTS;
 }
 
-inline bool is_read_paused(ws_conn_t *c) {
+static inline bool is_read_paused(ws_conn_t *c) {
   return (c->flags & CONN_RX_PAUSED) != 0;
 }
 
@@ -549,7 +549,7 @@ static void ws_conn_put(struct ws_conn_pool *p, struct ws_conn_t *c) {
   }
 }
 
-inline bool ws_conn_compression_allowed(ws_conn_t *c) {
+bool ws_conn_compression_allowed(ws_conn_t *c) {
   return is_compression_allowed(c);
 }
 
@@ -643,11 +643,11 @@ inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
 inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
 
-inline bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
+bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
 
 int ws_conn_fd(ws_conn_t *c) { return c->fd; }
 
-inline bool ws_conn_is_read_paused(ws_conn_t *c) { return is_read_paused(c); }
+bool ws_conn_is_read_paused(ws_conn_t *c) { return is_read_paused(c); }
 
 const char *ws_conn_err_table[] = {
     "Unkown Error Code",
@@ -990,7 +990,7 @@ static void mirrored_buf_put(struct mirrored_buf_pool *bp,
   }
 }
 
-inline size_t buf_len(mirrored_buf_t *r) { return r->wpos - r->rpos; }
+static inline size_t buf_len(mirrored_buf_t *r) { return r->wpos - r->rpos; }
 
 static inline void buf_reset(mirrored_buf_t *r) {
   // we can do this because indexes are in the beginning
@@ -2570,7 +2570,7 @@ bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len) {
   }
 }
 
-inline size_t ws_conn_pending_bytes(ws_conn_t *c) {
+size_t ws_conn_pending_bytes(ws_conn_t *c) {
   if (c->send_buf) {
     return buf_len(c->send_buf);
   } else {
@@ -2592,11 +2592,11 @@ bool ws_conn_msg_ready(ws_conn_t *c) {
   }
 }
 
-inline bool ws_conn_msg_compressed(ws_conn_t *c) {
+bool ws_conn_msg_compressed(ws_conn_t *c) {
   return is_msg_compressed(c);
 }
 
-inline bool ws_conn_sending_fragments(ws_conn_t *c) {
+bool ws_conn_sending_fragments(ws_conn_t *c) {
   return is_sending_fragments(c);
 }
 
