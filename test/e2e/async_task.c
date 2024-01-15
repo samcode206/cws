@@ -18,8 +18,6 @@
 ws_server_t *srv;
 
 _Atomic unsigned long done = 0;
-_Atomic unsigned long writes = 0;
-_Atomic unsigned long reads = 0;
 
 void server_on_open(ws_conn_t *conn) {}
 
@@ -166,10 +164,6 @@ int main() {
   pthread_join(server_w, NULL);
 
   printf("tasks done:  %zu/%zu\n", done, (unsigned long)NUM_TEST_THREADS);
-  printf("/dev/urandom reads: %zu/%zu\n", reads,
-         (unsigned long)NUM_TEST_THREADS);
-  printf("/dev/null writes: %zu/%zu\n", writes,
-         (unsigned long)NUM_TEST_THREADS);
 
   if (done == NUM_TEST_THREADS) {
     exit(EXIT_SUCCESS);

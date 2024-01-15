@@ -10,22 +10,6 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_conn_put_msg(conn, msg, n, opcode, 0);
 }
 
-void onHandshakeRequest(ws_conn_t *c, struct ws_conn_handshake *hs) {
-  struct http_header hdrs[] = {{"Access-Control-Allow-Origin", "*"},
-                               {
-                                   "Sec-Websocket-Accept",
-                                   hs->sec_websocket_accept,
-                               }};
-
-  struct ws_conn_handshake_response resp = {
-      .status = WS_HANDSHAKE_STATUS_101,
-      .body = NULL,
-      .header_count = 2,
-      .headers = hdrs,
-
-  };
-  ws_conn_handshake_reply(c, &resp);
-}
 
 void onDisconnect(ws_conn_t *conn, unsigned long err) {}
 
@@ -38,7 +22,6 @@ int main(void) {
       .port = 9919,
       .on_ws_open = onOpen,
       .on_ws_msg = onMsg,
-      .on_ws_handshake = onHandshakeRequest,
       .on_ws_disconnect = onDisconnect,
       .max_buffered_bytes = 1024 * 512,
       .max_conns = MAX_CONNS,
