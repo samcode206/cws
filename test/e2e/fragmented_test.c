@@ -1,4 +1,4 @@
-#include "sock_util.h"
+#include "../wsockutil.h"
 #include "../../src/ws.h"
 #include <assert.h>
 #include <pthread.h>

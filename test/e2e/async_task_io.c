@@ -1,5 +1,5 @@
 #include "../../src/ws.h"
-#include "./sock_util.h"
+#include "../wsockutil.h"
 #include <assert.h>
 #include <fcntl.h>
 #include <pthread.h>

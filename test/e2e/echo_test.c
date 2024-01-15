@@ -1,6 +1,6 @@
 #include "../../src/ws.h"
 #include "../test.h"
-#include "sock_util.h"
+#include "../wsockutil.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>

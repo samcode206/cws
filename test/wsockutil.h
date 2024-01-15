@@ -27,19 +27,6 @@
 #define OP_PING 0x9
 #define OP_PONG 0xA
 
-#define HDR_END "\r\n"
-
-#define HDRS_END "\r\n\r\n"
-
-#define EXAMPLE_REQUEST                                                        \
-  "GET /chat HTTP/1.1" HDR_END "Host: example.com:8000" HDR_END                \
-  "Upgrade: websocket" HDR_END "Connection: Upgrade" HDR_END                   \
-  "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" HDR_END                        \
-  "Sec-WebSocket-Version: 13" HDRS_END
-
-#define EXAMPLE_REQUEST_EXPECTED_ACCEPT_KEY                                    \
-  "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
-
 static int sock_new_connect(short port, char *addr) {
   struct sockaddr_in _;
   bool ipv6 = 0;
@@ -96,7 +83,6 @@ static int sock_new_connect(short port, char *addr) {
       exit(EXIT_FAILURE);
     };
   }
-
 
   return fd;
 }
@@ -161,34 +147,6 @@ static ssize_t sock_recv(int fd, void *data, size_t len) {
       return n;
     }
   }
-
-  return 0;
-}
-
-static int sock_upgrade_ws(int fd) {
-  ssize_t sent = sock_sendall(fd, EXAMPLE_REQUEST, sizeof EXAMPLE_REQUEST - 1);
-  if (sent != sizeof EXAMPLE_REQUEST - 1) {
-    fprintf(stderr, "failed to send upgrade request\n");
-    exit(EXIT_FAILURE);
-  }
-
-  char buf[4096] = {0};
-
-  ssize_t read = recv(fd, buf, 4096, MSG_PEEK);
-  if (read == 0) {
-    fprintf(stderr, "connection dropped before receiving upgrade response\n");
-    exit(EXIT_FAILURE);
-  } else if (read == -1) {
-    perror("recv");
-    exit(EXIT_FAILURE);
-  }
-
-  char *upgrade_end = strstr(buf, "\r\n\r\n");
-  assert(upgrade_end != NULL);
-  upgrade_end += 4;
-
-  read = recv(fd, buf, upgrade_end - buf, 0);
-  assert(read == upgrade_end - buf);
 
   return 0;
 }
@@ -268,6 +226,52 @@ static unsigned char *new_frame(const char *src, size_t len,
   }
 
   return dst;
+}
+
+#define EXAMPLE_REQUEST                                                        \
+  "GET /chat HTTP/1.1"                                                         \
+  "\r\n"                                                                       \
+  "Host: example.com:8000"                                                     \
+  "\r\n"                                                                       \
+  "Upgrade: websocket"                                                         \
+  "\r\n"                                                                       \
+  "Connection: Upgrade"                                                        \
+  "\r\n"                                                                       \
+  "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="                                \
+  "\r\n"                                                                       \
+  "Sec-WebSocket-Version: 13"                                                  \
+  "\r\n"                                                                       \
+  "\r\n"
+
+#define EXAMPLE_REQUEST_EXPECTED_ACCEPT_KEY                                    \
+  "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+
+static int sock_upgrade_ws(int fd) {
+  ssize_t sent = sock_sendall(fd, EXAMPLE_REQUEST, sizeof EXAMPLE_REQUEST - 1);
+  if (sent != sizeof EXAMPLE_REQUEST - 1) {
+    fprintf(stderr, "failed to send upgrade request\n");
+    exit(EXIT_FAILURE);
+  }
+
+  char buf[4096] = {0};
+
+  ssize_t read = recv(fd, buf, 4096, MSG_PEEK);
+  if (read == 0) {
+    fprintf(stderr, "connection dropped before receiving upgrade response\n");
+    exit(EXIT_FAILURE);
+  } else if (read == -1) {
+    perror("recv");
+    exit(EXIT_FAILURE);
+  }
+
+  char *upgrade_end = strstr(buf, "\r\n\r\n");
+  assert(upgrade_end != NULL);
+  upgrade_end += 4;
+
+  read = recv(fd, buf, upgrade_end - buf, 0);
+  assert(read == upgrade_end - buf);
+
+  return 0;
 }
 
 #endif /* WS_SOCK_UTIL_1235412X */
