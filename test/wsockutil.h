@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+#include <signal.h>
 // utils for socket testing
 
 #define OP_TXT 0x1
