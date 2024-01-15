@@ -1,10 +1,9 @@
 # cws
 
 
-CWS is a high-performance, Linux-only WebSocket server library written in C. It is designed for efficient handling of WebSocket connections and messaging, with a focus on server-side applications requiring high throughput and low latency.
+C Web Sockets (CWS) is a high-performance WebSocket server library written in C, designed for efficient handling of WebSocket connections and messaging in server-side applications requiring high throughput and low latency.
 
 ## Key Features
-- **Linux Optimization**: Tailored specifically for Linux environments for optimal performance.
 - **WebSocket Server Handling**: Efficient management of WebSocket server side operations.
 - **Compliance and Reliability**: Fully compliant with WebSocket standards and passes the extensive Autobahn Test Suite.
 - **Advanced Callbacks**: Extensive callback support for connection handling, message processing, and more.

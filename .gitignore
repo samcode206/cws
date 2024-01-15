@@ -4,6 +4,7 @@ online
 *.a
 *.o
 *.so
+*.dylib
 EchoServer
 MultiEchoServer
 client

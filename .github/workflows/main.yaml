@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v3
       - name: Build Autobahn Server
         run: |
-          sudo WITH_COMPRESSION=1 NO_DEBUG=1 make autobahn
+          sudo WITH_COMPRESSION=1 NO_DEBUG=1 make autobahn && sh check-install.sh
       - name: Start Server
         run: |
           ./server & 
@@ -89,3 +89,31 @@ jobs:
           crossbario/autobahn-testsuite \
           wstest -m fuzzingclient --spec /config/fuzzingclient.json && cd ../../ && \
           python3 ./test/autobahn/report.py "test/autobahn/reports/servers/index.json" "cws" --allow-unimplemented
+
+# would be nice to also run autobahn for OSX
+# but the time multiplier for OSX on GH actions is ridiculous high at 10x
+# and just installing docker takes ~4 minutes (40 minutes after multiplier)
+  macos-build-and-test:
+    runs-on: macos-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v3
+      - name: install and confirm
+        run: sudo make install && sh ./check-install.sh
+      - name: Run E2E (Darwin)
+        run: sh ./e2e.sh -pthread
+      - name: Run Test Suite (Darwin)
+        run: sh ./test.sh
+  
+
+  freebsd-build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build, Install and Test (FreeBSD)
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        prepare: pkg install -y gmake
+        run: WITH_PTHREAD=1 gmake install && sh ./check-install.sh && sh ./e2e.sh -pthread

@@ -5,42 +5,23 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
-#include <sys/mman.h>
-#include <sys/resource.h>
-#include <sys/signal.h>
 #include <sys/socket.h>
-#include <sys/timerfd.h>
 #include <sys/uio.h>
-#include <time.h>
+#include <signal.h>
+// utils for socket testing
 
 #define OP_TXT 0x1
 #define OP_BIN 0x2
 #define OP_CLOSE 0x8
 #define OP_PING 0x9
 #define OP_PONG 0xA
-
-#define HDR_END "\r\n"
-
-#define HDRS_END "\r\n\r\n"
-
-#define EXAMPLE_REQUEST                                                        \
-  "GET /chat HTTP/1.1" HDR_END "Host: example.com:8000" HDR_END                \
-  "Upgrade: websocket" HDR_END "Connection: Upgrade" HDR_END                   \
-  "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" HDR_END                        \
-  "Sec-WebSocket-Version: 13" HDRS_END
-
-#define EXAMPLE_REQUEST_EXPECTED_ACCEPT_KEY                                    \
-  "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 
 static int sock_new_connect(short port, char *addr) {
   struct sockaddr_in _;
@@ -72,7 +53,7 @@ static int sock_new_connect(short port, char *addr) {
   }
 
   int on = 1;
-  if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &on, sizeof on) == -1) {
+  if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on) == -1) {
     perror("setsockopt");
     exit(EXIT_FAILURE);
   };
@@ -98,7 +79,6 @@ static int sock_new_connect(short port, char *addr) {
       exit(EXIT_FAILURE);
     };
   }
-
 
   return fd;
 }
@@ -163,34 +143,6 @@ static ssize_t sock_recv(int fd, void *data, size_t len) {
       return n;
     }
   }
-
-  return 0;
-}
-
-static int sock_upgrade_ws(int fd) {
-  ssize_t sent = sock_sendall(fd, EXAMPLE_REQUEST, sizeof EXAMPLE_REQUEST - 1);
-  if (sent != sizeof EXAMPLE_REQUEST - 1) {
-    fprintf(stderr, "failed to send upgrade request\n");
-    exit(EXIT_FAILURE);
-  }
-
-  char buf[4096] = {0};
-
-  ssize_t read = recv(fd, buf, 4096, MSG_PEEK);
-  if (read == 0) {
-    fprintf(stderr, "connection dropped before receiving upgrade response\n");
-    exit(EXIT_FAILURE);
-  } else if (read == -1) {
-    perror("recv");
-    exit(EXIT_FAILURE);
-  }
-
-  char *upgrade_end = strstr(buf, "\r\n\r\n");
-  assert(upgrade_end != NULL);
-  upgrade_end += 4;
-
-  read = recv(fd, buf, upgrade_end - buf, 0);
-  assert(read == upgrade_end - buf);
 
   return 0;
 }
@@ -270,6 +222,56 @@ static unsigned char *new_frame(const char *src, size_t len,
   }
 
   return dst;
+}
+
+#define EXAMPLE_REQUEST                                                        \
+  "GET /chat HTTP/1.1"                                                         \
+  "\r\n"                                                                       \
+  "Host: example.com:8000"                                                     \
+  "\r\n"                                                                       \
+  "Upgrade: websocket"                                                         \
+  "\r\n"                                                                       \
+  "Connection: Upgrade"                                                        \
+  "\r\n"                                                                       \
+  "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="                                \
+  "\r\n"                                                                       \
+  "Sec-WebSocket-Version: 13"                                                  \
+  "\r\n"                                                                       \
+  "\r\n"
+
+#define EXAMPLE_REQUEST_EXPECTED_ACCEPT_KEY                                    \
+  "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+
+static int sock_upgrade_ws(int fd) {
+  ssize_t sent = sock_sendall(fd, EXAMPLE_REQUEST, sizeof EXAMPLE_REQUEST - 1);
+  if (sent != sizeof EXAMPLE_REQUEST - 1) {
+    fprintf(stderr, "failed to send upgrade request\n");
+    exit(EXIT_FAILURE);
+  }
+
+  char buf[4096] = {0};
+
+  // peek because we don't want to miss any frames
+  // after upgrade we only want to consume the upgrade response
+  // this keeps the function stateless which is more useful for testing
+
+  ssize_t read = recv(fd, buf, 4096, MSG_PEEK);
+  if (read == 0) {
+    fprintf(stderr, "connection dropped before receiving upgrade response\n");
+    exit(EXIT_FAILURE);
+  } else if (read == -1) {
+    perror("recv");
+    exit(EXIT_FAILURE);
+  }
+
+  char *upgrade_end = strstr(buf, "\r\n\r\n");
+  assert(upgrade_end != NULL);
+  upgrade_end += 4;
+
+  read = recv(fd, buf, upgrade_end - buf, 0);
+  assert(read == upgrade_end - buf);
+
+  return 0;
 }
 
 #endif /* WS_SOCK_UTIL_1235412X */

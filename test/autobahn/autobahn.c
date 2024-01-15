@@ -21,7 +21,7 @@ void on_msg(ws_conn_t *c, void *msg, size_t n, uint8_t opcode) {
   }
 
   ws_conn_send_msg(c, msg, n, opcode == OP_PING ? OP_PONG : opcode,
-                   ws_conn_compression_allowed(c) ? 1 : 0);
+                   ws_conn_msg_compressed(c) ? 1 : 0);
 }
 
 void on_close(ws_conn_t *ws_conn, int code, const void *reason) {
@@ -95,7 +95,7 @@ ws_server_t *s = NULL;
 
 void on_sigint(int sig) {
   int ret = ws_server_shutdown(s);
-  printf("ret = %d\n", ret);
+  printf("ws_server_shutdown = %d\n", ret);
 }
 
 void *start_server() {
@@ -104,7 +104,7 @@ void *start_server() {
   const uint16_t port = 9919;
   const int backlog = 1024;
   struct ws_server_params sp = {
-      .addr = "::1",
+      .addr = "127.0.0.1",
       .port = port,
       .on_ws_open = on_open,
       .on_ws_msg = on_msg,
@@ -120,7 +120,7 @@ void *start_server() {
   s = ws_server_create(&sp);
 
   int ret = ws_server_start(s, backlog);
-  printf("ret = %d\n", ret);
+  printf("ws_server_start = %d\n", ret);
 
   ws_server_destroy(s);
 

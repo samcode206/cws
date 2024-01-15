@@ -29,20 +29,43 @@
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/signal.h>
 #include <sys/socket.h>
-#include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
+#include <unistd.h>
 
 #ifdef WITH_COMPRESSION
 #include <zlib.h>
 #endif /* WITH_COMPRESSION */
+
+#if defined(__linux__)
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
+
+#define WS_WITH_EPOLL
+#elif defined(__unix__) || defined(__APPLE__)
+#include <sys/event.h>
+#define WS_WITH_KQUEUE
+#endif
+
+#ifdef WS_WITH_EPOLL
+#ifdef WS_WITH_KQUEUE
+static_assert(0, "epoll can't be used with kqueue");
+#endif
+#endif
+
+#ifdef WS_WITH_KQUEUE
+#ifdef WS_WITH_EPOLL
+static_assert(0, "kqueue can't be used with epoll");
+#endif
+#endif
 
 #ifndef WS_TIMER_SLACK_NS
 #define WS_TIMER_SLACK_NS 50000
@@ -118,17 +141,24 @@ struct ws_timer_queue {
   int timer_fd;             // timer fd for epoll
   ws_timer_min_heap_t *pqu; // min heap of soonest expiring timers
 
+  ws_server_t *base;                // pointer back to server
   size_t avb_nodes;                 // timer nodes available for use
   struct ws_timer *timer_pool_head; // head of the linked list of timers
 };
 
-
 struct async_cb_ctx {
-  void *ctx;                /**< User-defined context passed to the callback function. */
-  ws_server_deferred_cb_t cb;  /**< Callback function to be executed asynchronously. */
+  void *ctx; /**< User-defined context passed to the callback function. */
+  ws_server_deferred_cb_t
+      cb; /**< Callback function to be executed asynchronously. */
 };
 
+#ifdef WS_WITH_EPOLL
+typedef struct epoll_event ws_event_t;
+#endif /* WS_WITH_EPOLL */
 
+#ifdef WS_WITH_KQUEUE
+typedef struct kevent ws_event_t;
+#endif /* WS_WITH_KQUEUE */
 
 typedef struct server {
   size_t max_msg_len;  // max allowed msg length
@@ -139,8 +169,8 @@ typedef struct server {
   unsigned int next_io_timeout;
   unsigned int next_io_timeout_set;
   int active_events; // number of active events per epoll_wait call
-  int fd;            // server file descriptor
-  int epoll_fd;
+  int listener_fd;   // server file descriptor
+  int event_loop_fd;
   void *ctx;
 
   ws_open_cb_t on_ws_open;
@@ -163,9 +193,8 @@ typedef struct server {
 #endif /* WITH_COMPRESSION */
 
   struct ws_timer_queue *tq; // High resolution timer queue
-  size_t internal_polls;     // number of internal fds being watched by epoll
-  int user_epoll;
-  struct epoll_event events[1024];
+  long internal_polls;       // number of internal fds being watched by epoll
+  ws_event_t events[1024];
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
 } ws_server_t;
@@ -200,8 +229,12 @@ static void server_writeable_conns_append(ws_conn_t *c);
 
 static void ws_conn_proccess_frames(ws_conn_t *conn);
 
-static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
-                                struct epoll_event *ev);
+static void ws_server_event_add(ws_server_t *s, int fd, void *ctx);
+
+static void ws_server_event_mod(ws_server_t *s, int fd, void *ctx, bool read,
+                                bool write);
+
+static void ws_server_event_del(ws_server_t *s, int fd);
 
 inline void *ws_server_ctx(ws_server_t *s) { return s->ctx; }
 
@@ -222,7 +255,7 @@ static inline uint_fast8_t io_tmp_err(ssize_t n) {
 }
 
 static unsigned long page_size = 0;
-static size_t get_pagesize() {
+static size_t get_pagesize(void) {
   if (!page_size) {
     long ret = sysconf(_SC_PAGESIZE);
     if (ret <= 0) {
@@ -252,6 +285,7 @@ static size_t get_pagesize() {
 #define CONN_RX_PROCESSING_FRAMES (1u << 11)
 #define CONN_TX_SENDING_FRAGMENTS (1u << 12)
 #define CONN_RX_PAUSED (1u << 13)
+#define CONN_RX_COMPRESSED (1u << 14)
 
 typedef struct mirrored_buf_t mirrored_buf_t;
 struct ws_conn_t {
@@ -275,13 +309,7 @@ static inline bool is_upgraded(ws_conn_t *c) {
 
 static inline void set_upgraded(ws_conn_t *c) { c->flags |= CONN_UPGRADED; }
 
-static inline void clear_upgraded(ws_conn_t *c) { c->flags &= ~CONN_UPGRADED; }
-
-static inline bool is_bin(ws_conn_t *c) {
-  return (c->flags & CONN_RX_BIN) != 0;
-}
-
-static inline void set_bin(ws_conn_t *c) { c->flags |= CONN_RX_BIN; }
+static inline bool is_bin(ws_conn_t *c) { return (c->flags & CONN_RX_BIN) != 0; }
 
 static inline void clear_bin(ws_conn_t *c) { c->flags &= ~CONN_RX_BIN; }
 
@@ -357,6 +385,11 @@ static inline bool is_compression_allowed(ws_conn_t *c) {
   return (c->flags & CONN_COMPRESSION_ALLOWED) != 0;
 }
 
+static inline bool is_msg_compressed(ws_conn_t *c) {
+  return (c->flags & CONN_RX_COMPRESSED) != 0;
+}
+
+#ifdef WITH_COMPRESSION
 static inline void set_compression_allowed(ws_conn_t *c) {
   c->flags |= CONN_COMPRESSION_ALLOWED;
 }
@@ -376,6 +409,15 @@ static inline void set_fragment_compressed(ws_conn_t *c) {
 static inline void clear_fragment_compressed(ws_conn_t *c) {
   c->flags &= ~CONN_RX_COMPRESSED_FRAGMENTS;
 }
+
+static inline void set_msg_compressed(ws_conn_t *c) {
+  c->flags |= CONN_RX_COMPRESSED;
+}
+
+static inline void clear_msg_compressed(ws_conn_t *c) {
+  c->flags &= ~CONN_RX_COMPRESSED;
+}
+#endif /* WITH_COMPRESSION */
 
 static inline bool has_pending_timers(ws_conn_t *c) {
   return (c->flags & CONN_TIMER_QUEUED) != 0;
@@ -507,7 +549,7 @@ static void ws_conn_put(struct ws_conn_pool *p, struct ws_conn_t *c) {
   }
 }
 
-inline bool ws_conn_compression_allowed(ws_conn_t *c) {
+bool ws_conn_compression_allowed(ws_conn_t *c) {
   return is_compression_allowed(c);
 }
 
@@ -515,19 +557,7 @@ void ws_conn_pause_read(ws_conn_t *c) {
   // if we aren't currently paused
   if (!is_read_paused(c)) {
     ws_server_t *s = c->base;
-
-    struct epoll_event ev = {
-        .events = EPOLLRDHUP,
-        .data = {.ptr = c},
-    };
-
-    // if we aren't writeable keep EPOLLOUT
-    if (!is_writeable(c)) {
-      ev.events |= EPOLLOUT;
-    }
-
-    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
-
+    ws_server_event_mod(s, c->fd, c, 0, !is_writeable(c));
     set_read_paused(c);
     clear_processing(c);
   }
@@ -536,17 +566,7 @@ void ws_conn_pause_read(ws_conn_t *c) {
 void ws_conn_resume_reads(ws_conn_t *c) {
   if (is_read_paused(c)) {
     ws_server_t *s = c->base;
-
-    struct epoll_event ev = {
-        .events = EPOLLIN | EPOLLRDHUP,
-        .data = {.ptr = c},
-    };
-
-    if (!is_writeable(c)) {
-      ev.events |= EPOLLOUT;
-    }
-
-    ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
+    ws_server_event_mod(s, c->fd, c, true, !is_writeable(c));
     clear_read_paused(c);
 
     // if there is data in the buffer after resuming
@@ -598,16 +618,17 @@ void ws_conn_destroy(ws_conn_t *c, unsigned long reason) {
   }
   server_pending_timers_remove(c);
 
-  struct epoll_event ev = {
-      0,
-  };
+#ifdef WS_WITH_EPOLL
+  ws_server_event_del(s, c->fd);
+#endif /* WS_WITH_EPOLL */
 
-  ws_server_epoll_ctl(c->base, EPOLL_CTL_DEL, c->fd, &ev);
   clear_writeable(c);
   set_read_paused(c);
   close(c->fd);
   mark_closed(c);
 
+  c->read_timeout = 0;
+  c->write_timeout = 0;
   // needed_bytes holds the reason
   c->needed_bytes = reason;
   s->on_ws_disconnect(c, reason);
@@ -622,11 +643,11 @@ inline void *ws_conn_ctx(ws_conn_t *c) { return c->ctx; }
 
 inline void ws_conn_set_ctx(ws_conn_t *c, void *ctx) { c->ctx = ctx; }
 
-inline bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
+bool ws_conn_msg_bin(ws_conn_t *c) { return is_bin(c); }
 
 int ws_conn_fd(ws_conn_t *c) { return c->fd; }
 
-inline bool ws_conn_is_read_paused(ws_conn_t *c) { return is_read_paused(c); }
+bool ws_conn_is_read_paused(ws_conn_t *c) { return is_read_paused(c); }
 
 const char *ws_conn_err_table[] = {
     "Unkown Error Code",
@@ -716,6 +737,36 @@ struct mirrored_buf_pool {
                                  // respective segment of base
 };
 
+// random path for shm_open
+#ifdef WS_WITH_KQUEUE
+static inline void shm_name(char str[31]) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+
+  unsigned int seed =
+      ((unsigned int)(ts.tv_nsec + ts.tv_sec)) ^
+      (unsigned int)(uintptr_t)pthread_self(); // Unique seed for each thread
+
+  unsigned int randValue = 100;
+  for (size_t i = 0, bitsUsed = 0; i < 31; ++i) {
+    if (bitsUsed == 0 || bitsUsed >= (sizeof(int) * 8 - 5)) {
+      randValue = (unsigned int)rand_r(&seed); // Thread-safe random number
+      bitsUsed = 0;
+    }
+
+    unsigned value = ((randValue) >> ((bitsUsed / 5) * 5)) % 52;
+    if (value < 26) {
+      str[i] = (char)('A' + value);
+    } else {
+      str[i] = (char)('a' + (value - 26));
+    }
+    bitsUsed += 5; // Move to the next 5-bit segment
+  }
+
+  str[31] = '\0';
+}
+#endif
+
 static struct mirrored_buf_pool *
 mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   size_t page_size = get_pagesize();
@@ -763,11 +814,29 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
                           align_to(sizeof(struct mirrored_buf_pool), 32) +
                           mirrored_bufs_total_size);
 
+#ifdef WS_WITH_EPOLL
   pool->fd = memfd_create("buf", 0);
   if (pool->fd == -1) {
     perror("memfd_create");
     return NULL;
   }
+
+#else
+  char pname[32];
+  pname[31] = '\0';
+  shm_name(pname);
+  pname[0] = '/';
+  pool->fd = shm_open(pname, O_CREAT | O_RDWR | O_EXCL, 600);
+  if (pool->fd == -1) {
+    perror("shm_open");
+    return NULL;
+  }
+
+  if (shm_unlink(pname) == -1) {
+    perror("shm_unlink");
+  };
+
+#endif
 
   pool->buf_sz = buf_sz;
   pool->base = ((uint8_t *)pool_mem) + pool_sz;
@@ -934,18 +1003,6 @@ static inline size_t buf_space(mirrored_buf_t *r) {
 
 static inline uint8_t *buf_peek(mirrored_buf_t *r) { return r->buf + r->rpos; }
 
-static inline uint8_t *buf_peek_at(mirrored_buf_t *r, size_t at) {
-  return r->buf + at;
-}
-
-static inline uint8_t *buf_peekn(mirrored_buf_t *r, size_t n) {
-  if (buf_len(r) < n) {
-    return NULL;
-  }
-
-  return r->buf + r->rpos;
-}
-
 static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n) {
   if (buf_space(r) < n) {
     return -1;
@@ -988,16 +1045,6 @@ static inline int buf_consume(mirrored_buf_t *r, size_t n) {
   return 0;
 }
 
-static inline void buf_move(mirrored_buf_t *src_b, mirrored_buf_t *dst_b,
-                            size_t n) {
-  buf_put(dst_b, src_b->buf + src_b->rpos, n);
-  buf_consume(src_b, n);
-}
-
-static inline void buf_debug(mirrored_buf_t *r, const char *label) {
-  printf("%s rpos=%zu wpos=%zu\n", label, r->rpos, r->wpos);
-}
-
 static inline ssize_t buf_recv(mirrored_buf_t *r, int fd, size_t len,
                                int flags) {
   ssize_t n = recv(fd, r->buf + r->wpos, len, flags);
@@ -1035,7 +1082,7 @@ static ssize_t conn_readn(ws_conn_t *conn, size_t n) {
 static int conn_read(ws_conn_t *conn) {
   mirrored_buf_t *rb = conn->recv_buf;
   // check wether we need to read more first
-  if (is_upgraded(conn) &
+  if (is_upgraded(conn) &&
       (buf_len(conn->recv_buf) - conn->fragments_len >= conn->needed_bytes)) {
     return 0;
   }
@@ -1075,26 +1122,12 @@ static int conn_read(ws_conn_t *conn) {
 
 static void ws_conn_notify_on_writeable(ws_conn_t *conn) {
   clear_writeable(conn);
-  struct epoll_event ev = {
-      .events = EPOLLOUT | EPOLLRDHUP,
-      .data = {.ptr = conn},
-  };
 
-  if (is_sending_fragments(conn)) {
-    // keep EPOLLIN armed if we are in the sending_fragments state
-    // this is so that we can continue to read control frames
-    // we usually disable reading if there is backpressure
-    // until the client has read what was sent but this case
-    // we may be in the sending_fragments state for too long and don't wanna
-    // miss any ping/pongs or other messages that may cause a read timeout
-    // TODO : add a pause function for when the client wants to stop reading
-    // from a connection temporarily
-    ev.events |= EPOLLIN;
-  } else {
+  ws_server_event_mod(conn->base, conn->fd, conn, is_sending_fragments(conn),
+                      true);
+
+  if (!is_sending_fragments(conn))
     set_read_paused(conn);
-  }
-
-  ws_server_epoll_ctl(conn->base, EPOLL_CTL_MOD, conn->fd, &ev);
 }
 
 static int conn_drain_write_buf(ws_conn_t *conn) {
@@ -1392,9 +1425,8 @@ static int ws_conn_handshake_parse(char *raw_req, struct ws_conn_handshake *hs,
   return 0;
 }
 
-static enum ws_send_status
-ws_conn_do_handshake_reply(ws_conn_t *c,
-                           struct ws_conn_handshake_response *resp) {
+enum ws_send_status
+ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
   // bail out if the connection is closed or already upgraded
   if (is_closed(c) || is_upgraded(c)) {
     return WS_SEND_DROPPED_NOT_ALLOWED;
@@ -1536,7 +1568,7 @@ ws_conn_handshake_send_default_response(ws_conn_t *conn,
 
   mirrored_buf_put(s->buffer_pool, conn->recv_buf);
   conn->recv_buf = NULL;
-  ws_conn_do_handshake_reply(conn, &r);
+  ws_conn_handshake_reply(conn, &r);
 }
 
 static void handle_bad_request(ws_conn_t *conn) {
@@ -1564,7 +1596,7 @@ static void handle_bad_request(ws_conn_t *conn) {
   mirrored_buf_put(conn->base->buffer_pool, conn->recv_buf);
   conn->recv_buf = NULL;
   set_write_shutdown(conn);
-  ws_conn_do_handshake_reply(conn, &r);
+  ws_conn_handshake_reply(conn, &r);
 }
 
 static void ws_conn_do_handshake(ws_conn_t *conn) {
@@ -1653,11 +1685,6 @@ static void ws_conn_do_handshake(ws_conn_t *conn) {
     handle_bad_request(conn);
     return;
   }
-}
-
-inline enum ws_send_status
-ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp) {
-  return ws_conn_do_handshake_reply(c, resp);
 }
 
 const struct http_header *
@@ -1776,7 +1803,7 @@ static unsigned frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
   switch (raw_len) {
   case 126:
     if (rbuf_len > 3) {
-      *res = (buf[2] << 8) | buf[3];
+      *res = (size_t)(buf[2] << 8) | buf[3];
     } else {
       return 4;
     }
@@ -1794,10 +1821,6 @@ static unsigned frame_decode_payload_len(uint8_t *buf, size_t rbuf_len,
   }
 
   return 0;
-}
-
-static inline bool is_compressed_msg(uint8_t const *buf) {
-  return (buf[0] & 0x40) != 0;
 }
 
 static inline int frame_has_unsupported_reserved_bits_set(ws_conn_t *c,
@@ -1846,8 +1869,8 @@ static void msg_unmask(uint8_t *restrict src, uint8_t const *restrict mask,
 
 static inline uint_fast8_t frame_valid(ws_conn_t *c, uint8_t const *frame,
                                        uint_fast8_t fin, uint_fast8_t opcode) {
-  if ((((fin == 0) & ((opcode > 2) & (opcode != OP_CONT))) |
-       (frame_has_unsupported_reserved_bits_set(c, frame) == 1) |
+  if ((((fin == 0) && ((opcode > 2) && (opcode != OP_CONT))) ||
+       (frame_has_unsupported_reserved_bits_set(c, frame) == 1) ||
        (frame_is_masked(frame) == 0)) == 0) {
     return 1;
   } else {
@@ -1891,6 +1914,12 @@ static inline void ws_server_call_on_msg(ws_server_t *s, ws_conn_t *conn,
   msg[payload_len] = tmp;
 }
 
+#ifdef WITH_COMPRESSION
+static inline bool is_compressed_msg(uint8_t const *buf) {
+  return (buf[0] & 0x40) != 0;
+}
+#endif
+
 static void ws_conn_proccess_frames(ws_conn_t *conn) {
   ws_server_t *s = conn->base;
 
@@ -1913,7 +1942,12 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
 
       uint_fast8_t fin = frame_fin(frame);
       uint_fast8_t opcode = frame_opcode(frame);
+
+#ifdef WITH_COMPRESSION
       bool is_compressed = is_compressed_msg(frame);
+      if (is_compressed)
+        set_msg_compressed(conn);
+#endif /* WITH_COMPRESSION */
 
       if (frame_valid(conn, frame, fin, opcode)) {
         // make sure we can get the full msg
@@ -2043,9 +2077,12 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
 
           // set the state to fragmented after validation
           set_fragmented(conn);
+#ifdef WITH_COMPRESSION
           if (is_compressed) {
+            set_msg_compressed(conn);
             set_fragment_compressed(conn);
           }
+#endif
 
           // place back at the frame start which contains the header & mask
           // we want to get rid of but ensure to subtract by the frame_gap to
@@ -2119,7 +2156,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
               return;
             };
 
-            code = (msg[0] << 8) | msg[1];
+            code = (uint16_t)(msg[0] << 8) | msg[1];
             if (code < 1000 || code == 1004 || code == 1100 || code == 1005 ||
                 code == 1006 || code == 1015 || code == 1016 || code == 2000 ||
                 code == 2999) {
@@ -2145,7 +2182,7 @@ static void ws_conn_proccess_frames(ws_conn_t *conn) {
     }
   } /* loop end */
 
-  if ((conn->send_buf != NULL) & (is_writeable(conn)) & (!is_closed(conn))) {
+  if ((conn->send_buf != NULL) && (is_writeable(conn))) {
     conn_drain_write_buf(conn);
   }
 
@@ -2495,7 +2532,7 @@ enum ws_send_status ws_conn_send_msg(ws_conn_t *c, void *msg, size_t n,
 }
 
 void ws_conn_flush_pending(ws_conn_t *c) {
-  if (!is_closed(c) & (c->send_buf != NULL) & is_writeable(c)) {
+  if ((c->send_buf != NULL) && is_writeable(c)) {
     conn_drain_write_buf(c);
   }
 }
@@ -2533,7 +2570,7 @@ bool ws_conn_can_put_msg(ws_conn_t *c, size_t msg_len) {
   }
 }
 
-inline size_t ws_conn_pending_bytes(ws_conn_t *c) {
+size_t ws_conn_pending_bytes(ws_conn_t *c) {
   if (c->send_buf) {
     return buf_len(c->send_buf);
   } else {
@@ -2543,7 +2580,7 @@ inline size_t ws_conn_pending_bytes(ws_conn_t *c) {
 
 bool ws_conn_msg_ready(ws_conn_t *c) {
   mirrored_buf_t *rb = c->recv_buf;
-  if (is_upgraded(c) & !is_closed(c) & (rb != NULL)) {
+  if (is_upgraded(c) && !is_closed(c) && (rb != NULL)) {
     size_t val = 0;
     // note* : this doesn't account for total_trimmed and may be wrong
     unsigned int ret = frame_decode_payload_len(
@@ -2555,7 +2592,11 @@ bool ws_conn_msg_ready(ws_conn_t *c) {
   }
 }
 
-inline bool ws_conn_sending_fragments(ws_conn_t *c) {
+bool ws_conn_msg_compressed(ws_conn_t *c) {
+  return is_msg_compressed(c);
+}
+
+bool ws_conn_sending_fragments(ws_conn_t *c) {
   return is_sending_fragments(c);
 }
 
@@ -2645,16 +2686,11 @@ static void ws_server_set_io_timeout(ws_server_t *s, unsigned int *restrict res,
 
 static inline unsigned ws_server_time(ws_server_t *s) { return s->server_time; }
 
-static void ws_server_register_timer_queue(ws_server_t *s, int *tfd) {
-  assert(s->tq->timer_fd > 0);
-
-  struct epoll_event ev = {
-      .events = EPOLLIN,
-      .data = {.ptr = tfd},
-  };
-
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->tq->timer_fd, &ev);
+#ifdef WS_WITH_EPOLL
+static void ws_server_register_timer_queue(ws_server_t *s, void *id) {
+  ws_server_event_add(s, s->tq->timer_fd, id);
 }
+#endif
 
 static void conn_list_append(struct conn_list *cl, ws_conn_t *conn) {
   if (cl->len + 1 <= cl->cap) {
@@ -2821,7 +2857,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
 
   for (size_t i = 0; i < n; ++i) {
     ws_conn_t *c = s->writeable_conns.conns[i];
-    if (!is_closed(c) & (c->send_buf != NULL) & is_writeable(c)) {
+    if (!is_closed(c) && (c->send_buf != NULL) && is_writeable(c)) {
       conn_drain_write_buf(c);
     }
     clear_write_queued(c);
@@ -2858,23 +2894,47 @@ static int ws_server_socket_bind(ws_server_t *s,
 
   int ret;
 
-  s->fd = socket(ipv6 ? AF_INET6 : AF_INET,
-                 SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
-  if (s->fd < 0) {
+#if defined(SOCK_CLOEXEC) && defined(SOCK_NONBLOCK)
+  s->listener_fd =
+      socket(ipv6 ? AF_INET6 : AF_INET,
+             SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+  if (s->listener_fd < 0) {
     return -1;
   }
+
+#else
+  s->listener_fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (s->listener_fd < 0) {
+    return -1;
+  }
+
+  if (fcntl(s->listener_fd, F_SETFL,
+            fcntl(s->listener_fd, F_GETFL) | O_NONBLOCK) == -1) {
+    close(s->listener_fd);
+    return -1;
+  };
+#endif
 
   // socket config
   int on = 1;
-  ret = setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &on,
-                   sizeof(int));
+#if defined(SO_REUSEPORT)
+  ret = setsockopt(s->listener_fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(int));
   if (ret < 0) {
     return -1;
   }
+#endif
+
+#if defined(SO_REUSEADDR)
+  ret = setsockopt(s->listener_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(int));
+  if (ret < 0) {
+    return -1;
+  }
+#endif
 
   if (ipv6) {
     int off = 0;
-    ret = setsockopt(s->fd, SOL_IPV6, IPV6_V6ONLY, &off, sizeof(int));
+    ret = setsockopt(s->listener_fd, IPPROTO_IPV6, IPV6_V6ONLY, &off,
+                     sizeof(int));
     if (ret < 0) {
       return -1;
     }
@@ -2885,7 +2945,8 @@ static int ws_server_socket_bind(ws_server_t *s,
     srv_addr.sin6_port = htons(port);
     inet_pton(AF_INET6, addr, &srv_addr.sin6_addr);
 
-    ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    ret = bind(s->listener_fd, (const struct sockaddr *)&srv_addr,
+               sizeof(srv_addr));
     if (ret < 0) {
       return -1;
     }
@@ -2896,7 +2957,8 @@ static int ws_server_socket_bind(ws_server_t *s,
     srv_addr.sin_port = htons(port);
     inet_pton(AF_INET, addr, &srv_addr.sin_addr);
 
-    ret = bind(s->fd, (const struct sockaddr *)&srv_addr, sizeof(srv_addr));
+    ret = bind(s->listener_fd, (const struct sockaddr *)&srv_addr,
+               sizeof(srv_addr));
     if (ret < 0) {
       return -1;
     }
@@ -2953,8 +3015,9 @@ static void ws_server_register_buffers(ws_server_t *s,
   struct rlimit rlim = {0};
   getrlimit(RLIMIT_NOFILE, &rlim);
 
-  unsigned max_map_count;
+  unsigned max_map_count = 0;
 
+#ifdef WS_WITH_EPOLL
   FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
   if (f == NULL) {
     perror("Error Opening /proc/sys/vm/max_map_count");
@@ -2965,6 +3028,11 @@ static void ws_server_register_buffers(ws_server_t *s,
 
     fclose(f);
   }
+
+#else
+  // just set to a high value so it gets out of the way
+  max_map_count = 4294967295;
+#endif
 
   size_t lim = rlim.rlim_cur > 16 ? rlim.rlim_cur - 16 : rlim.rlim_cur;
   max_map_count = max_map_count ? max_map_count : 65530;
@@ -2982,7 +3050,8 @@ static void ws_server_register_buffers(ws_server_t *s,
             "[WARN] params->max_conns %u may be too high. RLIMIT_NOFILE=%zu "
             "only %zu can be opened for other tasks when running at "
             "max_conns\n",
-            s->max_conns, rlim.rlim_cur, rlim.rlim_cur - s->max_conns);
+            s->max_conns, (size_t)rlim.rlim_cur,
+            (size_t)rlim.rlim_cur - s->max_conns);
       }
     }
 
@@ -2990,7 +3059,7 @@ static void ws_server_register_buffers(ws_server_t *s,
     s->max_conns = (unsigned)(lim < 4294967296 ? lim : 4294967295);
     if (!params->silent) {
       fprintf(stderr, "[WARN] params->max_conns %u exceeds RLIMIT_NOFILE %zu\n",
-              params->max_conns, rlim.rlim_cur);
+              params->max_conns, (size_t)rlim.rlim_cur);
     }
   }
 
@@ -3060,6 +3129,7 @@ static void ws_server_register_buffers(ws_server_t *s,
 
   s->tq = ws_timer_queue_init(s->tq);
   s->internal_polls++;
+  s->tq->base = s;
 }
 
 #ifdef WITH_COMPRESSION
@@ -3091,19 +3161,23 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
     s->ctx = params->ctx;
   }
 
-  // init epoll
-  s->epoll_fd = epoll_create1(0);
-  if (s->epoll_fd < 0) {
+#ifdef WS_WITH_EPOLL
+  s->event_loop_fd = epoll_create1(0);
+#else
+  s->event_loop_fd = kqueue();
+#endif
+
+  if (s->event_loop_fd < 0) {
     free(s);
     return NULL;
   }
 
   int res = ws_server_socket_bind(s, params);
   if (res != 0) {
-    if (s->fd != -1)
-      close(s->fd);
+    if (s->listener_fd != -1)
+      close(s->listener_fd);
 
-    close(s->epoll_fd);
+    close(s->event_loop_fd);
     free(s);
     return NULL;
   }
@@ -3146,9 +3220,14 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
   return s;
 }
 
-static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
-                                struct epoll_event *ev) {
-  if (epoll_ctl(s->epoll_fd, op, fd, ev) == -1) {
+static void ws_server_event_add(ws_server_t *s, int fd, void *ctx) {
+#ifdef WS_WITH_EPOLL
+  ws_event_t ev = {
+      .events = EPOLLIN | EPOLLRDHUP,
+      .data.ptr = ctx,
+  };
+
+  if (epoll_ctl(s->event_loop_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
     if (s->on_ws_err) {
       int err = errno;
       s->on_ws_err(s, err);
@@ -3158,6 +3237,91 @@ static void ws_server_epoll_ctl(ws_server_t *s, int op, int fd,
       exit(EXIT_FAILURE);
     }
   };
+
+#else
+  ws_event_t ev[2];
+  EV_SET(ev, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, ctx);
+  EV_SET(ev + 1, fd, EVFILT_WRITE, EV_ADD | EV_DISABLE, 0, 0, ctx);
+  if (kevent(s->event_loop_fd, ev, 2, NULL, 0, NULL) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("kevent");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+#endif /* WS_WITH_EPOLL */
+}
+
+static void ws_server_event_mod(ws_server_t *s, int fd, void *ctx, bool read,
+                                bool write) {
+#ifdef WS_WITH_EPOLL
+  ws_event_t ev;
+  ev.data.ptr = ctx;
+  ev.events = EPOLLRDHUP;
+
+  if (read)
+    ev.events |= EPOLLIN;
+
+  if (write)
+    ev.events |= EPOLLOUT;
+
+  if (epoll_ctl(s->event_loop_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("epoll_ctl");
+      exit(EXIT_FAILURE);
+    }
+  };
+
+#else
+  ws_event_t ev[2];
+  EV_SET(ev, fd, EVFILT_READ, read ? EV_ENABLE : EV_DISABLE, 0, 0, ctx);
+  EV_SET(ev + 1, fd, EVFILT_WRITE, write ? EV_ENABLE : EV_DISABLE, 0, 0, ctx);
+  if (kevent(s->event_loop_fd, ev, 2, NULL, 0, NULL) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+      exit(EXIT_FAILURE);
+    } else {
+      perror("kevent");
+      exit(EXIT_FAILURE);
+    }
+  }
+#endif
+}
+
+static void ws_server_event_del(ws_server_t *s, int fd) {
+#ifdef WS_WITH_EPOLL
+  ws_event_t ev = {0};
+  if (epoll_ctl(s->event_loop_fd, EPOLL_CTL_DEL, fd, &ev) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+    } else {
+      perror("epoll_ctl");
+    }
+  };
+
+#else
+  ws_event_t ev[2];
+  EV_SET(ev, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+  EV_SET(ev + 1, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+  if (kevent(s->event_loop_fd, ev, 2, NULL, 0, NULL) == -1) {
+    if (s->on_ws_err) {
+      int err = errno;
+      s->on_ws_err(s, err);
+    } else {
+      perror("kevent");
+    }
+  }
+#endif
 }
 
 static void ws_server_new_conn(ws_server_t *s, int client_fd) {
@@ -3187,12 +3351,8 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd) {
   assert(conn->send_buf == NULL);
   assert(conn->recv_buf == NULL);
 
-  struct epoll_event ev = {
-      .events = EPOLLIN | EPOLLRDHUP,
-      .data = {.ptr = conn},
-  };
+  ws_server_event_add(s, client_fd, conn);
 
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, client_fd, &ev);
   ++s->open_conns;
 
   server_pending_timers_append(conn);
@@ -3200,7 +3360,9 @@ static void ws_server_new_conn(ws_server_t *s, int client_fd) {
 
 static bool ws_server_accept_err_recoverable(int err) {
   switch (err) {
+#if defined(ENONET)
   case ENONET:
+#endif
   case EPROTO:
   case ENOPROTOOPT:
   case EOPNOTSUPP:
@@ -3222,16 +3384,41 @@ static bool ws_server_accept_err_recoverable(int err) {
   }
 }
 
+static inline int ws_server_accept(ws_server_t *s, struct sockaddr *sockaddr,
+                                   socklen_t *socklen) {
+
+#ifdef WS_WITH_EPOLL
+  return accept4(s->listener_fd, sockaddr, socklen,
+                 SOCK_NONBLOCK | SOCK_CLOEXEC);
+#else
+  int fd = accept(s->listener_fd, sockaddr, socklen);
+  if (fd == -1)
+    return -1;
+  int flags = fcntl(fd, F_GETFL);
+  if (flags == -1) {
+    close(fd);
+    return -1;
+  }
+
+  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+    close(fd);
+    return -1;
+  };
+
+  return fd;
+#endif
+}
+
 static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
                                       socklen_t *socklen) {
   size_t accepts = ACCEPTS_PER_TICK;
 
   int sockopt_on = 1;
   while (accepts--) {
-    if (s->fd == -1) {
+    if (s->listener_fd == -1) {
       return;
     }
-    int fd = accept4(s->fd, sockaddr, socklen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    int fd = ws_server_accept(s, sockaddr, socklen);
     if (fd == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         return; // done
@@ -3272,7 +3459,7 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
         };
 
         // disable Nagle's algorithm
-        if (setsockopt(fd, SOL_TCP, TCP_NODELAY, &sockopt_on,
+        if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &sockopt_on,
                        sizeof(sockopt_on)) == -1) {
           if (s->on_ws_err) {
             int err = errno;
@@ -3298,28 +3485,27 @@ static void ws_server_conns_establish(ws_server_t *s, struct sockaddr *sockaddr,
 }
 
 static int ws_server_listen_and_serve(ws_server_t *s, int backlog) {
-  int ret = listen(s->fd, backlog);
+  int ret = listen(s->listener_fd, backlog);
   if (ret < 0) {
     return ret;
   }
 
-  struct epoll_event ev = {
-      .events = EPOLLIN,
-      .data = {.ptr = s},
-  };
-
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->fd, &ev);
+  ws_server_event_add(s, s->listener_fd, s);
   s->internal_polls++;
 
   return 0;
 }
 
-static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
+static int ws_server_event_wait(ws_server_t *s, int epfd) {
 
   if (likely(s->internal_polls > 0)) {
     int n_evs;
     for (;;) {
+#ifdef WS_WITH_EPOLL
       n_evs = epoll_wait(epfd, s->events, 1024, -1);
+#else
+      n_evs = kevent(epfd, NULL, 0, s->events, 1024, NULL);
+#endif
       if (likely(n_evs >= 0)) {
         break;
       } else {
@@ -3330,7 +3516,11 @@ static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
             int err = errno;
             s->on_ws_err(s, err);
           } else {
+#ifdef WS_WITH_EPOLL
             perror("epoll_wait");
+#else
+            perror("kevent");
+#endif
             exit(EXIT_FAILURE);
           }
           return -1;
@@ -3346,11 +3536,13 @@ static int ws_server_do_epoll_wait(ws_server_t *s, int epfd) {
 static void ws_server_async_runner_run_pending_callbacks(
     ws_server_t *s, struct ws_server_async_runner *arptr);
 
+#ifdef WS_WITH_EPOLL
 static inline void timer_consume(int tfd) {
   uint64_t _;
   read(tfd, &_, 8);
   (void)_;
 }
+#endif
 
 static void ws_server_on_tick(ws_server_t *s, void *ctx) {
   (void)ctx;
@@ -3436,17 +3628,63 @@ static void ws_server_schedule_next_io_timeout(ws_server_t *s) {
   }
 }
 
+static inline void *ws_event_udata(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
+  return e->data.ptr;
+#else
+  return e->udata;
+#endif
+}
+
+static inline uint_fast32_t ws_event_timer(ws_server_t *s, ws_event_t *e) {
+  return s->tq == ws_event_udata(e);
+}
+
+static inline uint_fast32_t ws_event_async_runner(ws_server_t *s,
+                                                  ws_event_t *e) {
+  return &s->async_runner == ws_event_udata(e);
+}
+
+static inline uint_fast32_t ws_event_server(ws_server_t *s, ws_event_t *e) {
+  return s == ws_event_udata(e);
+}
+
+static inline uint_fast32_t ws_event_conn_err(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
+  return e->events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR);
+#else
+  return e->flags & EV_EOF;
+#endif
+}
+
+static inline uint_fast32_t ws_event_writeable(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
+  return (e->events & EPOLLOUT);
+#else
+  return e->filter == EVFILT_WRITE;
+#endif
+}
+
+static inline uint_fast32_t ws_event_readable(ws_event_t *e) {
+#ifdef WS_WITH_EPOLL
+  return (e->events & EPOLLIN);
+#else
+  return e->filter == EVFILT_READ;
+#endif
+}
+
 int ws_server_start(ws_server_t *s, int backlog) {
   int ret = ws_server_listen_and_serve(s, backlog);
   if (ret < 0) {
     return ret;
   }
 
-  struct ws_server_async_runner *arptr = s->async_runner;
-  int epfd = s->epoll_fd;
-  int tqfd = s->tq->timer_fd;
+  int epfd = s->event_loop_fd;
 
-  ws_server_register_timer_queue(s, &tqfd);
+#ifdef WS_WITH_EPOLL
+  ws_server_register_timer_queue(s, s->tq);
+#endif /* WS_WITH_EPOLL */
+
   ws_server_time_update(s);
   struct timespec ts = {.tv_sec = SECONDS_PER_TICK, .tv_nsec = 0};
   ws_server_set_timeout(s, &ts, NULL, ws_server_on_tick);
@@ -3455,82 +3693,72 @@ int ws_server_start(ws_server_t *s, int backlog) {
   socklen_t client_socklen;
   client_socklen = sizeof client_sockaddr;
 
-  struct epoll_event ev = {
-      0,
-  };
-
   for (;;) {
     s->active_events = 0;
-    int n_evs = ws_server_do_epoll_wait(s, epfd);
+    int n_evs = ws_server_event_wait(s, epfd);
     if (unlikely((n_evs == 0) | (n_evs == -1))) {
       return n_evs;
     }
 
     s->active_events = n_evs;
 
-    bool check_user_epoll = false;
-    int *user_epoll_ptr = &s->user_epoll;
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if ((s->events[i].data.ptr == user_epoll_ptr) |
-          (s->events[i].data.ptr == arptr) | (s->events[i].data.ptr == &tqfd)) {
+      if (ws_event_async_runner(s, s->events + i) |
+          ws_event_timer(s, s->events + i)) {
 
-        if (s->events[i].data.ptr == &tqfd) {
-          timer_consume(tqfd);
+        if (ws_event_timer(s, s->events + i)) {
+#ifdef WS_WITH_EPOLL
+          timer_consume(s->tq->timer_fd);
+#endif
           ws_timer_queue_run_expired_callbacks(s->tq, s);
-        } else if (s->events[i].data.ptr == arptr) {
-          ws_server_async_runner_run_pending_callbacks(s, arptr);
         } else {
-          check_user_epoll = true;
+          ws_server_async_runner_run_pending_callbacks(s, s->async_runner);
         }
 
-      } else if (s->events[i].data.ptr == s) {
+      } else if (ws_event_server(s, s->events + i)) {
         ws_server_conns_establish(s, (struct sockaddr *)&client_sockaddr,
                                   &client_socklen);
       } else {
-        ws_conn_t *c = s->events[i].data.ptr;
-        if (s->events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
+        ws_conn_t *c = ws_event_udata(s->events + i);
+        if (ws_event_conn_err(s->events + i)) {
           c->fragments_len = 0; // EOF
-          ws_conn_destroy(s->events[i].data.ptr, WS_ERR_READ);
+          ws_conn_destroy(c, WS_ERR_READ);
         } else {
-          if (s->events[i].events & EPOLLOUT) {
-            if (!is_closed(c)) {
-              int ret = conn_drain_write_buf(c);
-              if (ret == 1) {
-                if (!is_write_shutdown(c)) {
-                  if (s->on_ws_drain) {
-                    s->on_ws_drain(c);
-                  }
-
-                  if (!is_upgraded(c)) {
-                    set_upgraded(c);
-                    c->needed_bytes = 2;
-                    ws_conn_set_read_timeout(c, READ_TIMEOUT);
-                    s->on_ws_open(c);
-                  }
-                } else {
-                  // we wrote everything we needed to write
-                  // we can shutdown our write end
-                  if (conn_shutdown_wr(c) == -1) {
-                    continue; // skip arming EPOLLIN if this fails
-                  };
+          if ((ws_event_writeable(s->events + i) != 0) &&
+              (c->send_buf != NULL)) {
+            int ret = conn_drain_write_buf(c);
+            if (ret == 1) {
+              if (!is_write_shutdown(c)) {
+                if (s->on_ws_drain) {
+                  s->on_ws_drain(c);
                 }
 
-                // we must recheck if the connection is still writeable
-                // it may be that more back pressure was built when
-                // s->on_ws_drain was called if that's the case we want to keep
-                // waiting on EPOLLOUT before resuming reads
-                if (is_writeable(c)) {
-                  ev.events = EPOLLIN | EPOLLRDHUP;
-                  ev.data.ptr = c;
-                  ws_server_epoll_ctl(s, EPOLL_CTL_MOD, c->fd, &ev);
-
-                  clear_read_paused(c);
+                if (!is_upgraded(c)) {
+                  set_upgraded(c);
+                  c->needed_bytes = 2;
+                  ws_conn_set_read_timeout(c, READ_TIMEOUT);
+                  s->on_ws_open(c);
                 }
+              } else {
+                // we wrote everything we needed to write
+                // we can shutdown our write end
+                if (conn_shutdown_wr(c) == -1) {
+                  continue; // skip arming EPOLLIN if this fails
+                };
+              }
+
+              // we must recheck if the connection is still writeable
+              // it may be that more back pressure was built when
+              // s->on_ws_drain was called if that's the case we want to keep
+              // waiting on EPOLLOUT before resuming reads
+              if (is_writeable(c)) {
+                ws_server_event_mod(s, c->fd, c, true, false);
+                clear_read_paused(c);
               }
             }
           }
-          if (s->events[i].events & EPOLLIN) {
+          if (ws_event_readable(s->events + i)) {
             if (!is_closed(c)) {
               if (!c->recv_buf) {
                 c->recv_buf = mirrored_buf_get(s->buffer_pool);
@@ -3547,33 +3775,6 @@ int ws_server_start(ws_server_t *s, int backlog) {
           }
         }
       }
-    }
-
-    if (check_user_epoll) {
-      int count;
-      for (;;) {
-        count = epoll_wait(*user_epoll_ptr, s->events, 1024, 0);
-        if (unlikely(count == 0 || count == -1)) {
-          if (count == -1 && errno == EINTR) {
-            continue;
-          } else {
-            break;
-          }
-        } else {
-          break;
-        }
-      }
-
-      if (count > 0) {
-        for (int i = 0; i < count; ++i) {
-          ws_poll_cb_ctx_t *ctx = s->events[i].data.ptr;
-          if (ctx) {
-            ctx->cb(s, ctx, s->events[i].events);
-          }
-        }
-      }
-
-      check_user_epoll = false;
     }
 
     // drain all outgoing before calling epoll_wait
@@ -3620,23 +3821,34 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
   ar->pending = ws_server_async_runner_buf_create(init_cap);
   ar->ready = ws_server_async_runner_buf_create(init_cap);
 
+#ifdef WS_WITH_EPOLL
   ar->chanfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
   if (ar->chanfd == -1) {
     perror("eventfd");
     exit(EXIT_FAILURE);
   }
 
+#else
+  // just need to set up the ident for kqueue
+  ar->chanfd = 2147483646;
+
+#endif /*WS_WITH_EPOLL */
+
   int ret = pthread_mutex_init(&ar->mu, NULL);
   if (ret == -1) {
     perror("pthread_mutex_init");
     exit(EXIT_FAILURE);
   }
-  struct epoll_event ev = {
-      .events = EPOLLIN,
-      .data = {.ptr = ar},
-  };
 
-  ws_server_epoll_ctl(s, EPOLL_CTL_ADD, ar->chanfd, &ev);
+#ifdef WS_WITH_EPOLL
+  ws_server_event_add(s, ar->chanfd, &s->async_runner);
+#else
+  // add the event 
+  ws_event_t ev;
+  EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, &s->async_runner);
+  kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
+#endif
+
   s->internal_polls++;
   s->async_runner = ar;
 }
@@ -3651,8 +3863,8 @@ static void ws_server_async_runner_destroy(ws_server_t *s) {
   s->async_runner = NULL;
 }
 
-
-int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb, void *ctx){
+int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
+                             void *ctx) {
   if (cb != NULL) {
     struct ws_server_async_runner *ar = s->async_runner;
 
@@ -3688,11 +3900,12 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb, void *c
     cb_info->cb = cb;
     cb_info->ctx = ctx;
 
-
     // mu end
     pthread_mutex_unlock(&ar->mu);
 
     // notify
+
+#ifdef WS_WITH_EPOLL
     register int fd = ar->chanfd;
     for (;;) {
       if (likely(eventfd_write(fd, 1) == 0)) {
@@ -3710,6 +3923,27 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb, void *c
         }
       }
     }
+#else
+    ws_event_t ev;
+    // trigger (EV_ONESHOT | EV_ADD) combo is a no go on freeBSD (unreliable)
+    // instead we have the event added already and just need to trigger it
+    // it's also faster than EV_ADD for each event
+    EV_SET(&ev, ar->chanfd, EVFILT_USER, 0, NOTE_TRIGGER, 0,
+           &s->async_runner);
+    for (;;) {
+      if (likely(kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL) == 0)) {
+        break;
+      } else {
+        if (errno == EINTR) {
+          continue;
+        } else {
+          perror("kevent");
+          break;
+        }
+      }
+    }
+
+#endif
 
     return 0;
   }
@@ -3719,15 +3953,18 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb, void *c
 
 static void ws_server_async_runner_run_pending_callbacks(
     ws_server_t *s, struct ws_server_async_runner *ar) {
-  uint64_t val;
-  read(ar->chanfd, &val, 8);
-
+#ifdef WS_WITH_EPOLL
+  eventfd_t val;
+  eventfd_read(ar->chanfd, &val);
   (void)val;
+#endif
 
   // grab the lock to swap the buffers
   // and get the count of ready callbacks
   pthread_mutex_lock(&ar->mu);
   // mu start
+  // printf("ready callbacks %zu\n", ar->pending->len);
+  // assert(ar->pending->len != 0);
 
   struct ws_server_async_runner_buf *ready = ar->pending;
   ar->pending = ar->ready;
@@ -3765,18 +4002,13 @@ int ws_server_shutdown(ws_server_t *s) {
     return -1;
   }
 
-  // remove and close listner fd
-  struct epoll_event ev = {
-      .events = 0,
-      .data = {.ptr = NULL},
-  };
+#ifdef WS_WITH_EPOLL
+  ws_server_event_del(s, s->listener_fd);
+  close(s->listener_fd);
+#endif
 
-  eventfd_write(s->async_runner->chanfd, 1);
-
-  close(s->fd);
-  epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
   s->internal_polls--;
-  s->fd = -1;
+  s->listener_fd = -1;
 
   // go over all connections and shut them down
   for (size_t i = 0; i < s->conn_pool->cap; ++i) {
@@ -3792,14 +4024,6 @@ int ws_server_shutdown(ws_server_t *s) {
     }
   }
 
-  // close user epoll
-  if (s->user_epoll > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &ev);
-    close(s->user_epoll);
-    s->user_epoll = -1;
-    s->internal_polls--;
-  }
-
   // close event fd
   if (s->async_runner->chanfd && s->internal_polls) {
     s->internal_polls--;
@@ -3807,11 +4031,23 @@ int ws_server_shutdown(ws_server_t *s) {
 
   // close timer fd
   if (s->tq) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->tq->timer_fd, &ev);
+#ifdef WS_WITH_EPOLL
+    ws_server_event_del(s, s->tq->timer_fd);
     close(s->tq->timer_fd);
+#endif
     s->tq->timer_fd = -1;
     s->internal_polls--;
   }
+
+#ifdef WS_WITH_EPOLL
+  eventfd_write(s->async_runner->chanfd, 1);
+#else
+  ws_event_t ev;
+  EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, 0,
+         NOTE_TRIGGER, 0, &s->async_runner);
+
+  kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
+#endif
 
   return 0;
 }
@@ -3830,86 +4066,23 @@ inline void ws_server_set_max_per_read(ws_server_t *s, size_t max_per_read) {
 
 inline int ws_server_active_events(ws_server_t *s) { return s->active_events; }
 
-int ws_epoll_create1(ws_server_t *s) {
-  if (!s->user_epoll) {
-    s->user_epoll = epoll_create1(O_CLOEXEC);
-    if (s->user_epoll == -1) {
-      return -1;
-    } else {
-      struct epoll_event ev = {
-          .events = EPOLLIN,
-          .data = {.ptr = &s->user_epoll},
-      };
-
-      ws_server_epoll_ctl(s, EPOLL_CTL_ADD, s->user_epoll, &ev);
-      s->internal_polls++;
-      return 0;
-    }
-  }
-
-  return s->user_epoll ? s->user_epoll : -1;
-}
-
-int ws_epoll_ctl_add(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                     unsigned int events) {
-  if (!s->user_epoll || !cb_ctx) {
-    return -1;
-  }
-
-  struct epoll_event ev = {
-      .events = events,
-      .data = {.ptr = cb_ctx},
-  };
-
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_ADD, fd, &ev);
-}
-
-int ws_epoll_ctl_del(ws_server_t *s, int fd) {
-  if (!s->user_epoll) {
-    return -1;
-  }
-
-  struct epoll_event ev = {
-      .events = 0,
-      .data = {.ptr = NULL},
-  };
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_DEL, fd, &ev);
-}
-
-int ws_epoll_ctl_mod(ws_server_t *s, int fd, ws_poll_cb_ctx_t *cb_ctx,
-                     unsigned int events) {
-  if (!s->user_epoll || !cb_ctx) {
-    return -1;
-  }
-
-  struct epoll_event ev = {
-      .events = events,
-      .data = {.ptr = cb_ctx},
-  };
-
-  return epoll_ctl(s->user_epoll, EPOLL_CTL_MOD, fd, &ev);
-}
-
 int ws_server_destroy(ws_server_t *s) {
   // this one was used to wake up from epoll_wait when we shut down
   // this is why we didn't close it in ws_server_shutdown
 
-  struct epoll_event ev = {0};
-
-  epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->async_runner->chanfd, &ev);
+#ifdef WS_WITH_EPOLL
+  ws_server_event_del(s, s->async_runner->chanfd);
   close(s->async_runner->chanfd);
   s->async_runner->chanfd = -1;
 
-  if (s->user_epoll > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->user_epoll, &ev);
-    close(s->user_epoll);
-    s->user_epoll = -1;
-  }
+#else
+  s->async_runner->chanfd = -1;
+#endif
 
-  if (s->fd > 0) {
-    epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, s->fd, &ev);
-    close(s->fd);
-    s->fd = -1;
+  if (s->listener_fd > 0) {
+    ws_server_event_del(s, s->listener_fd);
+    close(s->listener_fd);
+    s->listener_fd = -1;
   }
 
   server_ws_conn_pool_destroy(s);
@@ -3919,8 +4092,8 @@ int ws_server_destroy(ws_server_t *s) {
   free(s->tq);
   s->tq = NULL;
 
-  close(s->epoll_fd);
-  s->epoll_fd = -1;
+  close(s->event_loop_fd);
+  s->event_loop_fd = -1;
 
 #ifdef WITH_COMPRESSION
 
@@ -3975,7 +4148,7 @@ ws_timer_queue_is_timer_expired(struct ws_timer_queue *restrict tq,
 static uint64_t ws_timer_queue_get_expiration(struct ws_timer_queue *tq,
                                               struct timespec *timeout_after) {
   struct timespec tp;
-  int ret = clock_gettime(CLOCK_BOOTTIME, &tp);
+  int ret = clock_gettime(CLOCK_MONOTONIC, &tp);
   assert(ret == 0);
   (void)ret;
 
@@ -4018,11 +4191,18 @@ ws_timer_queue_pool_new_timer(struct ws_timer_queue *tq) {
 static struct ws_timer_queue *ws_timer_queue_init(struct ws_timer_queue *tq) {
   tq->next_expiration = 0;
 
-  tq->timer_fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+#ifdef WS_WITH_EPOLL
+  tq->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
   if (tq->timer_fd == -1) {
     perror("timerfd_create");
     exit(EXIT_FAILURE);
   }
+#else
+  // any arbitrary identifier for the timer works
+  // setting to a large value to avoid conflicting with fds (not sure if that's
+  // even possible but just to be safe)
+  tq->timer_fd = 2147483647;
+#endif
 
   ws_timer_min_heap_t *tmh = ws_timer_min_heap_init(WS_TIMERS_DEFAULT_SZ);
   if (tmh == NULL) {
@@ -4070,9 +4250,11 @@ static void ws_timer_queue_destroy(struct ws_timer_queue *tq) {
 
   ws_timer_min_heap_destroy(tq->pqu);
 
+#ifdef WS_WITH_EPOLL
   if (tq->timer_fd > 0) {
     close(tq->timer_fd);
   }
+#endif
 
   struct ws_timer *tmp = tq->timer_pool_head;
   while (tmp) {
@@ -4130,6 +4312,7 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
   if (ws_timer_queue_should_update_expiration(tq, maybe_soonest)) {
     uint64_t ns = maybe_soonest - tq->cur_time;
 
+#ifdef WS_WITH_EPOLL
     struct itimerspec timeout = {
         .it_value =
             {
@@ -4142,9 +4325,16 @@ static void ws_timer_queue_tfd_set_soonest_expiration(struct ws_timer_queue *tq,
                 .tv_sec = 0,
             },
     };
-
     tq->next_expiration = maybe_soonest;
     timerfd_settime(tq->timer_fd, 0, &timeout, NULL);
+#else
+    tq->next_expiration = maybe_soonest;
+    ws_event_t ev;
+    EV_SET(&ev, tq->timer_fd, EVFILT_TIMER, EV_ONESHOT | EV_ADD, NOTE_NSECONDS,
+           ns, tq);
+
+    kevent(tq->base->event_loop_fd, &ev, 1, NULL, 0, NULL);
+#endif
   }
 }
 
@@ -4165,9 +4355,11 @@ static void ws_timer_queue_cancel(struct ws_timer_queue *tq, uint64_t exp_id) {
         ws_timer_queue_tfd_set_soonest_expiration(tq, soonest);
       } else {
         // if this was the last timer to be canceled reset the tfd timer
+#ifdef WS_WITH_EPOLL
         struct itimerspec tp;
         memset(&tp, 0, sizeof(tp));
         timerfd_settime(tq->timer_fd, 0, &tp, NULL);
+#endif
       }
 
       return;
@@ -4270,10 +4462,6 @@ static inline int ws_timer_min_heap_cmp_pri(uint64_t next, uint64_t curr) {
 
 static inline uint64_t ws_timer_min_heap_get_timer_pri(struct ws_timer *t) {
   return t->expiry_ns;
-}
-
-static inline size_t ws_timer_min_heap_get_timer_pos(struct ws_timer *t) {
-  return t->pos;
 }
 
 static inline void ws_timer_min_heap_set_timer_pos(struct ws_timer *t,
@@ -4598,6 +4786,7 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
                           is_bin(conn) ? OP_BIN : OP_TXT);
     conn->needed_bytes = 2;
     clear_bin(conn);
+    clear_msg_compressed(conn);
 
     if (from_buf_pool) {
       mirrored_buf_put(s->buffer_pool, tmp_buf);
@@ -4621,6 +4810,7 @@ static int ws_conn_handle_compressed_frame(ws_conn_t *conn, uint8_t *data,
     }
 
     conn->fragments_len = 0;
+    clear_msg_compressed(conn);
     clear_fragmented(conn);
     clear_bin(conn);
     conn->needed_bytes = 2;
@@ -4658,9 +4848,6 @@ typedef struct {
 
 #include <stdio.h>
 #include <string.h>
-
-/* for uint32_t */
-#include <stdint.h>
 
 #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
 

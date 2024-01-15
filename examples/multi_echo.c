@@ -4,9 +4,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/epoll.h>
 #include <sys/signal.h>
-#include <sys/timerfd.h>
 
 #define MAX_CONNS 4000
 #define NUM_SERVERS 4

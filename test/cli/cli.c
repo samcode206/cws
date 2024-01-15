@@ -1,4 +1,4 @@
-#include "../e2e/sock_util.h"
+#include "../wsockutil.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,18 +109,17 @@ void handle_echo_cmd(int fd, char *in_data, char *out_data, unsigned op) {
   // wait for frame_sz -4 bytes because server won't include the 4 byte mask
   ssize_t read = sock_recvall(fd, out_data, frame_sz - 4);
 
-
   unsigned opcode = frame_get_opcode((uint8_t *)out_data);
   if (opcode == OP_TXT) {
-    printf("Text Data: ");
+    printf("Received Text Data: ");
   } else if (opcode == OP_BIN) {
-    printf("Binary Data: ");
+    printf("Received Binary Data: ");
   } else if (opcode == OP_PING) {
-    printf("ping: ");
+    printf("Received Ping: ");
   } else if (opcode == OP_PONG) {
-    printf("pong: ");
+    printf("Received Pong: ");
   } else if (opcode == OP_CLOSE) {
-    printf("close\n");
+    printf("Received Close\n");
     return;
   }
 

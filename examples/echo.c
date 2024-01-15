@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <sys/signal.h>
 
-
 #define MAX_CONNS 1024
 
 void onOpen(ws_conn_t *conn) {}
@@ -10,6 +9,7 @@ void onOpen(ws_conn_t *conn) {}
 void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_conn_put_msg(conn, msg, n, opcode, 0);
 }
+
 
 void onDisconnect(ws_conn_t *conn, unsigned long err) {}
 
