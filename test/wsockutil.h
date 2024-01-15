@@ -8,12 +8,12 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <stdbool.h>
-
+#include <sys/uio.h>
 // utils for socket testing
 
 #define OP_TXT 0x1
