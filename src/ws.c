@@ -252,10 +252,10 @@ static unsigned ws_server_time(ws_server_t *s);
 
 static inline uint_fast8_t io_tmp_err(ssize_t n) {
 #if EAGAIN != EWOULDBLOCK
-  return (n == -1) &
-         ((errno == EAGAIN) | (errno == EWOULDBLOCK) | (errno == EINTR));
+  return (n == -1) &&
+         ((errno == EAGAIN) || (errno == EWOULDBLOCK) || (errno == EINTR));
 #else
-  return (n == -1) & ((errno == EAGAIN) | (errno == EINTR));
+  return (n == -1) && ((errno == EAGAIN) || (errno == EINTR));
 #endif
 }
 
