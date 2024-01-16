@@ -741,7 +741,7 @@ typedef void (*ws_err_cb_t)(ws_server_t *s, int err);
 
 
 /**
- * Optional Callback invoked when a new connection is accepted through `accept4(2)`.
+ * Optional Callback invoked when a new connection is accepted
  *
  * This callback allows the user to inspect and optionally pre-process the incoming
  * connection before the WebSocket handshake commences. Users can perform initial
