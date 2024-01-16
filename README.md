@@ -17,7 +17,7 @@ C Web Sockets (CWS) is a high-performance WebSocket server library written in C,
 - **Scalability**: Designed for scalability and can be easily configured to run on multiple threads, with simple yet powerful synchronization primitives
 - **Easy Integration**: The library is elegantly designed as a single C source file and a single header file, ensuring ease of integration and straightforward use in various projects.
 - **Determinist Memory Usage**: With minimal reliance on dynamic memory allocations when serving clients, the library ensures predictable and efficient memory management. This contributes to stable performance, optimized resource utilization & reuse, particularly suitable for performance critical services.
-- **Cross Platform**: Compiled and tested on various 64bit platforms such as Linux, freeBSD & MacOS, (no windows support)
+- **Cross Platform**: Compiled and tested on various 64bit platforms such as Linux, freeBSD & MacOS. (no windows support, any system with `kqueue` or `epoll` is likely supported)
 - **Zero Dependencies**: in it's default configuration cws has zero dependencies on external libraries. Directly interacting with the underlying system calls to deliver all of it's features and performance.
 
 ## Samples
