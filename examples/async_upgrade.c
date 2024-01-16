@@ -64,7 +64,7 @@ void onHandshakeRequest(ws_conn_t *c, struct ws_conn_handshake *hs) {
   };
 
   uint64_t timeoutHandle = ws_server_set_timeout(ws_conn_server(c), &ts, au,
-                                                 (timeout_cb_t)onWsUpgradeTime);
+                                                 (ws_timeout_cb_t)onWsUpgradeTime);
 
   if (timeoutHandle) {
     ws_conn_set_ctx(c, malloc(sizeof(uint64_t)));

@@ -121,7 +121,7 @@ struct conn_list {
 struct ws_timer {
   uint64_t expiry_ns; /* expiry in nanoseconds, doubles as the priority and the
                          id of a timer */
-  timeout_cb_t cb;    /* callback function, called on expiration of the timer */
+  ws_timeout_cb_t cb;    /* callback function, called on expiration of the timer */
   void *ctx;          /* ctx pointer given to the callback */
   size_t pos;         /* position in the priority queue */
   struct ws_timer *next; /* next timer */
@@ -4442,7 +4442,7 @@ static uint64_t timer_queue_add(struct ws_timer_queue *tq, struct ws_timer *t) {
 }
 
 uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp, void *ctx,
-                               timeout_cb_t cb) {
+                               ws_timeout_cb_t cb) {
 
   if (tp == NULL || (tp->tv_nsec < 0 || tp->tv_nsec > 999999999) ||
       (tp->tv_nsec == 0 && tp->tv_sec == 0)) {

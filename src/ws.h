@@ -443,19 +443,6 @@ bool ws_server_shutting_down(ws_server_t *s);
 int ws_server_destroy(ws_server_t *s);
 
 
-typedef struct ws_poll_cb_ctx_t ws_poll_cb_ctx_t;
-
-
-typedef void (*poll_ev_cb_t)(ws_server_t *s, ws_poll_cb_ctx_t *ctx, unsigned int ev);
-
-/**
- * Structure representing the context for polling callbacks.
- */
-typedef struct ws_poll_cb_ctx_t {
-  poll_ev_cb_t cb;  /**< Callback function to be invoked when a polling event occurs. */
-  void *ctx;        /**< User-defined context passed to the callback function. */
-} ws_poll_cb_ctx_t;
-
 
 /**
  * @brief Sets the maximum number of bytes to read per read operation for the WebSocket server.
@@ -484,12 +471,31 @@ int ws_server_active_events(ws_server_t *s);
 
 
 
-typedef void (*timeout_cb_t)(ws_server_t *s, void *ctx);
+typedef void (*ws_timeout_cb_t)(ws_server_t *s, void *ctx);
 
-
+/**
+ * Sets a timeout event for the WebSocket server.
+ *
+ * This function schedules a timeout event to be triggered after the specified interval. 
+ * When the timeout occurs, the provided callback function is invoked. This can be used 
+ * for various purposes, such as cleaning up resources, sending keep-alive messages, or 
+ * implementing custom timeout logic.
+ *
+ * @param s           Pointer to the WebSocket server (`ws_server_t`).
+ * @param tp          Pointer to a `timespec` structure specifying the timeout interval.
+ * @param ctx         User-defined context passed to the timeout callback function.
+ * @param cb          Callback function to be invoked when the timeout occurs.
+ * @return            A handle to the created timer (zero value indicates failure)
+ */
 uint64_t ws_server_set_timeout(ws_server_t *s, struct timespec *tp,
-                            void *ctx, timeout_cb_t cb);
+                            void *ctx, ws_timeout_cb_t cb);
 
+
+
+/**
+ * @param s            Pointer to the WebSocket server (`ws_server_t`).
+ * @param timer_handle The handle to the timer returned by `ws_server_set_timeout`.
+ */
 void ws_server_cancel_timeout(ws_server_t *s, uint64_t timer_handle);
 
 
