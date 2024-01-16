@@ -26,8 +26,9 @@ Coming Soon (checkout examples in the meantime).
 
 ## Benchmarks
 
-Coming Soon.
+![512 byte payload](https://github.com/samcode206/cws/blob/v1.0.0/bench/echo/512%20bytes1000.svg)
 
+more can be found under `/bench` directory
 
 ## API Documentation
 
