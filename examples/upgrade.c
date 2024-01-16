@@ -49,6 +49,10 @@ int main(void) {
 
   ws_server_t *s = ws_server_create(&p);
 
-  ws_server_start(s, 1024);
+
+  if (s != NULL) {
+    ws_server_start(s, 1024);
+  }
+
   return 0;
 }

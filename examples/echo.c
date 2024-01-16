@@ -10,7 +10,6 @@ void onMsg(ws_conn_t *conn, void *msg, size_t n, uint8_t opcode) {
   ws_conn_put_msg(conn, msg, n, opcode, 0);
 }
 
-
 void onDisconnect(ws_conn_t *conn, unsigned long err) {}
 
 int main(void) {
@@ -30,6 +29,9 @@ int main(void) {
 
   ws_server_t *s = ws_server_create(&p);
 
-  ws_server_start(s, 1024);
+  if (s != NULL) {
+    ws_server_start(s, 1024);
+  }
+
   return 0;
 }
