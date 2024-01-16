@@ -1715,18 +1715,20 @@ ws_conn_handshake_header_find(struct ws_conn_handshake *hs, const char *name) {
 }
 
 
-/**
- * UTF-8 Validation Function
+/*
+ * utf8_is_valid Function
  *
- * This function is based on the original utf8_check.c by Markus Kuhn, 2005, available at:
- * https://www.cl.cam.ac.uk/~mgk25/ucs/utf8_check.c
+ * This function checks the validity of UTF-8 encoding in a given string.
+ * It is an adaptation and optimization of the original utf8_check.c by Markus Kuhn, 2005,
+ * available at: https://www.cl.cam.ac.uk/~mgk25/ucs/utf8_check.c
+ * The function was further optimized for predominantly 7-bit content by Alex Hultman in 2016.
  *
- * It was later optimized for predominantly 7-bit content by Alex Hultman in 2016.
+ * Modifications and further optimizations have been made for integration into this project.
+ * The original work by Markus Kuhn is licensed under Zlib, and Alex Hultman's optimizations
+ * are provided under the Apache License, Version 2.0. Our modifications to this code are 
+ * inline with the licensing requirements of these works and the project's overall license.
  *
- * Modifications and adaptations have been made for integration into this project.
- *
- * We acknowledge and give thanks to the contributions of Markus Kuhn and Alex Hultman in the 
- * development of this function.
+ * The original utf8_check.c and its adaptations are acknowledged for their foundational role in this function.
  */
 static unsigned utf8_is_valid(uint8_t *str, size_t n) {
   uint8_t *end = str + n;
