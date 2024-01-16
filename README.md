@@ -12,6 +12,7 @@ C Web Sockets (CWS) is a high-performance WebSocket server library written in C,
 - **Customizable Connection Parameters**: Users can tailor server parameters to their needs, such as maximum connections, buffer sizing, and IO timeout settings.
 - **IPv4 and IPv6 Support**: Compatible with both IPv4 and IPv6 networks.
 - **Familiar Event-Loop Architecture**: Implements an event-loop based architecture, akin to Node.js, providing familiarity and ease of use while delivering orders of magnitude better performance.
+- **High Resolution Timers**: Incorporates high resolution timers for precise timing operations.
 - **Control**: Enables granular control over connection upgrades and supports efficient fragmented message streaming for large data sets.
 - **Scalability**: Designed for scalability and can be easily configured to run on multiple threads, with simple yet powerful synchronization primitives
 - **Easy Integration**: The library is elegantly designed as a single C source file and a single header file, ensuring ease of integration and straightforward use in various projects.
