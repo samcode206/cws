@@ -433,13 +433,42 @@ void ws_conn_set_write_timeout(ws_conn_t *c, unsigned secs);
 */
 int ws_conn_fd(ws_conn_t *c);
 
-
+/**
+ * Initiates the shutdown process for the WebSocket server.
+ *
+ * This function begins the process of shutting down the WebSocket server. It gracefully 
+ * closes active connections and releases server resources. This is a non-blocking call 
+ * and the shutdown process will continue asynchronously.
+ *
+ * @param s Pointer to the WebSocket server (`ws_server_t`).
+ * @return  Non-zero on failure to initiate the shutdown process.
+ */
 int ws_server_shutdown(ws_server_t *s);
 
 
+/**
+ * Checks if the WebSocket server is in the process of shutting down.
+ *
+ * This function can be used to determine whether the server is currently undergoing 
+ * a shutdown process, which may have been initiated by `ws_server_shutdown`.
+ *
+ * @param s Pointer to the WebSocket server (`ws_server_t`).
+ * @return  True if the server is shutting down, false otherwise.
+ */
 bool ws_server_shutting_down(ws_server_t *s);
 
 
+/**
+ * Destroys the WebSocket server instance.
+ *
+ * This function completely destroys the WebSocket server, freeing up all associated 
+ * resources. It should be called only after the server has been properly shut down 
+ * using `ws_server_shutdown`. This function ensures that all memory and resources 
+ * allocated for the server are released. usually called once ws_server_start returns
+ *
+ * @param s Pointer to the WebSocket server (`ws_server_t`).
+ * @return  Non-zero on failure to destroy the server.
+ */
 int ws_server_destroy(ws_server_t *s);
 
 
