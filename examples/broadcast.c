@@ -77,7 +77,7 @@ int main(void) {
       .max_buffered_bytes = 1024 * 512,
       .max_conns = MAX_CONNS,
       .ctx = state,
-      .silent = 1,
+      .log_params = true,
   };
 
   ws_server_t *s = ws_server_create(&p);

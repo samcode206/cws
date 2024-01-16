@@ -732,7 +732,7 @@ typedef void (*ws_on_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, uint8_t opcode
 struct ws_server_params {
   const char *addr;
   uint16_t port;
-  bool silent;              // logs server config to stdout if 0
+  bool log_params;            
   unsigned max_conns;        // Maximum connections the server is willing to accept.
   size_t max_header_count; // Maximum number of headers to parse in the upgrade equest. (defaults to 32 and max is 512)
                              // Defaults to the system's limit for maximum open file descriptors.

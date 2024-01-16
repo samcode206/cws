@@ -93,7 +93,7 @@ int main(void) {
       .on_ws_handshake = onHandshakeRequest,
       .on_ws_disconnect = onDisconnect,
       .max_conns = MAX_CONNS,
-      .silent = 1,
+      .log_params = 1,
   };
 
   ws_server_t *s = ws_server_create(&p);

@@ -19,7 +19,6 @@ static struct ws_server_params p = {
     .on_ws_disconnect = onDisconnect,
     .max_buffered_bytes = 64,
     .max_conns = 1,
-    .silent = 1,
 };
 
 // *************** TEST SETUP ***************

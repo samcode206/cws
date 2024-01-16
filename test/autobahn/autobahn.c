@@ -16,7 +16,7 @@ void on_open(ws_conn_t *c) {
 }
 
 void on_msg(ws_conn_t *c, void *msg, size_t n, uint8_t opcode) {
-  if (opcode == OP_PONG){
+  if (opcode == OP_PONG) {
     return;
   }
 
@@ -89,8 +89,6 @@ void on_timeout(ws_conn_t *c, unsigned timeout_kind) {
   ws_conn_destroy(c, WS_ERR_READ_TIMEOUT);
 }
 
-
-
 ws_server_t *s = NULL;
 
 void on_sigint(int sig) {
@@ -114,7 +112,7 @@ void *start_server() {
       .on_ws_accept_err = on_accept_err,
       .on_ws_conn_timeout = on_timeout,
       .max_conns = 1000,
-      .silent = 0,
+      .log_params = true,
   };
 
   s = ws_server_create(&sp);
@@ -126,7 +124,6 @@ void *start_server() {
 
   return NULL;
 }
-
 
 int main(void) {
   printf("%d\n", getpid());
