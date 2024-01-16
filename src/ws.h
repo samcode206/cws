@@ -519,24 +519,55 @@ size_t ws_server_pending_async_callbacks(ws_server_t *runner);
 
 
 enum ws_conn_err {
+    /**
+    * Read error on the socket
+    */
     WS_ERR_READ = 990,
 
+    /**
+    * Write error on the socket
+    */
     WS_ERR_WRITE = 991,
 
+    /**
+    * Client send a bad websocket frame
+    */
     WS_ERR_BAD_FRAME = 992,
 
+    /**
+    * Client sent invalid websocket handshake
+    */
     WS_ERR_BAD_HANDSHAKE = 993,
 
+    /**
+    * read timeout on the client socket
+    */
     WS_ERR_READ_TIMEOUT = 994,
 
+    /**
+    * write timeout on the client socket
+    */
     WS_ERR_WRITE_TIMEOUT = 995,
 
+    /**
+    * read/write timeout on the client socket
+    */
     WS_ERR_RW_TIMEOUT = 996,
 
+    /**
+    * Received unknown opcode
+    */
     WS_UNKNOWN_OPCODE = 997,
 
+
+    /**
+    * zlib error during inflation of a compressed message
+    */
     WS_ERR_INFLATE = 998,
 
+    /**
+    * Client sent invalid UTF-8 
+    */
     WS_ERR_INVALID_UTF8 = 999,
 
 
@@ -598,7 +629,7 @@ enum ws_conn_err {
     */
     WS_CLOSE_UNEXPECTED = 1011,
 
-  };
+};
 
 /**
  * @param c Pointer to the WebSocket connection (`ws_conn_t`).
