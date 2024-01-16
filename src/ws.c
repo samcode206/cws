@@ -309,7 +309,9 @@ static inline bool is_upgraded(ws_conn_t *c) {
 
 static inline void set_upgraded(ws_conn_t *c) { c->flags |= CONN_UPGRADED; }
 
-static inline bool is_bin(ws_conn_t *c) { return (c->flags & CONN_RX_BIN) != 0; }
+static inline bool is_bin(ws_conn_t *c) {
+  return (c->flags & CONN_RX_BIN) != 0;
+}
 
 static inline void clear_bin(ws_conn_t *c) { c->flags &= ~CONN_RX_BIN; }
 
@@ -738,7 +740,7 @@ struct mirrored_buf_pool {
 };
 
 // random path for shm_open
-#ifdef WS_WITH_KQUEUE
+#if defined(WS_WITH_KQUEUE) && !defined(SHM_ANON)
 static inline void shm_name(char str[31]) {
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
@@ -822,6 +824,14 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   }
 
 #else
+#if defined(SHM_ANON)
+  pool->fd = shm_open(SHM_ANON, O_CREAT | O_RDWR | O_EXCL, 600);
+  if (pool->fd == -1) {
+    perror("shm_open");
+    return NULL;
+  }
+
+#else
   char pname[32];
   pname[31] = '\0';
   shm_name(pname);
@@ -835,6 +845,7 @@ mirrored_buf_pool_create(uint32_t nmemb, size_t buf_sz, bool defer_bufs_mmap) {
   if (shm_unlink(pname) == -1) {
     perror("shm_unlink");
   };
+#endif
 
 #endif
 
@@ -2592,13 +2603,9 @@ bool ws_conn_msg_ready(ws_conn_t *c) {
   }
 }
 
-bool ws_conn_msg_compressed(ws_conn_t *c) {
-  return is_msg_compressed(c);
-}
+bool ws_conn_msg_compressed(ws_conn_t *c) { return is_msg_compressed(c); }
 
-bool ws_conn_sending_fragments(ws_conn_t *c) {
-  return is_sending_fragments(c);
-}
+bool ws_conn_sending_fragments(ws_conn_t *c) { return is_sending_fragments(c); }
 
 int ws_conn_send_fragment(ws_conn_t *c, void *msg, size_t len, bool txt,
                           bool final) {
@@ -3843,9 +3850,10 @@ static void ws_server_async_runner_create(ws_server_t *s, size_t init_cap) {
 #ifdef WS_WITH_EPOLL
   ws_server_event_add(s, ar->chanfd, &s->async_runner);
 #else
-  // add the event 
+  // add the event
   ws_event_t ev;
-  EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, &s->async_runner);
+  EV_SET(&ev, ar->chanfd, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0,
+         &s->async_runner);
   kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
 #endif
 
@@ -3928,8 +3936,7 @@ int ws_server_sched_callback(ws_server_t *s, ws_server_deferred_cb_t cb,
     // trigger (EV_ONESHOT | EV_ADD) combo is a no go on freeBSD (unreliable)
     // instead we have the event added already and just need to trigger it
     // it's also faster than EV_ADD for each event
-    EV_SET(&ev, ar->chanfd, EVFILT_USER, 0, NOTE_TRIGGER, 0,
-           &s->async_runner);
+    EV_SET(&ev, ar->chanfd, EVFILT_USER, 0, NOTE_TRIGGER, 0, &s->async_runner);
     for (;;) {
       if (likely(kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL) == 0)) {
         break;
@@ -4043,8 +4050,8 @@ int ws_server_shutdown(ws_server_t *s) {
   eventfd_write(s->async_runner->chanfd, 1);
 #else
   ws_event_t ev;
-  EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, 0,
-         NOTE_TRIGGER, 0, &s->async_runner);
+  EV_SET(&ev, s->async_runner->chanfd, EVFILT_USER, 0, NOTE_TRIGGER, 0,
+         &s->async_runner);
 
   kevent(s->event_loop_fd, &ev, 1, NULL, 0, NULL);
 #endif
