@@ -275,8 +275,24 @@ enum ws_send_status
 ws_conn_handshake_reply(ws_conn_t *c, struct ws_conn_handshake_response *resp);
 
 
+
+
+/**
+ * Searches for a specific HTTP header in a WebSocket connection handshake.
+ *
+ * This function is used to find and retrieve a specific HTTP header from the handshake
+ * process of a WebSocket connection. It is useful for extracting custom header information 
+ * or for additional protocol-level validation during the handshake phase.
+ *
+ * @param hs   Pointer to the WebSocket connection handshake structure (`ws_conn_handshake`).
+ * @param name The name of the HTTP header to search for.
+ * @return     A pointer to the `http_header` structure containing the header information
+ *             if found, or NULL if the header is not present.
+ */
 const struct http_header *ws_conn_handshake_header_find(struct ws_conn_handshake *hs,
                                           const char *name);
+
+
 
 /**
  * Checks if the connection is currently sending a fragmented message.
@@ -791,8 +807,20 @@ typedef void (*ws_on_timeout_t)(ws_conn_t *ws_conn, unsigned kind);
 
 
 
-
+/**
+ * Callback type for handling incoming WebSocket messages.
+ *
+ * This callback is invoked when a complete WebSocket message is received. It allows the user
+ * to define custom handling for different types of messages based on the opcode. The callback
+ * can process text, binary, ping, pong frames.
+ *
+ * @param c      Pointer to the WebSocket connection (`ws_conn_t`) receiving the message.
+ * @param msg    Pointer to the message data.
+ * @param n      Size of the message in bytes.
+ * @param opcode The opcode indicating the type of the WebSocket frame (e.g., OP_PING, OP_PONG, OP_BIN, OP_TXT).
+ */
 typedef void (*ws_on_msg_cb_t)(ws_conn_t *c, void *msg, size_t n, uint8_t opcode);
+
 
 // Server parameter structure with optional callbacks for various WebSocket events.
 struct ws_server_params {
