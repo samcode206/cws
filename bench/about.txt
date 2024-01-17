@@ -1,0 +1,40 @@
+Echo:
+These Benchmarks were done for each server running on 4 threads (4 processes in the case of Node)
+1000 clients all send a frame of a particular size and wait for the same frame to be echoed back
+from the server, doing that repeatedly for 90 seconds and 3 samples. QPS is the number of echos we receive from the server.
+There are also benchmarks for fragmented frames as those are more expensive to process and reassemble into 
+a complete message same rules as above but data is sent across multiple websocket frames each containing 4kb 
+chunk of the data. 
+a server that can quickly process complete frames faster than others,
+DOES NOT mean that it can also optimally handle fragmentation as that
+usually goes through a different less optimal code path, and this is why I also included fragmentation benchmarks
+
+
+the tests were conducted locally on 11th Gen Intel(R) Core(TM) i9-11900K @ 3.50GHz running Debian 12.
+
+
+Streaming:
+These benchmarks were run for each server on a single core and 128/8 clients reading and writing data as much as they can without waiting 
+for an "echo" to be received before transmitting the next message, this help to test cases where clients are streaming large volumes of data and test how each 
+server is able to handle memory build up/ backpressure. a server that did well in the echo /ping/pong style test doesn't mean it can do well in this type of benchmark
+however it is not unrealistic for such payloads to occur in the real world, in fact echo benchmarks are fine but are more inline with a protocol such as http1.1 or other request response protocols.
+
+streaming though is much much more memory intensive and including this as a separate test gives us much more context about a given server's performance under extremely high load.
+it also gives us better context as to how efficient the library is in interacting with the underlying kernel, and the quality of it's buffered IO implementation. All servers were configured to be as close 
+to each other as possible with each server's buffer size set to 512kb. All servers were running on a SINGLE core for better consistency of results. Each test also ran for 90 seconds with 3 samples taken.
+
+the tests were conducted locally on 11th Gen Intel(R) Core(TM) i9-11900K @ 3.50GHz running Debian 12.
+
+
+
+
+Misc: 
+In our observations, we noted a significant performance differential when handling large volumes of data. Specifically,
+CWS/uWebsockets demonstrated a higher throughput compared to other implementations, including those written in Rust.
+It's important to highlight that while this benchmark shows significant advantages in terms of raw performance for CWS, 
+it does not necessarily reflect the overall utility or applicability of each technology in various real-world scenarios.
+The performance metrics observed here should be interpreted with an understanding that different technologies and 
+libraries often have varied focus areas and design philosophies.
+
+For example, while CWS is highly specialized for Websockets, offering exceptional performance & reliability in this area, 
+other solutions may provide a broader range of features, such as handling HTTP requests, which can influence their performance in a specialized task.
