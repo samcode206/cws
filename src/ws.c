@@ -460,7 +460,7 @@ static inline void clear_read_paused(ws_conn_t *c) {
   c->flags &= ~CONN_RX_PAUSED;
 }
 
-static inline bool is_closed(ws_conn_t *c) { return c->fd == -1; }
+static inline bool is_closed(ws_conn_t *c) { return c->fd == -1 || c->fd == 0; }
 
 static inline void mark_closed(ws_conn_t *c) { c->fd = -1; }
 
