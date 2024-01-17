@@ -37,7 +37,7 @@ more can be found under `/bench` directory
 
 ### Measuring IO performance: classic echo benchmark 
 
-![512 byte payload](https://github.com/samcode206/cws/blob/v1.0.0/bench/echo/512%20bytes1000.svg)
+![512 byte payload](https://github.com/samcode206/cws/blob/master/bench/echo/512%20bytes1000.svg)
 
 these tests were conducted on `11th Gen Intel(R) Core(TM) i9-11900K @ 3.50GHz` running a standard installation of debian 12.
 all servers were running on 4 cpu cores
