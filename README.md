@@ -1,4 +1,4 @@
-# cws
+# C Web Sockets
 
 C Web Sockets (CWS) is a high-performance WebSocket server library written in C, designed for efficient handling of WebSocket connections and messaging in server-side applications requiring high throughput and low latency.
 
