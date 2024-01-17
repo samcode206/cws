@@ -26,22 +26,22 @@ Coming Soon (checkout examples in the meantime).
 
 ## Benchmarks
 
-### Measuring IO performance using classic echo benchmark 
-
-these tests were conducted on `11th Gen Intel(R) Core(TM) i9-11900K @ 3.50GHz` running a standard installation of debian 12.
-all servers were running on 4 cpu cores
-
-![512 byte payload](https://github.com/samcode206/cws/blob/v1.0.0/bench/echo/512%20bytes1000.svg)
-
-
-### Streaming Clients
-
-client sends data as fast as possible without waiting for a response before beginning transmission of the next frame. This test gives us a better picture as to how each server handles memory build up and how that affects it's performance. each server had one CPU core and this time we lowered the number of connections to 8 as each client is now sending much more data than the previous test.
+### Measuring IO performance: Streaming Clients
 
 ![4kb 8 connections payload](https://github.com/samcode206/cws/blob/master/bench/streaming/8_conns/4096%20bytes8.svg)
 
 
+client sends data as fast as possible without waiting for a response before beginning transmission of the next frame. This test gives us a better picture as to how each server handles memory build up and how that affects it's performance. each server had one CPU core and this time we lowered the number of connections to 8 as each client is now sending much more data than the previous test.
+
 more can be found under `/bench` directory
+
+### Measuring IO performance: classic echo benchmark 
+
+![512 byte payload](https://github.com/samcode206/cws/blob/v1.0.0/bench/echo/512%20bytes1000.svg)
+
+these tests were conducted on `11th Gen Intel(R) Core(TM) i9-11900K @ 3.50GHz` running a standard installation of debian 12.
+all servers were running on 4 cpu cores
+
 
 ## API Documentation
 
