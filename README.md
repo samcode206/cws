@@ -31,7 +31,7 @@ Coming Soon (checkout examples in the meantime).
 ![4kb 8 connections payload](https://github.com/samcode206/cws/blob/master/bench/streaming/8_conns/4096%20bytes8.svg)
 
 
-client sends data as fast as possible without waiting for a response before beginning transmission of the next frame. This test gives us a better picture as to how each server handles memory build up and how that affects it's performance. each server had one CPU core and this time we lowered the number of connections to 8 as each client is now sending much more data than the previous test.
+client sends data as fast as possible without waiting for a response before beginning transmission of the next frame. This test gives us a better picture as to how each server handles memory build up and how that affects it's performance. each server had one CPU core.
 
 more can be found under `/bench` directory
 
