@@ -16,7 +16,25 @@ ifdef WITH_PTHREAD
 CFLAGS += -pthread
 endif
 
-CFLAGS += -O3 -flto -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
+
+ifndef WITH_DEBUG
+CFLAGS += -DNDEBUG
+CFLAGS += -O3
+else
+CFLAGS += -g
+endif
+
+ifdef WITH_COMPRESSION
+CFLAGS += -DWITH_COMPRESSION
+endif
+
+
+ifdef WS_TIMERS_DEFAULT_SZ
+CFLAGS += -DWS_TIMERS_DEFAULT_SZ=$(WS_TIMERS_DEFAULT_SZ)
+endif
+
+
+CFLAGS += -flto -Wpedantic -Wall -Wextra -Wsign-conversion -Wconversion -I./src
 
 LIB_NAME=ws
 SHARED_LIB=lib$(LIB_NAME)$(SHARED_LIB_EXT)
@@ -32,17 +50,6 @@ INSTALL_INCLUDE_PATH=$(PREFIX)/include
 
 .PHONY: all clean install uninstall
 
-ifdef WITH_COMPRESSION
-CFLAGS += -DWITH_COMPRESSION
-endif
-
-ifdef NO_DEBUG
-CFLAGS += -DNDEBUG
-endif
-
-ifdef WS_TIMERS_DEFAULT_SZ
-CFLAGS += -DWS_TIMERS_DEFAULT_SZ=$(WS_TIMERS_DEFAULT_SZ)
-endif
 
 
 

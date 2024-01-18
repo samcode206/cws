@@ -126,7 +126,7 @@ struct conn_list {
 struct ws_timer {
   uint64_t expiry_ns; /* expiry in nanoseconds, doubles as the priority and the
                          id of a timer */
-  ws_timeout_cb_t cb;    /* callback function, called on expiration of the timer */
+  ws_timeout_cb_t cb; /* callback function, called on expiration of the timer */
   void *ctx;          /* ctx pointer given to the callback */
   size_t pos;         /* position in the priority queue */
   struct ws_timer *next; /* next timer */
@@ -1719,21 +1719,23 @@ ws_conn_handshake_header_find(struct ws_conn_handshake *hs, const char *name) {
   return NULL;
 }
 
-
 /*
  * utf8_is_valid Function
  *
  * This function checks the validity of UTF-8 encoding in a given string.
- * It is an adaptation and optimization of the original utf8_check.c by Markus Kuhn, 2005,
- * available at: https://www.cl.cam.ac.uk/~mgk25/ucs/utf8_check.c
- * The function was further optimized for predominantly 7-bit content by Alex Hultman in 2016.
+ * It is an adaptation and optimization of the original utf8_check.c by Markus
+ * Kuhn, 2005, available at: https://www.cl.cam.ac.uk/~mgk25/ucs/utf8_check.c
+ * The function was further optimized for predominantly 7-bit content by Alex
+ * Hultman in 2016.
  *
- * Modifications and further optimizations have been made for integration into this project.
- * The original work by Markus Kuhn is licensed under Zlib, and Alex Hultman's optimizations
- * are provided under the Apache License, Version 2.0. Our modifications to this code are 
- * inline with the licensing requirements of these works and the project's overall license.
+ * Modifications and further optimizations have been made for integration into
+ * this project. The original work by Markus Kuhn is licensed under Zlib, and
+ * Alex Hultman's optimizations are provided under the Apache License,
+ * Version 2.0. Our modifications to this code are inline with the licensing
+ * requirements of these works and the project's overall license.
  *
- * The original utf8_check.c and its adaptations are acknowledged for their foundational role in this function.
+ * The original utf8_check.c and its adaptations are acknowledged for their
+ * foundational role in this function.
  */
 static unsigned utf8_is_valid(uint8_t *str, size_t n) {
   uint8_t *end = str + n;
@@ -3232,14 +3234,37 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
   ws_server_async_runner_create(s, 2);
 
   if (params->log_params) {
-    printf("- listening:   %s:%d\n", params->addr, params->port);
-    printf("- buffer_size: %zu\n", s->buffer_pool->buf_sz);
-    printf("- max_msg_len: %zu\n",
-           params->max_buffered_bytes ? params->max_buffered_bytes : 16000);
-    printf("- max_conns:   %u\n", s->max_conns);
-    printf("- compression: %s\n", compression_enabled);
-    printf("- debug:       %s\n", debug_enabled);
-    printf("- max_headers: %zu\n", params->max_header_count);
+    char buf[256];
+    int i = 0;
+
+    i += sprintf(buf + i, "- listening:   %s:%d\n", params->addr, params->port);
+    i += sprintf(buf + i, "- buffer_size: %zu\n", s->buffer_pool->buf_sz);
+    i += sprintf(buf + i, "- max_msg_len: %zu\n",
+                 params->max_buffered_bytes ? params->max_buffered_bytes
+                                            : 16000);
+    i += sprintf(buf + i, "- max_conns:   %u\n", s->max_conns);
+    i += sprintf(buf + i, "- compression: %s\n", compression_enabled);
+    i += sprintf(buf + i, "- debug:       %s\n", debug_enabled);
+    i += sprintf(buf + i, "- max_headers: %zu\n", params->max_header_count);
+    if (i > 0) {
+      ssize_t w = 0;
+      for (;;) {
+        ssize_t n = write(STDOUT_FILENO, buf + w, (size_t)i);
+        if (n < 0) {
+          if (errno == EINTR) {
+            continue;
+          } else {
+            perror("write");
+            break;
+          }
+        } else {
+          w += n;
+          if (w == i)
+            break;
+        }
+      }
+    }
+
   }
 
   s->max_per_read = s->buffer_pool->buf_sz;
