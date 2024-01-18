@@ -482,6 +482,12 @@ struct ws_conn_pool {
   ws_conn_t **avb_stack;
 };
 
+static uint_fast8_t ws_conn_pool_is_conn_ptr(struct ws_conn_pool *p,
+                                             void *ptr) {
+  return ((uintptr_t)ptr >= (uintptr_t)p->base) &
+         ((uintptr_t)ptr <= (uintptr_t)(p->base + p->cap));
+}
+
 static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
   size_t page_size = get_pagesize();
 
@@ -519,7 +525,10 @@ static struct ws_conn_pool *ws_conn_pool_create(size_t nmemb) {
 
   while (i--) {
     pool->avb_stack[i] = &pool->base[j++];
+    assert(ws_conn_pool_is_conn_ptr(pool, pool->avb_stack[i]));
   }
+
+  assert(!ws_conn_pool_is_conn_ptr(pool, pool->base + pool->cap + 1));
 
   return pool;
 }
@@ -3264,7 +3273,6 @@ ws_server_t *ws_server_create(struct ws_server_params *params) {
         }
       }
     }
-
   }
 
   s->max_per_read = s->buffer_pool->buf_sz;
@@ -3757,22 +3765,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
 
     // loop over events
     for (int i = 0; i < n_evs; ++i) {
-      if (ws_event_async_runner(s, s->events + i) |
-          ws_event_timer(s, s->events + i)) {
 
-        if (ws_event_timer(s, s->events + i)) {
-#ifdef WS_WITH_EPOLL
-          timer_consume(s->tq->timer_fd);
-#endif
-          ws_timer_queue_run_expired_callbacks(s->tq, s);
-        } else {
-          ws_server_async_runner_run_pending_callbacks(s, s->async_runner);
-        }
-
-      } else if (ws_event_server(s, s->events + i)) {
-        ws_server_conns_establish(s, (struct sockaddr *)&client_sockaddr,
-                                  &client_socklen);
-      } else {
+      if (ws_conn_pool_is_conn_ptr(s->conn_pool,
+                                   ws_event_udata(s->events + i))) {
         ws_conn_t *c = ws_event_udata(s->events + i);
         if (ws_event_conn_err(s->events + i)) {
           c->fragments_len = 0; // EOF
@@ -3826,6 +3821,23 @@ int ws_server_start(ws_server_t *s, int backlog) {
               }
             }
           }
+        }
+      } else {
+        if (ws_event_async_runner(s, s->events + i) |
+            ws_event_timer(s, s->events + i)) {
+
+          if (ws_event_timer(s, s->events + i)) {
+#ifdef WS_WITH_EPOLL
+            timer_consume(s->tq->timer_fd);
+#endif
+            ws_timer_queue_run_expired_callbacks(s->tq, s);
+          } else {
+            ws_server_async_runner_run_pending_callbacks(s, s->async_runner);
+          }
+
+        } else if (ws_event_server(s, s->events + i)) {
+          ws_server_conns_establish(s, (struct sockaddr *)&client_sockaddr,
+                                    &client_socklen);
         }
       }
     }
