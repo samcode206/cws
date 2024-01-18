@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v3
       - name: Build Autobahn Server
         run: |
-          sudo WITH_COMPRESSION=1 make autobahn && sh check-install.sh
+          sudo WITH_COMPRESSION=1 NO_DEBUG=1 make autobahn && sh check-install.sh
       - name: Start Server
         run: |
           ./server & 
@@ -73,7 +73,7 @@ jobs:
 
       - name: Build Autobahn Server
         run: |
-          sudo make autobahn
+          sudo NO_DEBUG=1 make autobahn
       - name: Start Server
         run: |
           ./server & 
