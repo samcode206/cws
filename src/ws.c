@@ -306,6 +306,7 @@ struct ws_conn_t {
   mirrored_buf_t *send_buf;
   ws_server_t *base; // server ptr
   void *ctx;         // user data pointer
+  size_t timers_idx; // position in server->pending_timers
 };
 
 static inline bool is_upgraded(ws_conn_t *c) {
@@ -2760,6 +2761,7 @@ static void server_writeable_conns_append(ws_conn_t *c) {
 
 static void server_pending_timers_append(ws_conn_t *c) {
   if (!has_pending_timers(c)) {
+    c->timers_idx = c->base->pending_timers.len;
     conn_list_append(&c->base->pending_timers, c);
     set_has_pending_timers(c);
   }
@@ -2767,21 +2769,14 @@ static void server_pending_timers_append(ws_conn_t *c) {
 
 static void server_pending_timers_remove(ws_conn_t *c) {
   if (has_pending_timers(c)) {
-    // go through all timers in list and swap with the last
-    while (c->base->pending_timers.len) {
-      size_t i = c->base->pending_timers.len;
-      ws_server_t *s = c->base;
-
-      while (i--) {
-        if (s->pending_timers.conns[i] == c) {
-          clear_has_pending_timers(c);
-          ws_conn_t *tmp = s->pending_timers.conns[--s->pending_timers.len];
-          s->pending_timers.conns[i] = tmp;
-          break;
-        }
-      }
-      break;
-    }
+    // swap-remove using the stored index, O(1) instead of a scan of all open
+    // connections (which made a mass disconnect quadratic)
+    ws_server_t *s = c->base;
+    size_t i = c->timers_idx;
+    ws_conn_t *tmp = s->pending_timers.conns[--s->pending_timers.len];
+    s->pending_timers.conns[i] = tmp;
+    tmp->timers_idx = i;
+    clear_has_pending_timers(c);
   }
 }
 
