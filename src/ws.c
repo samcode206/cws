@@ -683,6 +683,7 @@ const char *ws_conn_err_table[] = {
     "Going Away",                                     // 1001
     "Websocket Protocol Error",                       // 1003
     "Websocket Status Code 1003 Unsupported",         // 1003
+    "Websocket Status Code 1004 Reserved",            // 1004
     "Websocket Status Code 1005 No Status",           // 1005
     "Websocket abnormal Closure",                     // 1006
     "Websocket Status Code 1007 Invalid Data",        // 1007
