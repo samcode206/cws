@@ -69,6 +69,7 @@ $(STATIC_LIB): $(SOBJ)
 	ar rcs $@ $^
 
 install: clean uninstall all
+	install -d $(INSTALL_LIB_PATH) $(INSTALL_INCLUDE_PATH)
 	install -m 644 $(SHARED_LIB) $(INSTALL_LIB_PATH)
 	install -m 644 $(STATIC_LIB) $(INSTALL_LIB_PATH)
 	$(LD_CONFIG_COMMAND)
