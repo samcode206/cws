@@ -2881,8 +2881,17 @@ static void server_maybe_do_mirrored_buf_pool_gc(ws_server_t *s) {
         assert(madvise_to <= p->cap - 2);
 
         for (size_t i = madvise_from; i < madvise_to; ++i) {
-          // printf("MADV_DONTNEED %p\n", p->avb_stack[i]->buf);
+#ifdef WS_WITH_EPOLL
+          // the buffers are MAP_SHARED mappings of a memfd. MADV_DONTNEED on
+          // a shared mapping only drops this process's page tables; the pages
+          // stay allocated in shmem (and charged to the cgroup) and come back
+          // with their old contents on the next touch. MADV_REMOVE punches a
+          // hole in the backing file instead, which both mirror mappings
+          // share, so one call on the first mapping frees the buffer for real.
+          madvise(p->avb_stack[i]->buf, p->buf_sz, MADV_REMOVE);
+#else
           madvise(p->avb_stack[i]->buf, p->buf_sz * 2, MADV_DONTNEED);
+#endif
         }
 
         p->touched_bufs -= madvise_count;
