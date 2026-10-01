@@ -1096,7 +1096,11 @@ static ssize_t conn_readn(ws_conn_t *conn, size_t n) {
   }
 
   ssize_t ret = buf_recv(rb, conn->fd, n, 0);
-  if (ret == 0 || (ret == -1 && errno != EAGAIN && errno != EINTR)) {
+  if (io_tmp_err(ret)) {
+    // nothing available yet, the caller records needed_bytes and waits
+    return 0;
+  }
+  if (ret <= 0) {
     ws_conn_destroy(conn, WS_ERR_READ);
     return -1;
   }
