@@ -1034,7 +1034,10 @@ static inline int buf_put(mirrored_buf_t *r, const void *data, size_t n) {
   if (buf_space(r) < n) {
     return -1;
   }
-  memmove(r->buf + r->wpos, data, n);
+  if (n) {
+    // zero-length control frames pass a NULL payload; memmove(NULL) is UB
+    memmove(r->buf + r->wpos, data, n);
+  }
   r->wpos += n;
   return 0;
 }
