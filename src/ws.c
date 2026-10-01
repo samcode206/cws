@@ -2886,6 +2886,17 @@ static void server_maybe_do_mirrored_buf_pool_gc(ws_server_t *s) {
 
         assert(madvise_to <= p->cap - 2);
 
+        // free slots are [0, avb); the depth bookkeeping above keeps the range
+        // inside it, but a buffer that is handed out must never be reclaimed
+        // (MADV_REMOVE zeroes it), so clamp regardless
+        if (madvise_to > p->avb) {
+          madvise_to = p->avb;
+        }
+        if (madvise_to <= madvise_from) {
+          return;
+        }
+        madvise_count = madvise_to - madvise_from;
+
         for (size_t i = madvise_from; i < madvise_to; ++i) {
 #ifdef WS_WITH_EPOLL
           // the buffers are MAP_SHARED mappings of a memfd. MADV_DONTNEED on
