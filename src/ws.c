@@ -1322,7 +1322,7 @@ static ssize_t ws_conn_handshake_parse_header(char *line,
   ssize_t len = ws_conn_handshake_get_ln(line);
   if (len > 2) {
     char *sep = strchr(line, ':');
-    if (*sep == '\0' || sep == NULL)
+    if (sep == NULL)
       return -1;
 
     sep[0] = '\0'; // nul terminate the header name
