@@ -54,6 +54,19 @@ typedef struct ws_conn_t ws_conn_t;
  */
 typedef struct server ws_server_t;
 
+/**
+ * Threading model
+ *
+ * A ws_server_t and every ws_conn_t it owns belong to the thread that called
+ * ws_server_start. All ws_conn_* functions, and all ws_server_* functions other
+ * than ws_server_sched_callback, ws_server_pending_async_callbacks and
+ * ws_server_shutdown, must be called from that thread (normally from inside a
+ * callback). To act on a connection from another thread, schedule a callback
+ * with ws_server_sched_callback. Run multiple servers (one per thread, same
+ * port) to use more than one core. Never call ws_server_sched_callback after
+ * ws_server_destroy.
+ */
+
 
 struct http_header {
   char *name;
@@ -450,8 +463,10 @@ int ws_conn_fd(ws_conn_t *c);
  * Initiates the shutdown process for the WebSocket server.
  *
  * This function begins the process of shutting down the WebSocket server. It gracefully 
- * closes active connections and releases server resources. This is a non-blocking call 
+ * closes active connections and releases server resources. This is a non-blocking call
  * and the shutdown process will continue asynchronously.
+ * Safe to call from any thread: when called off the server's event-loop thread the
+ * shutdown is scheduled onto that thread (see ws_server_sched_callback).
  *
  * @param s Pointer to the WebSocket server (`ws_server_t`).
  * @return  Non-zero on failure to initiate the shutdown process.

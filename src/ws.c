@@ -34,6 +34,7 @@
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -199,6 +200,8 @@ typedef struct server {
 
   struct ws_timer_queue *tq; // High resolution timer queue
   long internal_polls;       // number of internal fds being watched by epoll
+  pthread_t loop_thread;     // thread running ws_server_start
+  atomic_bool loop_running;  // loop_thread is valid while the loop runs
   ws_event_t events[1024];
   struct conn_list pending_timers;
   struct conn_list writeable_conns;
@@ -3753,6 +3756,9 @@ int ws_server_start(ws_server_t *s, int backlog) {
     return ret;
   }
 
+  s->loop_thread = pthread_self();
+  atomic_store_explicit(&s->loop_running, true, memory_order_release);
+
   int epfd = s->event_loop_fd;
 
 #ifdef WS_WITH_EPOLL
@@ -3771,6 +3777,7 @@ int ws_server_start(ws_server_t *s, int backlog) {
     s->active_events = 0;
     int n_evs = ws_server_event_wait(s, epfd);
     if (unlikely((n_evs == 0) | (n_evs == -1))) {
+      atomic_store_explicit(&s->loop_running, false, memory_order_release);
       return n_evs;
     }
 
@@ -4075,7 +4082,20 @@ size_t ws_server_pending_async_callbacks(ws_server_t *s) {
   return count;
 }
 
+static void ws_server_shutdown_cb(ws_server_t *s, void *ctx) {
+  (void)ctx;
+  ws_server_shutdown(s);
+}
+
 int ws_server_shutdown(ws_server_t *s) {
+  // everything below mutates state owned by the event-loop thread (listener,
+  // timer fd, connection pool, poll count). When called from another thread,
+  // hand the work to the loop instead of racing it.
+  if (atomic_load_explicit(&s->loop_running, memory_order_acquire) &&
+      !pthread_equal(pthread_self(), s->loop_thread)) {
+    return ws_server_sched_callback(s, ws_server_shutdown_cb, NULL);
+  }
+
   if (s->internal_polls <= 0) {
     return -1;
   }
