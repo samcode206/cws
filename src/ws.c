@@ -2905,8 +2905,7 @@ static void server_writeable_conns_drain(ws_server_t *s) {
   // if draining caused more connections to get added to writeable_conns
   // copy them to the front and update writeable_conns len
   if (s->writeable_conns.len > n) {
-    memcpy(s->writeable_conns.conns,
-           s->writeable_conns.conns + s->writeable_conns.len,
+    memcpy(s->writeable_conns.conns, s->writeable_conns.conns + n,
            sizeof s->writeable_conns.conns * (s->writeable_conns.len - n));
     s->writeable_conns.len = s->writeable_conns.len - n;
   } else {
