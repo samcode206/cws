@@ -59,6 +59,21 @@ jobs:
       - name: Run Test Suite
         run: sh ./e2e.sh
 
+  sanitizers:
+    timeout-minutes: 10
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev
+      - name: Unit Suite (ASan + UBSan)
+        run: ASAN_OPTIONS=detect_leaks=0 sh ./test.sh "-g -fsanitize=address,undefined -fno-omit-frame-pointer"
+      - name: E2E (ASan + UBSan)
+        run: ASAN_OPTIONS=detect_leaks=0 sh ./e2e.sh "-pthread -g -fsanitize=address,undefined -fno-omit-frame-pointer -lz"
+
 
   autobahn-no-compression:
     runs-on: ubuntu-latest
