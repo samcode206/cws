@@ -3660,10 +3660,12 @@ static void ws_server_on_io_timers_need_sweep(ws_server_t *s, void *ctx) {
       timeout_kind = 993;
     } else {
       // we have more timers to check
-      if (c->read_timeout != 0) {
+      if (c->read_timeout != 0 &&
+          (s->next_io_timeout == 0 || c->read_timeout < s->next_io_timeout)) {
         s->next_io_timeout = c->read_timeout;
       }
-      if (c->write_timeout != 0) {
+      if (c->write_timeout != 0 &&
+          (s->next_io_timeout == 0 || c->write_timeout < s->next_io_timeout)) {
         s->next_io_timeout = c->write_timeout;
       }
 
